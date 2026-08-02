@@ -1,5 +1,8 @@
 # windows-spawn
 
+[![CI](https://github.com/P4suta/windows-spawn/actions/workflows/ci.yml/badge.svg)](https://github.com/P4suta/windows-spawn/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/P4suta/windows-spawn/actions/workflows/codeql.yml/badge.svg)](https://github.com/P4suta/windows-spawn/actions/workflows/codeql.yml)
+
 Ownership-oriented Windows process creation for the parts of `CreateProcessW`
 that stable `std::process` cannot express safely: explicit handle transfer,
 ordered Job attachment, process mitigations, ConPTY, and suspended creation.

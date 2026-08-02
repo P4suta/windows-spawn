@@ -1,0 +1,32 @@
+name: Usage question
+description: Ask a focused question about using windows-spawn
+title: "question: "
+labels: [question]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and attempted approach
+      description: Include relevant sanitized code, Windows version, and crate version.
+    validations:
+      required: true
+  - type: textarea
+    id: research
+    attributes:
+      label: Documentation already consulted
+      description: Link the API documentation, example, ADR, or issue you checked.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and the API documentation.
+          required: true
+        - label: This question does not contain a suspected vulnerability.
+          required: true

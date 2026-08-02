@@ -1,0 +1,39 @@
+name: Feature request
+description: Propose a focused capability or contract improvement
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the Windows process-creation need that is not currently met.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain the API or behavior and its ownership or safety contract.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and platform scope
+      description: Note Windows baseline, MSRV, public API, and dependency implications.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and documentation for this capability.
+          required: true
+        - label: This request is within process creation and lifecycle management scope.
+          required: true
