@@ -102,7 +102,7 @@ fn run_simple(root: &Path, task: SimpleTask) -> Result<()> {
         }
         SimpleTask::Msrv => run_cargo_with_toolchain(
             root,
-            "1.75.0",
+            "1.75",
             &["check", "--workspace", "--all-targets", "--locked"],
         ),
         SimpleTask::CrossTargets => {
