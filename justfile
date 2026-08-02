@@ -4,63 +4,61 @@ default:
     @just --list
 
 fmt:
-    cargo fmt --all -- --check
+    cargo xtask fmt
 
 clippy:
-    cargo clippy --all-targets --locked -- -D warnings
+    cargo xtask clippy
 
 test:
-    cargo test --all-targets --locked -- --test-threads=1
-    cargo test --doc --locked
+    cargo xtask test
 
 doc:
-    $env:RUSTDOCFLAGS = '-D warnings'; cargo doc --no-deps --locked
+    cargo xtask doc
 
 msrv:
-    cargo +1.75.0 check --all-targets --locked
+    cargo xtask msrv
 
 cross-targets:
-    cargo check --locked --target x86_64-pc-windows-msvc
-    cargo check --locked --target i686-pc-windows-msvc
-    cargo check --locked --target aarch64-pc-windows-msvc
+    cargo xtask cross-targets
 
 linux-empty:
-    cargo check --all-targets --locked --target x86_64-unknown-linux-gnu
+    cargo xtask linux-empty
 
 public-api:
-    $actual = @(cargo +nightly-2026-07-02 public-api --simplified); if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; $expected = @(Get-Content -LiteralPath 'public-api/windows-spawn.txt'); $difference = @(Compare-Object -ReferenceObject $expected -DifferenceObject $actual -SyncWindow 0); if ($difference.Count -ne 0) { $difference | Format-Table | Out-String | Write-Error; exit 1 }
+    cargo xtask public-api
 
 public-api-update:
-    cargo +nightly-2026-07-02 public-api --simplified | Set-Content -LiteralPath public-api/windows-spawn.txt -Encoding utf8
+    cargo xtask public-api --update
 
 supply-chain:
-    cargo deny --all-features --locked check
+    cargo xtask supply-chain
 
 reuse:
-    python -m reuse lint
+    cargo xtask reuse
+
+typos:
+    cargo xtask typos
 
 sbom:
-    & '.\scripts\generate-sboms.ps1'
+    cargo xtask sbom
 
 coverage:
-    cargo llvm-cov clean --workspace
-    cargo llvm-cov --all-targets --locked -- --test-threads=1
-    cargo llvm-cov report --fail-under-lines 92 --fail-under-regions 92 --fail-under-functions 92
+    cargo xtask coverage
 
 mutants:
-    & '.\scripts\run-mutants-contained.ps1'
+    cargo xtask mutants --
 
 mutants-ci shard:
-    $env:CARGO_MUTANTS_OUTPUT = '.'; & '.\scripts\run-mutants-contained.ps1' --in-place --shard {{ shard }}/4 --timeout 90 --build-timeout 180 --no-shuffle -vV
+    cargo xtask mutants --output . -- --in-place --shard {{ shard }}/4 --timeout 90 --build-timeout 180 --no-shuffle -vV
 
 package-check:
-    cargo package --locked
-    & '.\scripts\check-packaged-reuse.ps1'
+    cargo xtask package-check
 
 release-candidate:
-    & '.\scripts\release-candidate.ps1'
+    cargo xtask release-candidate
 
 release-verify tag:
-    & '.\scripts\verify-release-tag.ps1' -Tag '{{ tag }}'
+    cargo xtask verify-release-tag "{{ tag }}"
 
-ci: fmt clippy test doc msrv cross-targets linux-empty public-api supply-chain reuse package-check
+ci:
+    cargo xtask ci

@@ -37,7 +37,7 @@ jobs:
       - name: Verify existing tag, commit, and Cargo version
         env:
           RELEASE_TAG: ${{ inputs.tag }}
-        run: .\scripts\verify-release-tag.ps1 -Tag $env:RELEASE_TAG
+        run: cargo xtask verify-release-tag "$env:RELEASE_TAG"
 
   release:
     name: Approved release
@@ -64,16 +64,11 @@ jobs:
           toolchain: stable
       - uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf  # v2.85.2
         with:
-          tool: just@1.57.0,cargo-cyclonedx@0.5.9
+          tool: cargo-cyclonedx@0.5.9
       - run: python -m pip install "reuse[charset-normalizer]==6.2.0"
       - name: Build and verify release candidate
         id: candidate
-        run: |
-          just release-candidate
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $sbom = @(Get-ChildItem -LiteralPath target\release-candidate -Filter *.cdx.json)
-          if ($sbom.Count -ne 1) { throw "Expected exactly one CycloneDX SBOM" }
-          "sbom=$($sbom[0].FullName)" >> $env:GITHUB_OUTPUT
+        run: cargo xtask release-candidate --github-output
 
       - name: Attest SLSA v1 provenance
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d  # v4
@@ -94,23 +89,14 @@ jobs:
         id: github-release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          $artifacts = @(
-              Get-ChildItem -LiteralPath target\release-candidate -File |
-                  ForEach-Object { $_.FullName }
-          )
-          $url = & gh release create $env:RELEASE_TAG @artifacts --verify-tag --draft --generate-notes --title $env:RELEASE_TAG
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "url=$url" >> $env:GITHUB_OUTPUT
+        run: cargo xtask draft-release "$env:RELEASE_TAG" --github-output
 
       - name: Select crates.io authentication mode
         id: crates-mode
         if: ${{ inputs.publish_crates_io }}
         env:
-          BOOTSTRAP_TOKEN: ${{ secrets.CRATES_IO_BOOTSTRAP_TOKEN }}
-        run: |
-          $bootstrap = -not [string]::IsNullOrEmpty($env:BOOTSTRAP_TOKEN)
-          "bootstrap=$($bootstrap.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          CRATES_IO_BOOTSTRAP_TOKEN: ${{ secrets.CRATES_IO_BOOTSTRAP_TOKEN }}
+        run: cargo xtask crates-io-auth-mode --github-output
 
       - name: Authenticate with crates.io trusted publishing
         id: crates-auth

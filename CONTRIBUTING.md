@@ -1,7 +1,6 @@
 # Contributing
 
-Thank you for helping improve `windows-spawn`. Contributions that make Windows
-process creation safer, more predictable, or better documented are welcome.
+Contributions must preserve the crate's ownership and cleanup contracts.
 
 ## Before opening a change
 
@@ -42,12 +41,11 @@ does not publish anything.
 - Preserve the documented ownership and cleanup behavior, including on errors.
 - Give every `unsafe` block a specific safety justification.
 - Add deterministic tests for behavior changes and avoid timing-only assertions.
-- Keep the public API snapshot unchanged unless the pull request intentionally
-  changes the public API and explains the compatibility impact.
+- Keep the public API snapshot unchanged unless the pull request changes the
+  public API and explains the compatibility impact.
 - Update the crate documentation, ADRs, or security boundary when contracts
   change.
 - Keep dependencies minimal and compatible with the MSRV.
 
-All required GitHub checks must pass and review conversations must be resolved
-before merge. The repository uses squash merges so each pull request becomes
-one focused commit on `main`.
+Required checks and review conversations must be complete before merge. Pull
+requests are squash-merged into `main`.

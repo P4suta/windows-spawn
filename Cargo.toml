@@ -5,7 +5,7 @@ authors = ["Yasunobu Sakashita"]
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
-description = "Advanced Windows process creation: CreateProcessW with STARTUPINFOEX and PROC_THREAD_ATTRIBUTE_LIST, with attribute-value lifetimes enforced by the type system"
+description = "Windows process creation with explicit handle, Job, mitigation, ConPTY, and child ownership"
 documentation = "https://docs.rs/windows-spawn"
 repository = "https://github.com/P4suta/windows-spawn"
 readme = "README.md"
@@ -50,13 +50,21 @@ features = [
   "Win32_System_Threading",
 ]
 
-[lints.rust]
+[workspace]
+members = ["xtask"]
+default-members = ["."]
+resolver = "2"
+
+[workspace.lints.rust]
 missing_docs = "deny"
 rust_2018_idioms = { level = "deny", priority = -1 }
 unsafe_op_in_unsafe_fn = "deny"
 unreachable_pub = "deny"
 unused_qualifications = "deny"
 
-[lints.clippy]
+[workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
+
+[lints]
+workspace = true

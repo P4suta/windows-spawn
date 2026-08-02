@@ -2,9 +2,8 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest published minor release line. Before
-the first release, reports affecting the `main` branch are welcome. Older minor
-lines may receive a fix when practical, but are not guaranteed support.
+Security fixes target the latest published minor release line. Before the first
+release, reports may target `main`. Older minor lines are not guaranteed fixes.
 
 ## Reporting a vulnerability
 

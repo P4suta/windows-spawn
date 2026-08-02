@@ -4,46 +4,36 @@ Status: accepted (2026-08-02)
 
 ## Context
 
-The Windows integration suite includes process trees, suspended processes, and
-pipe EOF behavior. A complete mutation run is too expensive for every pull
-request, but blanket exclusions would hide precisely the ownership bugs the
-crate is intended to prevent.
+Process-tree, suspended-process, and pipe-EOF tests make a complete mutation
+run too expensive for each pull request. Broad exclusions would hide ownership
+and cleanup faults.
 
 ## Decision
 
-Four mutation shards run weekly and on manual dispatch. Every survivor is
-either addressed by a focused test or individually excluded only when the
-generated expression is provably identical for all values allowed at that
-site. The narrow regular expressions live in `.cargo/mutants.toml`; whole files
-and broad mutation classes are never excluded.
+Run four shards weekly and on manual dispatch. Address each survivor with a
+test or exclude its exact expression only when it is equivalent for every
+value allowed at that site. `.cargo/mutants.toml` may not exclude a whole file
+or mutation class.
 
-Tests that deliberately create a suspended process retain an independent
-process handle and perform direct Win32 cleanup before reporting a failed
-termination assertion. Cleanup must not call the crate path under mutation:
-mutants that disable `Drop`, `Child::kill`, or `TerminateProcess` must not leave
-a permanently suspended process behind on the test host.
+Suspended-process tests retain an independent process handle and use direct
+Win32 cleanup before reporting a failed termination assertion. Cleanup bypasses
+the mutated crate path so changes to `Drop`, `Child::kill`, or
+`TerminateProcess` cannot leave a suspended process on the runner.
 
-Both the local full run and the CI shards start `cargo mutants` suspended,
-assign it to a kill-on-close Windows Job, and only then resume it. Closing the
-runner's last Job handle therefore removes descendants that escape a mutant,
-timeout, or aborted test process. Local runs use a unique ignored output
-directory; CI keeps `mutants.out` at the workspace root for artifact upload.
+The xtask starts `cargo mutants` through `windows-spawn` with
+`DropPolicy::KillTree`. The private kill-on-close Job contains descendants on
+normal exit, timeout, test failure, or runner termination. Local runs use a
+unique ignored output directory; CI writes the upload under `mutants.out`.
 
-## Recorded equivalences
+The four exclusions are equivalent because:
 
-- `MitigationPolicy::replace` clears both destination bits before inserting the
-  new value. OR and XOR therefore receive zero on the left at those positions
-  and are identical.
-- `DUPLICATE_SAME_ACCESS` and `DUPLICATE_CLOSE_SOURCE` occupy disjoint bits, so
-  OR and XOR produce the same remote-close option word.
-- `PROCESS_CREATE_PROCESS` and `PROCESS_DUP_HANDLE` occupy disjoint bits, so OR
-  and XOR request the same minimal alternate-parent rights.
-- Public `CreationFlags` cannot contain `CREATE_UNICODE_ENVIRONMENT`, which is
-  private and added by `create_process`. OR and XOR therefore produce the same
-  word at that insertion point.
+- `MitigationPolicy::replace` clears the destination bits before OR or XOR.
+- `DUPLICATE_SAME_ACCESS` and `DUPLICATE_CLOSE_SOURCE` occupy disjoint bits.
+- `PROCESS_CREATE_PROCESS` and `PROCESS_DUP_HANDLE` occupy disjoint bits.
+- Public `CreationFlags` cannot contain the private
+  `CREATE_UNICODE_ENVIRONMENT` bit added by `create_process`.
 
 ## Consequences
 
-Mutation results remain actionable, expensive process tests run off the pull
-request path, and every accepted equivalent stays reviewable beside the design
-reason that makes it safe.
+Mutation results remain actionable, the expensive suite stays off the pull
+request path, and each exclusion has a reviewable equivalence proof.

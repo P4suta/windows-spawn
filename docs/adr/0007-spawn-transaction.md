@@ -4,28 +4,25 @@ Status: accepted (2026-08-02)
 
 ## Context
 
-A single spawn can acquire pipes, null handles, local inheritable duplicates,
-remote duplicates, a private Job, attribute storage, and process/thread handles.
-Failures can happen between any two acquisitions. Distributed cleanup flags
-make double-close and leak states representable.
+A spawn can acquire pipes, null handles, local and remote duplicates, a private
+Job, attribute storage, and process/thread handles. Any acquisition can fail;
+distributed cleanup state permits leaks and double closes.
 
 ## Decision
 
-`SpawnTransaction` is the sole owner of temporary resources. Before commit, its
-Drop implementation rolls everything back and terminates any created process.
-After a successful create and Job setup, `commit` moves only the process handle,
-public pipe endpoints, cached lifecycle policy, and any required Job ownership
-into `Child`. Thread and temporary handles remain transaction-owned and close
-immediately.
+`SpawnTransaction` exclusively owns temporary resources. Before commit, its
+`Drop` implementation terminates a created process and rolls back all state.
+Commit moves only the process handle, public pipe endpoints, lifecycle policy,
+and retained Job ownership into `Child`; thread and temporary handles close.
 
-`SuspendedChild` is a separate state. Its consuming `resume` is the only normal
-transition to `Child`; Drop before that transition always terminates the process
-or its private Job.
+`SuspendedChild` represents the suspended state. Its consuming `resume` is the
+only normal transition to `Child`; dropping it first terminates the process or
+its private Job.
 
 ## Consequences
 
-- No raw handle has shared ownership.
-- Partial initialization is not observable through the public API.
-- Cleanup follows ownership rather than error-site bookkeeping.
-- Failure-injection and handle-count integration tests can verify the invariant
-  without exposing transaction internals.
+- No shared ownership of raw handles.
+- No public partial-initialization state.
+- Cleanup follows ownership instead of error-site flags.
+- Failure-injection and handle-count tests can verify rollback without exposing
+  transaction internals.

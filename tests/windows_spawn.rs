@@ -121,7 +121,7 @@ impl ProcessExitGuard {
 impl Drop for ProcessExitGuard {
     fn drop(&mut self) {
         if self.armed {
-            // Cleanup deliberately bypasses the crate path under mutation.
+            // Bypass the crate path so its mutants cannot disable cleanup.
             // SAFETY: the duplicate has the source process handle's access.
             let _ = unsafe { TerminateProcess(self.process.as_raw_handle(), 1) };
             // SAFETY: the same owned process handle remains valid here.

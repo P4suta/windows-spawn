@@ -1,14 +1,12 @@
 # Windows process creation with explicit ownership
 
-`windows-spawn` owns one complete `CreateProcessW` transaction for Windows
-features that stable [`std::process`] cannot express safely. Use
-[`std::process::Command`] for ordinary portable child processes. Use this crate
-when process creation needs explicit handle transfer, ordered Job attachment,
-typed mitigation policies, `ConPTY`, or suspended inspection.
+`windows-spawn` owns a complete `CreateProcessW` transaction for explicit
+handle transfer, ordered Job attachment, typed mitigation policies, `ConPTY`,
+and suspended inspection. Use [`std::process::Command`] for portable child
+processes.
 
-The crate intentionally exposes no public API on non-Windows targets. This
-allows cross-platform dependency graphs to be checked without implying runtime
-support outside Windows.
+Non-Windows targets expose no public API. They support dependency-graph checks,
+not process creation.
 
 # Platform contract
 
@@ -33,15 +31,14 @@ subject to Jobs already imposed by the host.
 - [`Command::raw_arg`] appends already-encoded Windows command-line syntax. It
   does not invoke a shell and must only receive syntax appropriate for the
   target executable's parser.
-- Raw attribute injection, raw creation flags, and raw mitigation constructors
-  are intentionally absent.
+- Raw attribute injection, creation flags, and mitigation constructors are not
+  exposed.
 
 # Handle and capability ownership
 
-[`Command`] is reusable and stores execution intent. [`Command::arg_handle`]
-and [`Command::env_handle`] take a private, non-inheritable duplicate when they
-are configured. The source handle may therefore be closed immediately, and
-each later spawn can perform a fresh transfer.
+[`Command`] stores reusable execution intent. [`Command::arg_handle`] and
+[`Command::env_handle`] take a private, non-inheritable duplicate. The source
+handle may then be closed; each spawn transfers a new duplicate.
 
 Immediately before `CreateProcessW`, the crate creates only the inheritable
 duplicates required for standard I/O and argument or environment handoff. It
@@ -61,12 +58,11 @@ Handle-handoff values form an application protocol:
 - With an alternate parent, the resource is duplicated into the effective
   parent's handle table before the child-visible value is lowered.
 
-Windows retains a process-wide reverse race: while the short-lived inheritable
-duplicates exist, unrelated code in the same source process that performs
-broad handle inheritance can receive one. Avoid concurrent broad-inheritance
-spawns when the handles are sensitive. A helper process could close the race,
-but would change parent identity and the failure model; version 0.1 deliberately
-does not use one. See
+Windows retains a process-wide reverse race: unrelated broad-inheritance spawns
+can receive a short-lived inheritable duplicate. Avoid concurrent broad
+inheritance when transferred handles are sensitive. Version 0.1 does not use a
+helper process because that would change parent identity and failure semantics.
+See
 [ADR 0005](https://github.com/P4suta/windows-spawn/blob/main/docs/adr/0005-handle-transfer-and-reverse-race.md).
 
 [`SpawnOptions`] borrows one-spawn capabilities such as Jobs, an alternate
@@ -91,11 +87,10 @@ pipes close and when terminal EOF occurs.
 
 # Transaction and security boundary
 
-Process creation is split into a pure validation plan and an owning
-transaction. The transaction owns pipes, temporary duplicates, attributes,
-Jobs, and process/thread handles until success commits exactly the durable
-resources to [`Child`] or [`SuspendedChild`]. Every error path rolls back the
-rest.
+Process creation uses a validation plan and an owning transaction. The
+transaction owns pipes, temporary duplicates, attributes, Jobs, and
+process/thread handles. Success transfers durable resources to [`Child`] or
+[`SuspendedChild`]; errors roll back the rest.
 
 This crate is not a sandbox, cross-platform process facade, async runtime, or
 process supervisor. Tokens, ACLs, `AppContainer`, LPAC, capability SIDs, and

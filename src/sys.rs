@@ -560,7 +560,7 @@ pub(crate) fn wait_process_for_test(
 
 #[cfg(test)]
 pub(crate) fn cleanup_process_for_test(process: BorrowedHandle<'_>) {
-    // This path deliberately bypasses the production wrapper under mutation.
+    // Bypass the production wrapper so its mutants cannot disable cleanup.
     // SAFETY: tests pass a duplicate with the source process handle's access.
     let _ = unsafe { TerminateProcess(raw(process), 1) };
     // SAFETY: the same borrowed process handle remains valid for the wait.
@@ -599,8 +599,8 @@ pub(crate) fn read_handle(handle: BorrowedHandle<'_>, buffer: &mut [u8]) -> io::
     }
     let length = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
     let mut read = 0_u32;
-    // SAFETY: buffer is writable for `length` bytes and the synchronous handle
-    // remains valid. The OVERLAPPED pointer is intentionally null.
+    // SAFETY: buffer is writable for `length` bytes, the synchronous handle
+    // remains valid, and a null OVERLAPPED requests synchronous I/O.
     if unsafe {
         ReadFile(
             raw(handle),
@@ -633,8 +633,8 @@ pub(crate) fn write_handle(handle: BorrowedHandle<'_>, buffer: &[u8]) -> io::Res
     }
     let length = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
     let mut written = 0_u32;
-    // SAFETY: buffer is readable for `length` bytes and the synchronous handle
-    // remains valid. The OVERLAPPED pointer is intentionally null.
+    // SAFETY: buffer is readable for `length` bytes, the synchronous handle
+    // remains valid, and a null OVERLAPPED requests synchronous I/O.
     if unsafe {
         WriteFile(
             raw(handle),

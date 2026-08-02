@@ -4,30 +4,24 @@ Status: accepted (2026-08-02)
 
 ## Context
 
-`UpdateProcThreadAttribute` retains pointers until `CreateProcessW` consumes
-the list. The list backing store must be suitably aligned, and every pointed-to
-value must stay at a stable address. A stack temporary or a reallocating vector
-can therefore turn otherwise plausible Rust into invalid FFI.
-
-The pseudoconsole attribute is exceptional: Microsoft requires the `HPCON`
-value itself as `lpValue`, whereas the other supported attributes receive the
-address of stable storage.
+`UpdateProcThreadAttribute` retains pointers until `CreateProcessW`. The list
+requires aligned storage and each value requires a stable address. The
+pseudoconsole is an exception: its `HPCON` value, rather than its address, is
+passed as `lpValue`.
 
 ## Decision
 
-The attribute list is private and cannot outlive one `SpawnTransaction`. Its
-backing allocation is word-aligned. Every normal attribute value has its own
-stable owned allocation, and the transaction retains those allocations until
-after `DeleteProcThreadAttributeList`. The pseudoconsole path passes its
-borrowed value according to the documented exception.
+Keep the attribute list private to one `SpawnTransaction`. Give its backing
+allocation word alignment and each normal value stable owned storage. Retain
+both until after `DeleteProcThreadAttributeList`. Pass the borrowed
+pseudoconsole value according to its Win32 contract.
 
 `SpawnOptions<'a>` carries the lifetime of borrowed Jobs, parent process, and
-pseudoconsole capability. `Command` does not borrow them and remains reusable.
+pseudoconsole capabilities; reusable `Command` does not borrow them.
 
 ## Consequences
 
-- There is no public raw attribute API and no self-referential public builder.
+- No public raw attribute API or self-referential builder.
 - Attribute pointers cannot outlive their values.
-- The list is deleted before either its values or aligned backing storage are
-  released.
-- The unsafe lifetime proof remains local to the private `sys` module.
+- Delete the list before its values and backing storage.
+- Keep the unsafe lifetime proof inside `sys`.
