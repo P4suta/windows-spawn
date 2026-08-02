@@ -1,7 +1,14 @@
 //! Per-spawn capabilities and creation policy.
 
 use std::fmt;
+use std::marker::PhantomData;
 use std::ops::{BitOr, BitOrAssign};
+
+use windows_sys::Win32::System::Threading::{
+    CREATE_BREAKAWAY_FROM_JOB, CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_PRESERVE_CODE_AUTHZ_LEVEL, DETACHED_PROCESS,
+    INHERIT_PARENT_AFFINITY,
+};
 
 use crate::handles::{AsPseudoConsole, Job, ParentProcess};
 use crate::mitigation::MitigationPolicy;
@@ -31,21 +38,21 @@ impl CreationFlags {
     }
 
     /// Creates a process without inheriting a console.
-    pub const DETACHED_PROCESS: Self = Self(0x0000_0008);
+    pub const DETACHED_PROCESS: Self = Self(DETACHED_PROCESS);
     /// Gives the child a new console.
-    pub const NEW_CONSOLE: Self = Self(0x0000_0010);
+    pub const NEW_CONSOLE: Self = Self(CREATE_NEW_CONSOLE);
     /// Makes the child the root of a new process group.
-    pub const NEW_PROCESS_GROUP: Self = Self(0x0000_0200);
+    pub const NEW_PROCESS_GROUP: Self = Self(CREATE_NEW_PROCESS_GROUP);
     /// Inherits the parent's processor affinity.
-    pub const INHERIT_PARENT_AFFINITY: Self = Self(0x0001_0000);
+    pub const INHERIT_PARENT_AFFINITY: Self = Self(INHERIT_PARENT_AFFINITY);
     /// Allows the child to break away from the caller's Job when permitted.
-    pub const BREAKAWAY_FROM_JOB: Self = Self(0x0100_0000);
+    pub const BREAKAWAY_FROM_JOB: Self = Self(CREATE_BREAKAWAY_FROM_JOB);
     /// Preserves the caller's code-authorization level.
-    pub const PRESERVE_CODE_AUTHZ_LEVEL: Self = Self(0x0200_0000);
+    pub const PRESERVE_CODE_AUTHZ_LEVEL: Self = Self(CREATE_PRESERVE_CODE_AUTHZ_LEVEL);
     /// Prevents the child from inheriting the caller's hard-error mode.
-    pub const DEFAULT_ERROR_MODE: Self = Self(0x0400_0000);
+    pub const DEFAULT_ERROR_MODE: Self = Self(CREATE_DEFAULT_ERROR_MODE);
     /// Runs a console application without creating a console window.
-    pub const NO_WINDOW: Self = Self(0x0800_0000);
+    pub const NO_WINDOW: Self = Self(CREATE_NO_WINDOW);
 
     pub(crate) const fn bits(self) -> u32 {
         self.0
@@ -53,6 +60,20 @@ impl CreationFlags {
 
     pub(crate) const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
+    }
+}
+
+struct PseudoConsole<'a> {
+    raw: isize,
+    _borrow: PhantomData<&'a dyn AsPseudoConsole>,
+}
+
+impl<'a> PseudoConsole<'a> {
+    fn new<T: AsPseudoConsole>(pseudoconsole: &'a T) -> Self {
+        Self {
+            raw: pseudoconsole.raw_pseudoconsole(),
+            _borrow: PhantomData,
+        }
     }
 }
 
@@ -92,7 +113,7 @@ pub struct SpawnOptions<'a> {
     pub(crate) jobs: Vec<&'a Job>,
     pub(crate) parent: Option<&'a ParentProcess>,
     pub(crate) mitigation: MitigationPolicy,
-    pub(crate) pseudoconsole: Option<&'a dyn AsPseudoConsole>,
+    pseudoconsole: Option<PseudoConsole<'a>>,
     pub(crate) creation_flags: CreationFlags,
     pub(crate) drop_policy: DropPolicy,
 }
@@ -104,7 +125,10 @@ impl fmt::Debug for SpawnOptions<'_> {
             .field("jobs", &self.jobs)
             .field("parent", &self.parent)
             .field("mitigation", &self.mitigation)
-            .field("pseudoconsole", &self.pseudoconsole.map(|_| "borrowed"))
+            .field(
+                "pseudoconsole",
+                &self.pseudoconsole.as_ref().map(|_| "borrowed"),
+            )
             .field("creation_flags", &self.creation_flags)
             .field("drop_policy", &self.drop_policy)
             .finish()
@@ -155,7 +179,7 @@ impl<'a> SpawnOptions<'a> {
     /// Attaches the child to a borrowed pseudoconsole.
     #[must_use]
     pub fn pseudoconsole<T: AsPseudoConsole>(mut self, pseudoconsole: &'a T) -> Self {
-        self.pseudoconsole = Some(pseudoconsole);
+        self.pseudoconsole = Some(PseudoConsole::new(pseudoconsole));
         self
     }
 
@@ -172,11 +196,29 @@ impl<'a> SpawnOptions<'a> {
         self.drop_policy = policy;
         self
     }
+
+    pub(crate) fn pseudoconsole_raw(&self) -> Option<isize> {
+        self.pseudoconsole
+            .as_ref()
+            .map(|pseudoconsole| pseudoconsole.raw)
+    }
 }
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
+
+    struct TestPseudoConsole(Cell<isize>);
+
+    // SAFETY: tests use the value only as a snapshot and never pass it to Win32.
+    unsafe impl AsPseudoConsole for TestPseudoConsole {
+        fn raw_pseudoconsole(&self) -> isize {
+            self.0.get()
+        }
+    }
 
     #[test]
     fn creation_flags_combine_idempotently_and_options_keep_job_order() {
@@ -196,5 +238,14 @@ mod tests {
         assert_eq!(options.jobs.len(), 2);
         assert!(std::ptr::eq(options.jobs[0], &outer));
         assert!(std::ptr::eq(options.jobs[1], &inner));
+    }
+
+    #[test]
+    fn pseudoconsole_builder_snapshots_the_raw_value() {
+        let pseudoconsole = TestPseudoConsole(Cell::new(42));
+        let options = SpawnOptions::new().pseudoconsole(&pseudoconsole);
+        pseudoconsole.0.set(99);
+        assert_eq!(options.pseudoconsole_raw(), Some(42));
+        assert!(format!("{options:?}").contains("borrowed"));
     }
 }

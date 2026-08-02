@@ -5,13 +5,87 @@ use sha2::{Digest, Sha256};
 use std::env;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::string::FromUtf8Error;
+use std::time::{SystemTime, SystemTimeError, UNIX_EPOCH};
 
-pub(crate) type Result<T> = std::result::Result<T, Box<dyn Error>>;
+pub(crate) type Result<T> = std::result::Result<T, TaskError>;
+
+#[derive(Debug)]
+pub(crate) enum TaskError {
+    Io(io::Error),
+    Json(serde_json::Error),
+    Utf8(FromUtf8Error),
+    Semver(semver::Error),
+    SystemTime(SystemTimeError),
+    Message(String),
+}
+
+impl fmt::Display for TaskError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => error.fmt(formatter),
+            Self::Json(error) => error.fmt(formatter),
+            Self::Utf8(error) => error.fmt(formatter),
+            Self::Semver(error) => error.fmt(formatter),
+            Self::SystemTime(error) => error.fmt(formatter),
+            Self::Message(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl Error for TaskError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Json(error) => Some(error),
+            Self::Utf8(error) => Some(error),
+            Self::Semver(error) => Some(error),
+            Self::SystemTime(error) => Some(error),
+            Self::Message(_) => None,
+        }
+    }
+}
+
+impl From<io::Error> for TaskError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<serde_json::Error> for TaskError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(error)
+    }
+}
+
+impl From<FromUtf8Error> for TaskError {
+    fn from(error: FromUtf8Error) -> Self {
+        Self::Utf8(error)
+    }
+}
+
+impl From<semver::Error> for TaskError {
+    fn from(error: semver::Error) -> Self {
+        Self::Semver(error)
+    }
+}
+
+impl From<SystemTimeError> for TaskError {
+    fn from(error: SystemTimeError) -> Self {
+        Self::SystemTime(error)
+    }
+}
+
+impl From<String> for TaskError {
+    fn from(message: String) -> Self {
+        Self::Message(message)
+    }
+}
 
 const PACKAGE_NAME: &str = "windows-spawn";
 const PUBLIC_API_TOOLCHAIN: &str = "nightly-2026-07-02";
@@ -207,7 +281,7 @@ fn public_api(root: &Path, update: bool) -> Result<()> {
     }
 
     let expected = fs::read_to_string(&snapshot)?;
-    compare_snapshot(&expected, &actual).map_err(Into::into)
+    compare_snapshot(&expected, &actual).map_err(TaskError::from)
 }
 
 fn compare_snapshot(expected: &str, actual: &str) -> std::result::Result<(), String> {
@@ -415,7 +489,7 @@ fn require_licenses(component: &Value) -> Result<()> {
 
 fn validate_reuse_spdx(path: &Path, package: &PackageInfo) -> Result<()> {
     let document = fs::read_to_string(path)?;
-    validate_reuse_spdx_text(&document, &package.name).map_err(Into::into)
+    validate_reuse_spdx_text(&document, &package.name).map_err(TaskError::from)
 }
 
 fn validate_reuse_spdx_text(document: &str, package_name: &str) -> std::result::Result<(), String> {
@@ -738,14 +812,14 @@ fn root_package(root: &Path) -> Result<PackageInfo> {
     command.args(["metadata", "--locked", "--no-deps", "--format-version", "1"]);
     let output = capture(&mut command)?;
     let metadata: Value = serde_json::from_str(&output)?;
-    select_root_package(&metadata, root).map_err(Into::into)
+    select_root_package(&metadata, root)
 }
 
-fn select_root_package(metadata: &Value, root: &Path) -> std::result::Result<PackageInfo, String> {
+fn select_root_package(metadata: &Value, root: &Path) -> Result<PackageInfo> {
     let packages = metadata
         .get("packages")
         .and_then(Value::as_array)
-        .ok_or_else(|| "cargo metadata has no packages array".to_owned())?;
+        .ok_or_else(|| TaskError::Message("cargo metadata has no packages array".to_owned()))?;
     let root_manifest = normalize_path(&root.join("Cargo.toml"));
     let mut matches = packages.iter().filter(|package| {
         package
@@ -753,23 +827,25 @@ fn select_root_package(metadata: &Value, root: &Path) -> std::result::Result<Pac
             .and_then(Value::as_str)
             .is_some_and(|path| normalize_path(Path::new(path)) == root_manifest)
     });
-    let package = matches
-        .next()
-        .ok_or_else(|| "could not identify the root Cargo package".to_owned())?;
+    let package = matches.next().ok_or_else(|| {
+        TaskError::Message("could not identify the root Cargo package".to_owned())
+    })?;
     if matches.next().is_some() {
-        return Err("cargo metadata contains duplicate root packages".to_owned());
+        return Err(TaskError::Message(
+            "cargo metadata contains duplicate root packages".to_owned(),
+        ));
     }
     let name = package
         .get("name")
         .and_then(Value::as_str)
-        .ok_or_else(|| "root package has no name".to_owned())?;
+        .ok_or_else(|| TaskError::Message("root package has no name".to_owned()))?;
     let version = package
         .get("version")
         .and_then(Value::as_str)
-        .ok_or_else(|| "root package has no version".to_owned())?;
+        .ok_or_else(|| TaskError::Message("root package has no version".to_owned()))?;
     Ok(PackageInfo {
         name: name.to_owned(),
-        version: Version::parse(version).map_err(|error| error.to_string())?,
+        version: Version::parse(version)?,
     })
 }
 
@@ -840,7 +916,7 @@ fn capture(command: &mut Command) -> Result<String> {
     println!("+ {command:?}");
     let output = command.output()?;
     ensure_success(command, &output)?;
-    String::from_utf8(output.stdout).map_err(Into::into)
+    String::from_utf8(output.stdout).map_err(TaskError::from)
 }
 
 fn ensure_success(command: &Command, output: &Output) -> Result<()> {
@@ -856,13 +932,14 @@ fn ensure_success(command: &Command, output: &Output) -> Result<()> {
 }
 
 fn fail<T>(message: impl Into<String>) -> Result<T> {
-    Err(io::Error::other(message.into()).into())
+    Err(TaskError::Message(message.into()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::Duration;
 
     #[test]
     fn selects_only_the_root_manifest_package() {
@@ -907,6 +984,33 @@ mod tests {
         assert!(parse_release_tag("1.2.3").is_err());
         assert!(parse_release_tag("v01.2.3").is_err());
         assert!(parse_release_tag("v1.2").is_err());
+    }
+
+    #[test]
+    fn task_error_preserves_typed_sources_and_messages() {
+        let io_error = TaskError::from(io::Error::new(io::ErrorKind::InvalidData, "io failure"));
+        assert_eq!(io_error.to_string(), "io failure");
+        assert!(io_error.source().is_some());
+
+        let json_error = TaskError::from(serde_json::from_str::<Value>("{").unwrap_err());
+        assert!(json_error.source().is_some());
+
+        let utf8_error = TaskError::from(String::from_utf8(vec![0xff]).unwrap_err());
+        assert!(utf8_error.source().is_some());
+
+        let semver_error = TaskError::from(Version::parse("not-semver").unwrap_err());
+        assert!(semver_error.source().is_some());
+
+        let time_error = TaskError::from(
+            UNIX_EPOCH
+                .duration_since(UNIX_EPOCH + Duration::from_secs(1))
+                .unwrap_err(),
+        );
+        assert!(time_error.source().is_some());
+
+        let message = TaskError::from("plain failure".to_owned());
+        assert_eq!(message.to_string(), "plain failure");
+        assert!(message.source().is_none());
     }
 
     #[test]

@@ -5,6 +5,20 @@ Versioning with Cargo's pre-1.0 compatibility rules.
 
 ## [Unreleased]
 
+### Changed
+
+- Strengthened process creation with private running/suspended typestates,
+  unified handle-transfer ownership, and value-based pseudoconsole storage.
+- Aligned ConPTY startup with the Windows reference sequence by leaving
+  ordinary standard handles unused and omitting `STARTF_USESTDHANDLES`.
+- Require `SuspendedChild::resume` to observe the expected suspend count of
+  exactly one; externally changed counts now fail and roll back the process.
+
+### Fixed
+
+- Always join both output reader threads when output capture encounters a
+  reader error or panic.
+
 ## [0.1.0] - 2026-08-02
 
 ### Added

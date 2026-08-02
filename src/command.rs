@@ -9,7 +9,7 @@ use std::process::{ExitStatus, Output};
 use crate::child::{Child, SuspendedChild};
 use crate::handles::Stdio;
 use crate::options::SpawnOptions;
-use crate::plan::{IoMode, SpawnMode, SpawnPlan};
+use crate::plan::{IoMode, SpawnPlan};
 use crate::sys;
 use crate::transaction::SpawnTransaction;
 
@@ -214,8 +214,8 @@ impl Command {
     ///
     /// Returns validation, resource-acquisition, or process-creation errors.
     pub fn spawn_with(&mut self, options: SpawnOptions<'_>) -> io::Result<Child> {
-        let plan = SpawnPlan::new(self, options, SpawnMode::Running, IoMode::Spawn)?;
-        SpawnTransaction::new(&plan)?.commit_child()
+        let plan = SpawnPlan::new_running(self, options, IoMode::Spawn)?;
+        Ok(SpawnTransaction::new(&plan)?.commit_child())
     }
 
     /// Spawns in the suspended type state with default options.
@@ -236,8 +236,8 @@ impl Command {
         &mut self,
         options: SpawnOptions<'_>,
     ) -> io::Result<SuspendedChild> {
-        let plan = SpawnPlan::new(self, options, SpawnMode::Suspended, IoMode::Spawn)?;
-        SpawnTransaction::new(&plan)?.commit_suspended()
+        let plan = SpawnPlan::new_suspended(self, options, IoMode::Spawn)?;
+        Ok(SpawnTransaction::new(&plan)?.commit_suspended())
     }
 
     /// Runs the process and waits for its status using default options.
@@ -273,9 +273,9 @@ impl Command {
     ///
     /// Returns an error from spawning, waiting, reading, or Job termination.
     pub fn output_with(&mut self, options: SpawnOptions<'_>) -> io::Result<Output> {
-        let plan = SpawnPlan::new(self, options, SpawnMode::Running, IoMode::Output)?;
+        let plan = SpawnPlan::new_running(self, options, IoMode::Output)?;
         SpawnTransaction::new(&plan)?
-            .commit_child()?
+            .commit_child()
             .wait_with_output()
     }
 }

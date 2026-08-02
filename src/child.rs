@@ -184,8 +184,7 @@ impl Child {
             .kill_job
             .as_ref()
             .map_or(Ok(()), |job| job.terminate(1));
-        let stdout = join_reader(stdout_reader)?;
-        let stderr = join_reader(stderr_reader)?;
+        let (stdout, stderr) = join_readers(stdout_reader, stderr_reader)?;
         termination?;
 
         Ok(Output {
@@ -222,6 +221,15 @@ fn join_reader(reader: Option<thread::JoinHandle<io::Result<Vec<u8>>>>) -> io::R
     }
 }
 
+fn join_readers(
+    stdout: Option<thread::JoinHandle<io::Result<Vec<u8>>>>,
+    stderr: Option<thread::JoinHandle<io::Result<Vec<u8>>>>,
+) -> io::Result<(Vec<u8>, Vec<u8>)> {
+    let stdout = join_reader(stdout);
+    let stderr = join_reader(stderr);
+    Ok((stdout?, stderr?))
+}
+
 /// A process whose primary thread has not yet been resumed.
 ///
 /// Dropping this value without resuming always terminates the process.
@@ -239,14 +247,14 @@ fn join_reader(reader: Option<thread::JoinHandle<io::Result<Vec<u8>>>>) -> io::R
 #[must_use = "dropping a suspended child terminates it"]
 pub struct SuspendedChild {
     child: Option<Child>,
-    main_thread: Option<OwnedHandle>,
+    main_thread: OwnedHandle,
 }
 
 impl SuspendedChild {
     pub(crate) fn new(child: Child, main_thread: OwnedHandle) -> Self {
         Self {
             child: Some(child),
-            main_thread: Some(main_thread),
+            main_thread,
         }
     }
 
@@ -269,16 +277,9 @@ impl SuspendedChild {
     /// This handle is available for supported thread configuration and
     /// inspection before [`Self::resume`] consumes the suspended state.
     ///
-    /// # Panics
-    ///
-    /// Panics only if an internal ownership invariant was violated and the
-    /// primary thread was removed before this suspended value was consumed.
     #[must_use]
     pub fn primary_thread_handle(&self) -> BorrowedHandle<'_> {
-        self.main_thread
-            .as_ref()
-            .expect("a suspended child owns its primary thread until resume")
-            .as_handle()
+        self.main_thread.as_handle()
     }
 
     /// Resumes the primary thread and transitions to an ordinary [`Child`].
@@ -286,13 +287,17 @@ impl SuspendedChild {
     /// # Errors
     ///
     /// Returns the operating-system error when the primary thread cannot be
-    /// resumed. The suspended process is then terminated during rollback.
+    /// resumed. It also returns `InvalidData` when external suspension or
+    /// resumption changed the expected suspend count of exactly one. The
+    /// process is terminated during either rollback.
     pub fn resume(mut self) -> io::Result<Child> {
-        let main_thread = self
-            .main_thread
-            .take()
-            .ok_or_else(|| io::Error::other("suspended child lost its primary thread"))?;
-        sys::resume_thread(main_thread.as_handle())?;
+        let previous = sys::resume_thread(self.main_thread.as_handle())?;
+        if previous != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("primary thread suspend count was {previous}, expected 1"),
+            ));
+        }
         self.child
             .take()
             .ok_or_else(|| io::Error::other("suspended child lost its process"))
@@ -318,6 +323,9 @@ impl Drop for SuspendedChild {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
     use super::*;
 
     #[test]
@@ -328,5 +336,22 @@ mod tests {
             join_reader(Some(panicked)).unwrap_err().kind(),
             io::ErrorKind::Other
         );
+    }
+
+    #[test]
+    fn both_output_readers_are_joined_when_the_first_panics() {
+        let joined = Arc::new(AtomicBool::new(false));
+        let stdout = thread::spawn(|| -> io::Result<Vec<u8>> { panic!("stdout panic") });
+        let stderr_joined = Arc::clone(&joined);
+        let stderr = thread::spawn(move || {
+            stderr_joined.store(true, Ordering::Release);
+            Ok(Vec::new())
+        });
+
+        assert_eq!(
+            join_readers(Some(stdout), Some(stderr)).unwrap_err().kind(),
+            io::ErrorKind::Other
+        );
+        assert!(joined.load(Ordering::Acquire));
     }
 }

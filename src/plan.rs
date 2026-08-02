@@ -2,6 +2,7 @@
 
 use std::ffi::OsStr;
 use std::io;
+use std::marker::PhantomData;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
@@ -9,10 +10,22 @@ use crate::command::{Arg, Command, EnvOp, EnvValue};
 use crate::handles::Stdio;
 use crate::options::{CreationFlags, SpawnOptions};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SpawnMode {
-    Running,
-    Suspended,
+#[derive(Debug)]
+pub(crate) struct Running;
+
+#[derive(Debug)]
+pub(crate) struct Suspended;
+
+pub(crate) trait SpawnState {
+    const SUSPENDED: bool;
+}
+
+impl SpawnState for Running {
+    const SUSPENDED: bool = false;
+}
+
+impl SpawnState for Suspended {
+    const SUSPENDED: bool = true;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,32 +40,58 @@ pub(crate) enum StdioSpec<'a> {
     Inherit,
     Null,
     Piped,
-    Invalid,
 }
 
 #[derive(Debug)]
-pub(crate) struct SpawnPlan<'command, 'options> {
-    pub(crate) command: &'command Command,
-    pub(crate) options: SpawnOptions<'options>,
-    pub(crate) mode: SpawnMode,
-    pub(crate) stdin: StdioSpec<'command>,
-    pub(crate) stdout: StdioSpec<'command>,
-    pub(crate) stderr: StdioSpec<'command>,
+pub(crate) struct StandardHandles<T> {
+    pub(crate) stdin: T,
+    pub(crate) stdout: T,
+    pub(crate) stderr: T,
 }
 
-impl<'command, 'options> SpawnPlan<'command, 'options> {
-    pub(crate) fn new(
+#[derive(Debug)]
+pub(crate) struct SpawnPlan<'command, 'options, M> {
+    pub(crate) command: &'command Command,
+    pub(crate) options: SpawnOptions<'options>,
+    pub(crate) stdio: Option<StandardHandles<StdioSpec<'command>>>,
+    state: PhantomData<M>,
+}
+
+impl<'command, 'options> SpawnPlan<'command, 'options, Running> {
+    pub(crate) fn new_running(
         command: &'command Command,
         options: SpawnOptions<'options>,
-        mode: SpawnMode,
+        io_mode: IoMode,
+    ) -> io::Result<Self> {
+        Self::build(command, options, io_mode)
+    }
+}
+
+impl<'command, 'options> SpawnPlan<'command, 'options, Suspended> {
+    pub(crate) fn new_suspended(
+        command: &'command Command,
+        options: SpawnOptions<'options>,
+        io_mode: IoMode,
+    ) -> io::Result<Self> {
+        Self::build(command, options, io_mode)
+    }
+}
+
+impl<'command, 'options, M> SpawnPlan<'command, 'options, M> {
+    fn build(
+        command: &'command Command,
+        options: SpawnOptions<'options>,
         io_mode: IoMode,
     ) -> io::Result<Self> {
         validate_command(command)?;
-        validate_creation_flags(options.creation_flags, options.pseudoconsole.is_some())?;
+        validate_creation_flags(
+            options.creation_flags,
+            options.pseudoconsole_raw().is_some(),
+        )?;
 
         let explicit_stdio =
             command.stdin.is_some() || command.stdout.is_some() || command.stderr.is_some();
-        if options.pseudoconsole.is_some() {
+        if options.pseudoconsole_raw().is_some() {
             if explicit_stdio {
                 return Err(invalid(
                     "a pseudoconsole conflicts with explicit standard I/O",
@@ -65,37 +104,36 @@ impl<'command, 'options> SpawnPlan<'command, 'options> {
             }
         }
         if options.parent.is_some()
-            && options.pseudoconsole.is_none()
+            && options.pseudoconsole_raw().is_none()
             && (command.stdin.is_none() || command.stdout.is_none() || command.stderr.is_none())
         {
             return Err(invalid(
                 "an alternate parent requires all three standard streams to be explicit",
             ));
         }
-        let (stdin, stdout, stderr) = if options.pseudoconsole.is_some() {
-            (StdioSpec::Invalid, StdioSpec::Invalid, StdioSpec::Invalid)
+        let stdio = if options.pseudoconsole_raw().is_some() {
+            None
         } else {
-            match io_mode {
-                IoMode::Spawn => (
-                    configured_or(command.stdin.as_ref(), StdioSpec::Inherit),
-                    configured_or(command.stdout.as_ref(), StdioSpec::Inherit),
-                    configured_or(command.stderr.as_ref(), StdioSpec::Inherit),
-                ),
-                IoMode::Output => (
-                    configured_or(command.stdin.as_ref(), StdioSpec::Null),
-                    configured_or(command.stdout.as_ref(), StdioSpec::Piped),
-                    configured_or(command.stderr.as_ref(), StdioSpec::Piped),
-                ),
-            }
+            let handles = match io_mode {
+                IoMode::Spawn => StandardHandles {
+                    stdin: configured_or(command.stdin.as_ref(), StdioSpec::Inherit),
+                    stdout: configured_or(command.stdout.as_ref(), StdioSpec::Inherit),
+                    stderr: configured_or(command.stderr.as_ref(), StdioSpec::Inherit),
+                },
+                IoMode::Output => StandardHandles {
+                    stdin: configured_or(command.stdin.as_ref(), StdioSpec::Null),
+                    stdout: configured_or(command.stdout.as_ref(), StdioSpec::Piped),
+                    stderr: configured_or(command.stderr.as_ref(), StdioSpec::Piped),
+                },
+            };
+            Some(handles)
         };
 
         Ok(Self {
             command,
             options,
-            mode,
-            stdin,
-            stdout,
-            stderr,
+            stdio,
+            state: PhantomData,
         })
     }
 }
@@ -221,26 +259,15 @@ mod tests {
     fn rejects_batch_and_empty_programs() {
         let empty = Command::new("");
         assert_eq!(
-            SpawnPlan::new(
-                &empty,
-                SpawnOptions::new(),
-                SpawnMode::Running,
-                IoMode::Spawn,
-            )
-            .unwrap_err()
-            .kind(),
+            SpawnPlan::new_running(&empty, SpawnOptions::new(), IoMode::Spawn,)
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidInput
         );
 
         for script in ["thing.cmd", "THING.BAT"] {
             let command = Command::new(script);
-            assert!(SpawnPlan::new(
-                &command,
-                SpawnOptions::new(),
-                SpawnMode::Running,
-                IoMode::Spawn,
-            )
-            .is_err());
+            assert!(SpawnPlan::new_running(&command, SpawnOptions::new(), IoMode::Spawn,).is_err());
         }
     }
 
@@ -249,14 +276,14 @@ mod tests {
         let command = Command::new("cmd.exe");
         let options = SpawnOptions::new()
             .creation_flags(CreationFlags::DETACHED_PROCESS | CreationFlags::NEW_CONSOLE);
-        assert!(SpawnPlan::new(&command, options, SpawnMode::Running, IoMode::Spawn).is_err());
+        assert!(SpawnPlan::new_running(&command, options, IoMode::Spawn).is_err());
 
         for flags in [
             CreationFlags::NO_WINDOW | CreationFlags::DETACHED_PROCESS,
             CreationFlags::NO_WINDOW | CreationFlags::NEW_CONSOLE,
         ] {
             let options = SpawnOptions::new().creation_flags(flags);
-            assert!(SpawnPlan::new(&command, options, SpawnMode::Running, IoMode::Spawn).is_err());
+            assert!(SpawnPlan::new_running(&command, options, IoMode::Spawn).is_err());
         }
     }
 
@@ -293,14 +320,9 @@ mod tests {
 
         for command in cases {
             assert_eq!(
-                SpawnPlan::new(
-                    &command,
-                    SpawnOptions::new(),
-                    SpawnMode::Running,
-                    IoMode::Spawn,
-                )
-                .unwrap_err()
-                .kind(),
+                SpawnPlan::new_running(&command, SpawnOptions::new(), IoMode::Spawn,)
+                    .unwrap_err()
+                    .kind(),
                 io::ErrorKind::InvalidInput
             );
         }
@@ -312,9 +334,7 @@ mod tests {
             CreationFlags::NO_WINDOW,
         ] {
             let options = SpawnOptions::new().creation_flags(flags);
-            assert!(
-                SpawnPlan::new(&valid_command, options, SpawnMode::Running, IoMode::Spawn,).is_ok()
-            );
+            assert!(SpawnPlan::new_running(&valid_command, options, IoMode::Spawn).is_ok());
         }
     }
 
@@ -323,66 +343,73 @@ mod tests {
         let pseudoconsole = InvalidPseudoConsole;
         let mut explicit = Command::new("cmd.exe");
         explicit.stdin(Stdio::null());
-        assert!(SpawnPlan::new(
+        assert!(SpawnPlan::new_running(
             &explicit,
             SpawnOptions::new().pseudoconsole(&pseudoconsole),
-            SpawnMode::Running,
             IoMode::Spawn,
         )
         .is_err());
 
         let plain = Command::new("cmd.exe");
-        assert!(SpawnPlan::new(
+        assert!(SpawnPlan::new_running(
             &plain,
             SpawnOptions::new().pseudoconsole(&pseudoconsole),
-            SpawnMode::Running,
             IoMode::Output,
         )
         .is_err());
-        assert!(SpawnPlan::new(
+        assert!(SpawnPlan::new_running(
             &plain,
             SpawnOptions::new()
                 .pseudoconsole(&pseudoconsole)
                 .creation_flags(CreationFlags::NEW_CONSOLE),
-            SpawnMode::Running,
             IoMode::Spawn,
         )
         .is_err());
 
         let parent = ParentProcess::open(std::process::id()).unwrap();
-        assert!(SpawnPlan::new(
+        assert!(SpawnPlan::new_running(
             &plain,
             SpawnOptions::new().parent_process(&parent),
-            SpawnMode::Running,
             IoMode::Spawn,
         )
         .is_err());
+
+        for missing in 0..3 {
+            let mut command = Command::new("cmd.exe");
+            if missing != 0 {
+                command.stdin(Stdio::null());
+            }
+            if missing != 1 {
+                command.stdout(Stdio::null());
+            }
+            if missing != 2 {
+                command.stderr(Stdio::null());
+            }
+            assert!(SpawnPlan::new_running(
+                &command,
+                SpawnOptions::new().parent_process(&parent),
+                IoMode::Spawn,
+            )
+            .is_err());
+        }
     }
 
     #[test]
     fn successful_plans_choose_the_expected_stdio_modes() {
         let command = Command::new("cmd.exe");
-        let output = SpawnPlan::new(
-            &command,
-            SpawnOptions::new(),
-            SpawnMode::Running,
-            IoMode::Output,
-        )
-        .unwrap();
-        assert!(matches!(output.stdin, StdioSpec::Null));
-        assert!(matches!(output.stdout, StdioSpec::Piped));
-        assert!(matches!(output.stderr, StdioSpec::Piped));
+        let output = SpawnPlan::new_running(&command, SpawnOptions::new(), IoMode::Output).unwrap();
+        let output_stdio = output.stdio.unwrap();
+        assert!(matches!(output_stdio.stdin, StdioSpec::Null));
+        assert!(matches!(output_stdio.stdout, StdioSpec::Piped));
+        assert!(matches!(output_stdio.stderr, StdioSpec::Piped));
 
         let pseudoconsole = InvalidPseudoConsole;
-        let pcon = SpawnPlan::new(
+        let pcon = SpawnPlan::new_suspended(
             &command,
             SpawnOptions::new().pseudoconsole(&pseudoconsole),
-            SpawnMode::Suspended,
             IoMode::Spawn,
         )
         .unwrap();
-        assert!(matches!(pcon.stdin, StdioSpec::Invalid));
-        assert!(matches!(pcon.stdout, StdioSpec::Invalid));
-        assert!(matches!(pcon.stderr, StdioSpec::Invalid));
+        assert!(pcon.stdio.is_none());
     }
 }

@@ -79,11 +79,14 @@ pipes close and when terminal EOF occurs.
 - [`Child::wait_with_output`] drains stdout and stderr concurrently. With
   `KillTree`, it terminates remaining descendants after the root exits before
   joining the readers. This guarantees pipe EOF even when a grandchild
-  inherited a writer.
+  inherited a writer. Both reader threads are joined even when one reader
+  fails or panics.
 - Dropping [`SuspendedChild`] before [`SuspendedChild::resume`] terminates the
   suspended process. Its ID, process handle, and primary-thread handle are
   available before resume. `resume(self)` is consuming, so a second transition
-  is unrepresentable.
+  is unrepresentable. The transition requires the primary thread's previous
+  suspend count to be exactly one; external changes are rejected and rolled
+  back.
 
 # Transaction and security boundary
 
@@ -91,6 +94,10 @@ Process creation uses a validation plan and an owning transaction. The
 transaction owns pipes, temporary duplicates, attributes, Jobs, and
 process/thread handles. Success transfers durable resources to [`Child`] or
 [`SuspendedChild`]; errors roll back the rest.
+
+The private validation plan and transaction carry running or suspended marker
+types. Their state-specific commits make a mismatched internal transition
+unrepresentable.
 
 This crate is not a sandbox, cross-platform process facade, async runtime, or
 process supervisor. Tokens, ACLs, `AppContainer`, LPAC, capability SIDs, and

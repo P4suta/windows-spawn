@@ -18,9 +18,15 @@ is public so terminal libraries can implement the bridge.
 ConPTY creation, pipes, waits, Tokio integration, and lifecycle. windows-spawn
 owns command lowering, attributes, Jobs, and `CreateProcessW`.
 
+The builder snapshots the `HPCON` numeric value and keeps only a lifetime
+marker, so the stored options do not require dynamic dispatch. During process
+creation ConPTY has no ordinary standard-handle set: the zero-initialized
+startup fields remain zero and `STARTF_USESTDHANDLES` is not set, matching the
+Microsoft ConPTY creation sequence.
+
 ## Consequences
 
 - Ordinary users pass a safe borrow and do not construct raw `HPCON` values.
 - windows-spawn does not depend on a terminal library.
-- Pseudoconsole use conflicts with explicit standard streams and creates the
-  process with invalid ordinary standard handles, as required by ConPTY.
+- Pseudoconsole use conflicts with explicit standard streams and leaves the
+  ordinary startup handles unused.

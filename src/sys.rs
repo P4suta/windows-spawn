@@ -235,8 +235,14 @@ pub(crate) fn create_pipe(parent_reads: bool) -> io::Result<Pipe> {
     if unsafe { CreatePipe(&mut read, &mut write, ptr::null::<SECURITY_ATTRIBUTES>(), 0) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    let read = owned(read)?;
-    let write = owned(write)?;
+    // SAFETY: successful CreatePipe guarantees two valid, distinct handles;
+    // ownership of both is transferred together before either can be lost.
+    let (read, write) = unsafe {
+        (
+            OwnedHandle::from_raw_handle(read as RawHandle),
+            OwnedHandle::from_raw_handle(write as RawHandle),
+        )
+    };
     if parent_reads {
         Ok(Pipe {
             parent: read,
@@ -334,7 +340,6 @@ pub(crate) fn terminate_job(job: BorrowedHandle<'_>, exit_code: u32) -> io::Resu
 
 pub(crate) struct AttributeList {
     storage: Box<[usize]>,
-    pointer: LPPROC_THREAD_ATTRIBUTE_LIST,
 }
 
 impl AttributeList {
@@ -369,7 +374,7 @@ impl AttributeList {
         if unsafe { InitializeProcThreadAttributeList(pointer, count, 0, &mut actual) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { storage, pointer })
+        Ok(Self { storage })
     }
 
     pub(crate) fn set_handle_list(&mut self, handles: &[isize]) -> io::Result<()> {
@@ -420,7 +425,7 @@ impl AttributeList {
         // every backing allocation stable through CreateProcessW.
         if unsafe {
             UpdateProcThreadAttribute(
-                self.pointer,
+                self.pointer(),
                 0,
                 attribute,
                 value,
@@ -437,7 +442,7 @@ impl AttributeList {
     }
 
     fn pointer(&self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
-        self.pointer
+        self.storage.as_ptr().cast_mut().cast()
     }
 }
 
@@ -446,9 +451,15 @@ impl Drop for AttributeList {
         #[cfg(test)]
         ATTRIBUTE_LIST_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // SAFETY: initialization succeeded once and this is its sole owner.
-        unsafe { DeleteProcThreadAttributeList(self.pointer) };
-        let _ = self.storage.len();
+        unsafe { DeleteProcThreadAttributeList(self.pointer()) };
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct StandardHandles {
+    pub(crate) stdin: isize,
+    pub(crate) stdout: isize,
+    pub(crate) stderr: isize,
 }
 
 pub(crate) struct ProcessRequest<'a> {
@@ -456,9 +467,7 @@ pub(crate) struct ProcessRequest<'a> {
     pub(crate) command_line: &'a mut [u16],
     pub(crate) environment: Option<&'a [u16]>,
     pub(crate) current_dir: Option<&'a [u16]>,
-    pub(crate) stdin: isize,
-    pub(crate) stdout: isize,
-    pub(crate) stderr: isize,
+    pub(crate) stdio: Option<StandardHandles>,
     pub(crate) inherit_handles: bool,
     pub(crate) creation_flags: u32,
     pub(crate) suspended: bool,
@@ -479,10 +488,7 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
         u32::try_from(size_of::<windows_sys::Win32::System::Threading::STARTUPINFOW>())
             .expect("startup structure size fits u32")
     };
-    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    startup.StartupInfo.hStdInput = request.stdin as HANDLE;
-    startup.StartupInfo.hStdOutput = request.stdout as HANDLE;
-    startup.StartupInfo.hStdError = request.stderr as HANDLE;
+    set_standard_handles(&mut startup, request.stdio);
     startup.lpAttributeList = request
         .attributes
         .map_or(ptr::null_mut(), AttributeList::pointer);
@@ -521,11 +527,28 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
         return Err(io::Error::last_os_error());
     }
 
+    // SAFETY: successful CreateProcessW guarantees valid process and primary
+    // thread handles. Adopt both in one step so no success-only handle can leak.
+    let (process, thread) = unsafe {
+        (
+            OwnedHandle::from_raw_handle(information.hProcess as RawHandle),
+            OwnedHandle::from_raw_handle(information.hThread as RawHandle),
+        )
+    };
     Ok(CreatedProcess {
-        process: owned(information.hProcess)?,
-        thread: owned(information.hThread)?,
+        process,
+        thread,
         pid: information.dwProcessId,
     })
+}
+
+fn set_standard_handles(startup: &mut STARTUPINFOEXW, handles: Option<StandardHandles>) {
+    if let Some(handles) = handles {
+        startup.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdInput = handles.stdin as HANDLE;
+        startup.StartupInfo.hStdOutput = handles.stdout as HANDLE;
+        startup.StartupInfo.hStdError = handles.stderr as HANDLE;
+    }
 }
 
 pub(crate) fn wait_process(process: BorrowedHandle<'_>) -> io::Result<()> {
@@ -584,12 +607,13 @@ pub(crate) fn terminate_process(process: BorrowedHandle<'_>, exit_code: u32) -> 
     bool_result(unsafe { TerminateProcess(raw(process), exit_code) })
 }
 
-pub(crate) fn resume_thread(thread: BorrowedHandle<'_>) -> io::Result<()> {
+pub(crate) fn resume_thread(thread: BorrowedHandle<'_>) -> io::Result<u32> {
     // SAFETY: the thread handle remains valid for the call.
-    if unsafe { ResumeThread(raw(thread)) } == u32::MAX {
+    let previous = unsafe { ResumeThread(raw(thread)) };
+    if previous == u32::MAX {
         Err(io::Error::last_os_error())
     } else {
-        Ok(())
+        Ok(previous)
     }
 }
 
@@ -894,6 +918,30 @@ mod tests {
         assert!(input.is_some() || output.is_some() || error.is_some());
         assert_eq!(INVALID_RAW_HANDLE, -1);
         Ok(())
+    }
+
+    #[test]
+    fn startup_info_uses_standard_handles_only_when_supplied() {
+        let mut conpty = STARTUPINFOEXW::default();
+        set_standard_handles(&mut conpty, None);
+        assert_eq!(conpty.StartupInfo.dwFlags & STARTF_USESTDHANDLES, 0);
+        assert!(conpty.StartupInfo.hStdInput.is_null());
+        assert!(conpty.StartupInfo.hStdOutput.is_null());
+        assert!(conpty.StartupInfo.hStdError.is_null());
+
+        let mut ordinary = STARTUPINFOEXW::default();
+        set_standard_handles(
+            &mut ordinary,
+            Some(StandardHandles {
+                stdin: 1,
+                stdout: 2,
+                stderr: 3,
+            }),
+        );
+        assert_ne!(ordinary.StartupInfo.dwFlags & STARTF_USESTDHANDLES, 0);
+        assert_eq!(ordinary.StartupInfo.hStdInput as isize, 1);
+        assert_eq!(ordinary.StartupInfo.hStdOutput as isize, 2);
+        assert_eq!(ordinary.StartupInfo.hStdError as isize, 3);
     }
 
     #[test]
