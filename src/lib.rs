@@ -6,7 +6,6 @@ mod child;
 #[cfg(windows)]
 mod command;
 #[cfg(windows)]
-#[allow(unsafe_code)]
 mod handles;
 #[cfg(windows)]
 mod mitigation;

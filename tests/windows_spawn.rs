@@ -24,13 +24,14 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_TYPE_UNKNOWN,
 };
 use windows_sys::Win32::System::Console::{
-    ClosePseudoConsole, CreatePseudoConsole, GetConsoleMode, GetStdHandle, COORD, HPCON,
+    ClosePseudoConsole, CreatePseudoConsole, GetConsoleCP, GetStdHandle, COORD, HPCON,
     STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
-use windows_sys::Win32::System::Pipes::CreatePipe;
+use windows_sys::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetProcessHandleCount, GetProcessId, GetProcessMitigationPolicy,
-    GetThreadId, ProcessExtensionPointDisablePolicy, TerminateProcess, WaitForSingleObject,
+    GetThreadId, ProcessExtensionPointDisablePolicy, SuspendThread, TerminateProcess,
+    WaitForSingleObject,
 };
 
 fn cmd(script: &str) -> Command {
@@ -211,6 +212,26 @@ fn suspended_child_resumes_once_into_normal_state() -> io::Result<()> {
         let _ = child.wait();
     }
     assert_eq!(status.and_then(|status| status.code()), Some(19));
+    Ok(())
+}
+
+#[test]
+fn resume_rejects_an_externally_changed_suspend_count() -> io::Result<()> {
+    let mut command = cmd("ping -n 10 127.0.0.1 >nul");
+    let suspended = command.spawn_suspended()?;
+    let mut process = ProcessExitGuard::new(local_duplicate(&suspended, false)?);
+    // SAFETY: the primary thread handle remains owned by SuspendedChild and
+    // has THREAD_SUSPEND_RESUME access from CreateProcessW.
+    assert_eq!(
+        unsafe { SuspendThread(suspended.primary_thread_handle().as_raw_handle()) },
+        1
+    );
+
+    assert_eq!(
+        suspended.resume().unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert!(process.wait(Duration::from_secs(5))?);
     Ok(())
 }
 
@@ -639,6 +660,62 @@ impl TestPseudoConsole {
             output_reader: Some(output_reader),
         })
     }
+
+    fn wait_for_output(&self, expected: &[u8]) -> io::Result<bool> {
+        let output = self
+            .output_reader
+            .as_ref()
+            .expect("a live pseudoconsole retains its output reader");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut received = Vec::new();
+        loop {
+            let mut available = 0_u32;
+            // SAFETY: the pipe handle remains owned by self, available is
+            // writable, and the unused optional output pointers are null.
+            if unsafe {
+                PeekNamedPipe(
+                    output.as_raw_handle(),
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    &mut available,
+                    std::ptr::null_mut(),
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if available != 0 {
+                let mut buffer = vec![0_u8; available as usize];
+                let mut read = 0_u32;
+                // SAFETY: buffer is writable for its length, read is writable,
+                // and the owned synchronous pipe handle remains valid.
+                if unsafe {
+                    ReadFile(
+                        output.as_raw_handle(),
+                        buffer.as_mut_ptr(),
+                        available,
+                        &mut read,
+                        std::ptr::null_mut(),
+                    )
+                } == 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                received.extend_from_slice(&buffer[..read as usize]);
+                if received
+                    .windows(expected.len())
+                    .any(|window| window == expected)
+                {
+                    return Ok(true);
+                }
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 impl Drop for TestPseudoConsole {
@@ -697,6 +774,7 @@ fn pseudoconsole_attribute_connects_the_child_console() -> io::Result<()> {
         wait_bounded(&mut child)?.expect("ConPTY child must terminate after kill")
     };
     assert!(status.success());
+    assert!(pseudoconsole.wait_for_output(b"windows-spawn-pcon-attached")?);
     Ok(())
 }
 
@@ -705,12 +783,12 @@ fn pseudoconsole_child_probe() {
     if std::env::var_os("WINDOWS_SPAWN_PCON_PROBE").is_none() {
         return;
     }
-    // SAFETY: the process owns its standard-output slot and mode is writable.
-    let output = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
-    let mut mode = 0_u32;
-    assert!(!output.is_null() && output != INVALID_HANDLE_VALUE);
-    // SAFETY: a valid standard-output handle and DWORD output are supplied.
-    assert_ne!(unsafe { GetConsoleMode(output, &mut mode) }, 0);
+    // SAFETY: GetConsoleCP has no pointer preconditions. A nonzero code page
+    // proves this process was attached to a console even though ConPTY startup
+    // intentionally leaves all ordinary standard-handle slots zero.
+    assert_ne!(unsafe { GetConsoleCP() }, 0);
+    let mut output = File::options().write(true).open("CONOUT$").unwrap();
+    output.write_all(b"windows-spawn-pcon-attached").unwrap();
 }
 
 #[test]
