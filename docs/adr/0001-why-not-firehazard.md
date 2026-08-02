@@ -4,30 +4,20 @@ Status: accepted (2026-08-01)
 
 ## Context
 
-`firehazard` already solves this problem, and solves it well: a safe RAII
-`ThreadAttributeList` builder covering 20+ `PROC_THREAD_ATTRIBUTE_*` values,
-including every attribute `windows-spawn` targets. Writing a new crate in the
-presence of working prior art needs a reason better than "I want to".
-
-Three facts shape the decision. It has been published as version `0.0.0` with
-no crates.io release since September 2022 (5,441 downloads total). Its scope is
-a sandboxing research toolkit — tokens, ACLs, AppContainers, debugging — of
-which process creation is one corner. And the surrounding ecosystem has not
-picked it up: `process-wrap` (9.9M downloads) and `win32job` (1.1M) handle job
-objects without ever touching an attribute list, and applications keep writing
-their own (854 GitHub hits for `InitializeProcThreadAttributeList`).
+`firehazard` provides a safe RAII `ThreadAttributeList` builder for the
+attributes targeted here. Its published version remains `0.0.0`, its broader
+sandboxing scope includes tokens, ACLs, AppContainers, and debugging, and Job
+libraries do not provide equivalent process-attribute integration.
 
 ## Decision
 
-Write a new crate scoped to process creation only, and treat release discipline
-as a feature rather than an afterthought.
+Build a crate limited to process creation, with stable releases and release
+gates.
 
 ## Consequences
 
-- Duplicated effort against `firehazard`, knowingly. If `firehazard` ships a
-  stable 0.1 with a release cadence, `windows-spawn` has lost its reason to exist and
-  the README should say so.
-- The narrow scope is a constraint, not just a description: token and ACL
-  features get rejected, and users are pointed at `rappct`/`firehazard`.
-- `windows-spawn` must be adoptable *next to* the incumbents, not instead of them —
-  hence adopting foreign job handles rather than insisting on its own (ADR 0004).
+- This duplicates part of `firehazard`. Reconsider the crate if `firehazard`
+  publishes a stable process-creation API with regular releases.
+- Reject token and ACL features; direct users to `rappct` or `firehazard`.
+- Interoperate with existing Job libraries by adopting foreign Job handles
+  (ADR 0004).

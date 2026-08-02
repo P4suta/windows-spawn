@@ -17,9 +17,9 @@ path = [
   "examples/**",
   "justfile",
   "public-api/**",
-  "scripts/**",
   "src/**",
   "tests/**",
+  "xtask/**",
 ]
 precedence = "override"
 SPDX-FileCopyrightText = "2026 Yasunobu Sakashita"

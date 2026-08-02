@@ -4,35 +4,33 @@ Status: accepted (2026-08-02)
 
 ## Context
 
-`PROC_THREAD_ATTRIBUTE_HANDLE_LIST` limits what the target child inherits, but
-Windows requires listed handles to be inheritable while `CreateProcessW` runs.
-Changing the source handle's flag would mutate caller-owned state. A temporary
-inheritable duplicate avoids that mutation, but another concurrent broad
-inheritance spawn in the same process can still inherit the duplicate.
+`PROC_THREAD_ATTRIBUTE_HANDLE_LIST` limits target-child inheritance, but every
+listed handle must be inheritable during `CreateProcessW`. Mutating the source
+handle would change caller-owned state. A temporary inheritable duplicate
+avoids that mutation but can still leak to a concurrent broad-inheritance spawn
+in the same source process.
 
-A selected parent process introduces another handle table. Standard streams and
-high-level `arg_handle`/`env_handle` values must be duplicated into that table
-before their numeric values have meaning.
+An alternate parent has a different handle table. Standard streams and
+`arg_handle`/`env_handle` values require duplication into that table before
+their child-visible numeric values are known.
 
 ## Decision
 
-windows-spawn makes inheritable local duplicates immediately before spawn and keeps
-their lifetime as short as possible. It documents, but cannot eliminate, the
-reverse race. The 0.1 series does not introduce a helper process because doing
-so changes parent identity and failure semantics.
+Create inheritable local duplicates immediately before spawn and close them
+when process creation returns. Document the process-wide reverse race. The 0.1
+series does not use a helper process because it would change parent identity
+and failure semantics.
 
-High-level handle arguments and environment values are privately duplicated at
-configuration time, then remotely duplicated and lowered only for the selected
-parent. Remote temporaries are reclaimed with `DuplicateHandle` close-source
-semantics on both success and failure. Arbitrary pre-inheritable handles are not
-accepted by the public API: handles enter a child only as standard I/O or
-through the argument/environment handoff protocol.
+Duplicate configured handle arguments and environment values privately, then
+duplicate and lower them for the selected parent during each spawn. Reclaim
+remote temporaries with `DuplicateHandle` close-source semantics on success and
+failure. Accept handles only through standard I/O or the argument/environment
+handoff protocol.
 
 ## Consequences
 
-- Source handles are never made inheritable in place.
-- The public API cannot keep an arbitrary inheritable duplicate alive between
-  spawn calls.
-- Target-child over-inheritance is prevented; process-wide reverse leakage must
-  still be considered by applications that concurrently use broad inheritance.
-- Ownership and cleanup of both local and remote duplicates are deterministic.
+- Never make source handles inheritable in place.
+- Do not retain arbitrary inheritable duplicates between spawns.
+- Prevent target-child over-inheritance; callers must avoid concurrent broad
+  inheritance when transferred handles are sensitive.
+- Give local and remote duplicates one deterministic cleanup owner.

@@ -175,19 +175,16 @@ pub enum BlockNonCetBinaries {
 
 /// A complete SDK 10.0.22621 process-creation mitigation policy.
 ///
-/// Setters replace exactly one field. Reserved field values cannot be
-/// represented, and combining independently-built raw policy words is
-/// intentionally unsupported.
+/// Setters replace one field. Reserved values and combined raw policy words
+/// cannot be represented.
 ///
 /// # Runtime support
 ///
 /// This type mirrors the policy fields in Windows SDK 10.0.22621; it is not a
 /// claim that every field works on every supported Windows installation.
 /// Availability varies by individual policy, Windows release, processor
-/// architecture, hardware, and child executable. windows-spawn deliberately does
-/// not guess or silently weaken a requested policy. If the host cannot apply
-/// it, the spawn operation returns the operating-system error from process
-/// creation.
+/// architecture, hardware, and child executable. windows-spawn does not weaken
+/// a requested policy. Unsupported policies return the process-creation error.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct MitigationPolicy {
     words: [u64; 2],

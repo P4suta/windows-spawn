@@ -18,8 +18,8 @@ pub enum DropPolicy {
 
 /// Safe, named `CreateProcessW` creation flags.
 ///
-/// Unicode-environment, extended-startup-info, and suspended flags are owned
-/// by windows-spawn and deliberately absent. There is no raw-bits constructor.
+/// Unicode-environment, extended-startup-info, and suspended flags are set
+/// internally. There is no raw-bits constructor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct CreationFlags(u32);
 

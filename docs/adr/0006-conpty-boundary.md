@@ -4,29 +4,23 @@ Status: accepted (2026-08-02)
 
 ## Context
 
-windows-spawn must attach an existing pseudoconsole without depending on one
-particular terminal library or taking ownership of its `HPCON`. Exposing a raw
-safe constructor would let callers supply invalid or prematurely closed values.
+The crate must attach an existing pseudoconsole without depending on a terminal
+library or owning its `HPCON`. A safe raw constructor could accept invalid or
+prematurely closed values.
 
 ## Decision
 
-The boundary is the unsafe trait `AsPseudoConsole`. Implementors guarantee that
-the returned pseudoconsole value remains valid for the borrow and that ownership
-is not transferred. `conpty-oxide::Pcon` implements the trait once; its users
-pass a normal borrow through `SpawnOptions::pseudoconsole`.
+Use the unsafe `AsPseudoConsole` trait. Implementors guarantee a stable,
+nonzero, live `HPCON` for the full borrow and retain ownership. The raw method
+is public so terminal libraries can implement the bridge.
 
-`AsPseudoConsole::raw_pseudoconsole` is visible in rustdoc so external terminal
-libraries can implement the bridge without relying on hidden API. Its safety
-contract requires a stable, nonzero, live `HPCON` for the complete borrow.
-
-The dependency is one-way: conpty-oxide depends on windows-spawn. It retains ConPTY
-creation, its pipes, registered waits, Tokio integration, and lifecycle API;
-windows-spawn owns command lowering, attributes, Jobs, and `CreateProcessW`.
+`conpty-oxide` depends on windows-spawn and implements the trait. It owns
+ConPTY creation, pipes, waits, Tokio integration, and lifecycle. windows-spawn
+owns command lowering, attributes, Jobs, and `CreateProcessW`.
 
 ## Consequences
 
-- Ordinary users do not construct raw HPCON values or write unsafe code.
-- windows-spawn has no dependency on or knowledge of conpty-oxide.
-- A pseudoconsole conflicts with explicit standard streams during planning,
-  and the process starts with invalid ordinary standard handles as required by
-  ConPTY.
+- Ordinary users pass a safe borrow and do not construct raw `HPCON` values.
+- windows-spawn does not depend on a terminal library.
+- Pseudoconsole use conflicts with explicit standard streams and creates the
+  process with invalid ordinary standard handles, as required by ConPTY.

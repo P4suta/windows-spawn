@@ -1,15 +1,13 @@
 # Release procedure
 
-Releases are deliberately manual. Pushing a branch or tag never starts the
-release workflow. The workflow accepts an existing `v`-prefixed SemVer tag,
-validates that its version matches `Cargo.toml` and that it resolves to the
-checked-out commit, then waits for approval from GitHub's protected `release`
+Pushing a branch or tag does not start a release. The manually dispatched
+workflow accepts an existing `v`-prefixed SemVer tag, verifies its Cargo
+version and commit, then waits for approval from the protected `release`
 environment.
 
 ## Local candidate
 
-Install stable Rust, `just` 1.57.0, `cargo-cyclonedx` 0.5.9, and REUSE 6.2.0.
-The developer-facing commands are:
+Install stable Rust, `just` 1.57.0, `cargo-cyclonedx` 0.5.9, and REUSE 6.2.0:
 
 ```powershell
 just reuse
@@ -26,9 +24,9 @@ SBOM, validates both SBOMs, and writes `target/release-candidate/SHA256SUMS`.
 
 ## Repository setup
 
-Before adding any publishing credential, create a GitHub environment named
-`release` and configure at least one required reviewer. Keep deployment branch
-rules as restrictive as the repository's release policy permits.
+Create a GitHub environment named `release` with at least one required reviewer
+before adding a publishing credential. Apply the repository's release branch
+restrictions.
 
 The workflow needs the repository's default `GITHUB_TOKEN` permissions only;
 its job requests `contents: write`, `id-token: write`, `attestations: write`,
@@ -48,9 +46,9 @@ For the first publication only:
 4. Configure the crate's crates.io trusted publisher for this repository,
    `.github/workflows/release.yml`, and the `release` environment.
 
-For every later publication, leave `CRATES_IO_BOOTSTRAP_TOKEN` absent. The
-workflow then obtains a short-lived OIDC token with the official crates.io
-authentication action and revokes it automatically when the job completes.
+For later publications, leave `CRATES_IO_BOOTSTRAP_TOKEN` absent. The workflow
+uses the crates.io authentication action to obtain and revoke a short-lived
+OIDC token.
 
 ## Publishing and verification
 
@@ -67,7 +65,6 @@ provenance with:
 gh attestation verify .\windows-spawn-0.1.0.crate --repo P4suta/windows-spawn
 ```
 
-VEX is added only when there is a concrete vulnerability status to communicate.
-Separate GPG and Cosign signatures are intentionally omitted while they would
-not add an independently managed identity or policy beyond GitHub Artifact
-Attestations.
+Add VEX only for a concrete vulnerability status. GitHub Artifact Attestations
+provide the repository's signing identity and policy; no separate GPG or
+Cosign signatures are produced.

@@ -1,0 +1,17 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.75"
+publish = false
+
+[dependencies]
+semver = "1.0.28"
+serde_json = "1.0.151"
+sha2 = "0.10.9"
+
+[target.'cfg(windows)'.dependencies]
+windows-spawn = { path = ".." }
+
+[lints]
+workspace = true
