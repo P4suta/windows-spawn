@@ -1,40 +1,33 @@
-# 0004 — Job attachment: `JOB_LIST` attribute vs `AssignProcessToJobObject`
+# 0004 — Jobs are ordered process-creation capabilities
 
-Status: accepted (2026-08-01)
+Status: accepted (2026-08-02)
 
 ## Context
 
-There are two ways to put a new process into a job object.
+Post-creation `AssignProcessToJobObject` leaves a window in which the child is
+outside the Job. `PROC_THREAD_ATTRIBUTE_JOB_LIST` attaches Jobs as part of
+creation and accepts an ordered list from root to innermost.
 
-`AssignProcessToJobObject` after `CreateProcessW` is what `win32job` and
-`process-wrap` do, and it is the only option when the job is chosen after the
-fact. It has a window: between creation and assignment the child is outside the
-job, and even a `CREATE_SUSPENDED` child has already had the loader map its
-image. If the child was created inside another job by something else, or if it
-has already spawned, the assignment can fail outright.
-
-`PROC_THREAD_ATTRIBUTE_JOB_LIST` puts the process in the job as part of
-creation. There is no window at all. The cost is that the job must exist and be
-chosen before the spawn, and the attribute takes an array of job handles whose
-lifetime must span the `CreateProcessW` call (ADR 0003).
+Tree teardown is also a separate semantic choice. A boolean "kill on drop"
+would obscure whether it changes a caller-owned Job or creates library-owned
+state.
 
 ## Decision
 
-Support both, and make the attribute path the recommended one.
-`WindowsCommand::attach_to_job(&'a Job)` uses the attribute;
-`Job::assign(&Child)` is the post-hoc escape hatch.
-`kill_tree_on_drop()` is built on the attribute path plus
-`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, not on walking the process tree by PID —
-PID walking races against PID reuse and misses re-parented grandchildren.
+`SpawnOptions::job` may be called repeatedly and preserves root-to-inner order.
+`Job::assign` remains the explicit post-creation escape hatch. Job limit
+updates first query the existing extended limits and replace only the requested
+flag.
+
+`DropPolicy::KillTree` creates a private windows-spawn-owned Job and appends it as
+the innermost Job. `DropPolicy::Detach` is the default and matches std. A Child
+never shares raw ownership of a Job handle; it owns a duplicate when continued
+ownership is required.
 
 ## Consequences
 
-- `Job::from_handle(OwnedHandle)` adopts a job created by `win32job` or
-  `process-wrap`, so those crates keep owning the limit configuration and
-  `spawnkit` only contributes atomic attachment.
-- `spawnkit` deliberately exposes almost none of the job API: only creation,
-  adoption, `kill_on_close` and `assign`. CPU/IO rate control, completion ports
-  and notification limits stay out of scope (ADR 0001).
-- A child can be in a job via the attribute *and* be assigned to another later;
-  nested jobs are legal on Windows 8+, and the error cases are the caller's to
-  handle.
+- Atomic attachment is the normal route and multiple Jobs remain composable.
+- `wait_with_output` can terminate the private tree after root exit so inherited
+  pipe handles held by descendants cannot prevent EOF indefinitely.
+- Calling `Job::assign` after spawn is visibly weaker and may fail under host
+  Job restrictions.

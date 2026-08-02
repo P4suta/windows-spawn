@@ -1,35 +1,31 @@
-# 0002 — spawnkit owns its `CreateProcessW` call
+# 0002 — windows-spawn owns its `CreateProcessW` call
 
-Status: accepted (2026-08-01)
+Status: accepted (2026-08-02)
 
 ## Context
 
-The obvious cheaper design is to build the attribute list and then hand it to
-`std::process::Command`, inheriting std's argument quoting, environment block
-construction, stdio plumbing and `Child`.
-
-Stable std does not allow this. `std::os::windows::process::ProcThreadAttributeList`
-and `CommandExt::raw_attribute` are gated behind the unstable feature
-`windows_process_extensions_raw_attribute` (tracking issue rust-lang/rust#114854),
-open since 2023, with "Creating safe interface for setting attributes" still
-listed as an unresolved question. The stable surface — `creation_flags`,
-`raw_arg`, `async_pipes` — has no way to reach `STARTUPINFOEXW::lpAttributeList`.
-There is no escape hatch to inject one.
+Stable `std::process::Command` cannot receive a `STARTUPINFOEXW` attribute
+list. Its raw-attribute extension is nightly-only and unsafe. Handing a public
+attribute-list wrapper to callers would also split ownership of command-line
+lowering, standard streams, inheritance, process handles, and rollback across
+two APIs.
 
 ## Decision
 
-`spawnkit` calls `CreateProcessW` itself, and owns the command line, the
-environment block, the standard handles and the resulting process handle.
+windows-spawn owns the entire call. `Command` stores reusable intent, `SpawnPlan`
+performs pure validation and normalization, and `SpawnTransaction` acquires all
+temporary OS resources. The private `sys` layer is the only place that calls
+Win32.
+
+The public result uses `std::process::ExitStatus`, `std::process::Output`, and
+`std::io::Error`. `Child` is a distinct owning process type because stable std
+cannot adopt the process and pipe handles produced by this transaction.
 
 ## Consequences
 
-- We re-implement, and must test, the parts std already gets right:
-  `CommandLineToArgvW`-compatible quoting, the sorted NUL-separated environment
-  block, `NUL`/pipe stdio setup, and exit-code retrieval.
-- `Child` is our own type, not `std::process::Child`. It exposes `AsHandle` and
-  `into_raw_handle` so it can be handed to other crates.
-- If the std feature ever stabilises with a safe interface, this ADR should be
-  revisited — the layer might collapse into a thin `CommandExt` shim.
-- Owning the call is also what makes ADR 0003 possible: the attribute list and
-  the `CreateProcessW` invocation are in the same function, so one lifetime can
-  span both.
+- windows-spawn must test Windows argument quoting, environment ordering, executable
+  lookup, standard streams, output draining, and exit-code preservation.
+- Every process-creation failure has one rollback owner.
+- Raw Win32 flags, attribute lists, and `windows-sys` types stay private.
+- If std stabilizes a safe, sufficiently complete attribute interface, this
+  decision can be revisited without changing the high-level capability types.

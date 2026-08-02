@@ -1,218 +1,281 @@
-//! The spawn builder.
+//! Reusable process-launch intent.
 
 use std::ffi::{OsStr, OsString};
+use std::io;
+use std::os::windows::io::{AsHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
+use std::process::{ExitStatus, Output};
 
-use crate::attributes::{Job, ParentProcess, Pcon, RawHandleRef};
-use crate::child::Child;
-use crate::error::Result;
-use crate::mitigation::MitigationPolicy;
+use crate::child::{Child, SuspendedChild};
+use crate::handles::Stdio;
+use crate::options::SpawnOptions;
+use crate::plan::{IoMode, SpawnMode, SpawnPlan};
+use crate::sys;
+use crate::transaction::SpawnTransaction;
 
-/// What a child's standard handle should be connected to.
-///
-/// Note the interaction with
-/// [`inherit_handles`](WindowsCommand::inherit_handles): when a handle list is
-/// set, `Inherit` and `Handle` only work if those handles are *in the list*.
-/// Windows does not fall back — a standard handle missing from the list arrives
-/// in the child as an invalid handle, which is one of the classic
-/// `STARTUPINFOEX` bugs.
-#[derive(Clone, Copy, Debug, Default)]
-#[non_exhaustive]
-pub enum Stdio<'a> {
-    /// Pass the parent's corresponding standard handle through.
-    #[default]
-    Inherit,
-    /// Connect to `NUL`.
-    Null,
-    /// Create an anonymous pipe; the parent end is available from
-    /// [`Child::take_stdin`] and friends.
-    Piped,
-    /// Connect to a specific handle — a file, a pipe end, a socket.
-    Handle(RawHandleRef<'a>),
-}
-
-/// Builds a `CreateProcessW` call.
-///
-/// The lifetime `'a` is not decoration: it is the lifetime of every value the
-/// eventual `PROC_THREAD_ATTRIBUTE_LIST` will point at. A `WindowsCommand<'a>`
-/// therefore cannot outlive the handle slice, parent process, job or
-/// pseudoconsole it was configured with, and the compiler rejects the
-/// use-after-free that the C API happily performs.
-///
-/// The builder deliberately mirrors [`std::process::Command`] where the
-/// semantics match, so that moving a call site over is mechanical. It is not a
-/// drop-in replacement and does not try to be — see the non-goals in
-/// `README.md`.
-///
-/// ```ignore
-/// use spawnkit::{RawHandleRef, WindowsCommand};
-///
-/// let log = std::fs::File::create("child.log")?;
-/// let inherited = [RawHandleRef::borrow(&log)];
-///
-/// let mut child = WindowsCommand::new("cargo")
-///     .args(["build", "--release"])
-///     .inherit_handles(&inherited)
-///     .kill_tree_on_drop()
-///     .spawn()?;
-///
-/// let status = child.wait()?;
-/// ```
 #[derive(Debug)]
-pub struct WindowsCommand<'a> {
-    program: OsString,
-    args: Vec<OsString>,
-    envs: Vec<(OsString, OsString)>,
-    inherit_env: bool,
-    current_dir: Option<PathBuf>,
-    stdin: Stdio<'a>,
-    stdout: Stdio<'a>,
-    stderr: Stdio<'a>,
-    inherited: Option<&'a [RawHandleRef<'a>]>,
-    parent: Option<&'a ParentProcess>,
-    mitigation: Option<MitigationPolicy>,
-    job: Option<&'a Job>,
-    pcon: Option<&'a Pcon>,
-    suspended: bool,
-    kill_tree_on_drop: bool,
+pub(crate) enum Arg {
+    Text(OsString),
+    Raw(OsString),
+    Handle(OwnedHandle),
 }
 
-impl<'a> WindowsCommand<'a> {
-    /// Start building a spawn of `program`.
-    ///
-    /// `program` is passed to `CreateProcessW` as `lpApplicationName` when it
-    /// looks like a path, so the notorious `lpCommandLine`-only search order
-    /// (which will happily run `C:\Program.exe`) is avoided.
+#[derive(Debug)]
+pub(crate) enum EnvOp {
+    Set(OsString, EnvValue),
+    Remove(OsString),
+}
+
+#[derive(Debug)]
+pub(crate) enum EnvValue {
+    Text(OsString),
+    Handle(OwnedHandle),
+}
+
+/// A reusable description of a Windows process launch.
+///
+/// Handles embedded by [`Self::arg_handle`] and [`Self::env_handle`] are
+/// privately duplicated when configured. Each spawn duplicates those handles
+/// again into the actual parent process and only then lowers their numeric
+/// values to decimal text.
+#[derive(Debug)]
+pub struct Command {
+    pub(crate) program: OsString,
+    pub(crate) args: Vec<Arg>,
+    pub(crate) env_clear: bool,
+    pub(crate) env_ops: Vec<EnvOp>,
+    pub(crate) cwd: Option<PathBuf>,
+    pub(crate) stdin: Option<Stdio>,
+    pub(crate) stdout: Option<Stdio>,
+    pub(crate) stderr: Option<Stdio>,
+}
+
+impl Command {
+    /// Creates a command which will execute `program`.
+    #[must_use]
     pub fn new<S: AsRef<OsStr>>(program: S) -> Self {
-        todo!("initialise the builder with defaults")
+        Self {
+            program: program.as_ref().to_os_string(),
+            args: Vec::new(),
+            env_clear: false,
+            env_ops: Vec::new(),
+            cwd: None,
+            stdin: None,
+            stdout: None,
+            stderr: None,
+        }
     }
 
-    /// Append one argument.
-    ///
-    /// Arguments are quoted per the `CommandLineToArgvW` rules on the way into
-    /// the single command-line string Windows actually takes.
+    /// Appends a normally quoted argument.
     pub fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Self {
-        todo!("push one argument")
+        self.args.push(Arg::Text(arg.as_ref().to_os_string()));
+        self
     }
 
-    /// Append several arguments.
+    /// Appends multiple normally quoted arguments.
     pub fn args<I, S>(&mut self, args: I) -> &mut Self
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        todo!("push each argument")
+        for arg in args {
+            self.arg(arg);
+        }
+        self
     }
 
-    /// Set one environment variable for the child.
+    /// Appends text verbatim to the Windows command line.
+    ///
+    /// The text is separated from the preceding element by one space but is
+    /// otherwise neither quoted nor escaped.
+    pub fn raw_arg<S: AsRef<OsStr>>(&mut self, text: S) -> &mut Self {
+        self.args.push(Arg::Raw(text.as_ref().to_os_string()));
+        self
+    }
+
+    /// Appends a handle argument whose child-table value is lowered at spawn.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source handle cannot be duplicated.
+    pub fn arg_handle<T: AsHandle>(&mut self, handle: &T) -> io::Result<&mut Self> {
+        self.args.push(Arg::Handle(sys::duplicate_local(
+            handle.as_handle(),
+            false,
+        )?));
+        Ok(self)
+    }
+
+    /// Sets one environment variable.
     pub fn env<K, V>(&mut self, key: K, value: V) -> &mut Self
     where
         K: AsRef<OsStr>,
         V: AsRef<OsStr>,
     {
-        todo!("record the variable")
+        self.env_ops.push(EnvOp::Set(
+            key.as_ref().to_os_string(),
+            EnvValue::Text(value.as_ref().to_os_string()),
+        ));
+        self
     }
 
-    /// Set several environment variables.
+    /// Sets multiple environment variables.
     pub fn envs<I, K, V>(&mut self, vars: I) -> &mut Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: AsRef<OsStr>,
         V: AsRef<OsStr>,
     {
-        todo!("record each variable")
+        for (key, value) in vars {
+            self.env(key, value);
+        }
+        self
     }
 
-    /// Start from an empty environment instead of the parent's.
+    /// Sets an environment variable to a handle's child-table numeric value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source handle cannot be duplicated.
+    pub fn env_handle<K: AsRef<OsStr>, T: AsHandle>(
+        &mut self,
+        key: K,
+        handle: &T,
+    ) -> io::Result<&mut Self> {
+        self.env_ops.push(EnvOp::Set(
+            key.as_ref().to_os_string(),
+            EnvValue::Handle(sys::duplicate_local(handle.as_handle(), false)?),
+        ));
+        Ok(self)
+    }
+
+    /// Removes an environment variable case-insensitively.
+    pub fn env_remove<K: AsRef<OsStr>>(&mut self, key: K) -> &mut Self {
+        self.env_ops
+            .push(EnvOp::Remove(key.as_ref().to_os_string()));
+        self
+    }
+
+    /// Clears the inherited environment and prior recorded modifications.
     pub fn env_clear(&mut self) -> &mut Self {
-        todo!("drop the inherited environment")
+        self.env_clear = true;
+        self.env_ops.clear();
+        self
     }
 
-    /// Set the child's working directory.
+    /// Sets the child working directory.
     pub fn current_dir<P: AsRef<Path>>(&mut self, dir: P) -> &mut Self {
-        todo!("record the working directory")
+        self.cwd = Some(dir.as_ref().to_path_buf());
+        self
     }
 
-    /// Configure the child's standard input.
-    pub fn stdin(&mut self, cfg: Stdio<'a>) -> &mut Self {
-        todo!("record the stdin configuration")
+    /// Configures standard input.
+    pub fn stdin<T: Into<Stdio>>(&mut self, stdio: T) -> &mut Self {
+        self.stdin = Some(stdio.into());
+        self
     }
 
-    /// Configure the child's standard output.
-    pub fn stdout(&mut self, cfg: Stdio<'a>) -> &mut Self {
-        todo!("record the stdout configuration")
+    /// Configures standard output.
+    pub fn stdout<T: Into<Stdio>>(&mut self, stdio: T) -> &mut Self {
+        self.stdout = Some(stdio.into());
+        self
     }
 
-    /// Configure the child's standard error.
-    pub fn stderr(&mut self, cfg: Stdio<'a>) -> &mut Self {
-        todo!("record the stderr configuration")
+    /// Configures standard error.
+    pub fn stderr<T: Into<Stdio>>(&mut self, stdio: T) -> &mut Self {
+        self.stderr = Some(stdio.into());
+        self
     }
 
-    /// Restrict inheritance to exactly these handles
-    /// (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`).
+    /// Returns the originally configured program.
+    #[must_use]
+    pub fn get_program(&self) -> &OsStr {
+        &self.program
+    }
+
+    /// Returns the configured working directory.
+    #[must_use]
+    pub fn get_current_dir(&self) -> Option<&Path> {
+        self.cwd.as_deref()
+    }
+
+    /// Spawns with default options.
     ///
-    /// This is the whole reason the crate exists. Without it, spawning with
-    /// inheritance enabled hands the child every inheritable handle in the
-    /// process — including ones another thread opened a microsecond ago.
+    /// # Errors
     ///
-    /// The slice is borrowed until the spawn happens; that borrow is what `'a`
-    /// tracks.
-    pub fn inherit_handles(&mut self, handles: &'a [RawHandleRef<'a>]) -> &mut Self {
-        todo!("record the handle list")
+    /// Returns validation, resource-acquisition, or process-creation errors.
+    pub fn spawn(&mut self) -> io::Result<Child> {
+        self.spawn_with(SpawnOptions::new())
     }
 
-    /// Re-parent the child (`PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`).
-    pub fn parent_process(&mut self, parent: &'a ParentProcess) -> &mut Self {
-        todo!("record the parent process")
-    }
-
-    /// Apply process creation mitigations
-    /// (`PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`).
-    pub fn mitigation(&mut self, policy: MitigationPolicy) -> &mut Self {
-        todo!("record the mitigation policy")
-    }
-
-    /// Create the child directly inside `job` (`PROC_THREAD_ATTRIBUTE_JOB_LIST`).
+    /// Spawns using one operation's borrowed capabilities and policy.
     ///
-    /// Atomic with creation, unlike `AssignProcessToJobObject`. See
-    /// `docs/adr/0004-job-attachment.md`.
-    pub fn attach_to_job(&mut self, job: &'a Job) -> &mut Self {
-        todo!("record the job")
-    }
-
-    /// Attach the child to a pseudoconsole
-    /// (`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`).
-    pub fn pseudoconsole(&mut self, pcon: &'a Pcon) -> &mut Self {
-        todo!("record the pseudoconsole")
-    }
-
-    /// Create the child suspended (`CREATE_SUSPENDED`).
+    /// # Errors
     ///
-    /// The primary thread stays suspended until [`Child::resume`] is called, so
-    /// the caller can inspect or modify the process first. Note that a
-    /// suspended process is *not* a process that has run no code from the
-    /// kernel's point of view — see `docs/adr/0004-job-attachment.md`.
-    pub fn suspended(&mut self) -> &mut Self {
-        todo!("set CREATE_SUSPENDED")
+    /// Returns validation, resource-acquisition, or process-creation errors.
+    pub fn spawn_with(&mut self, options: SpawnOptions<'_>) -> io::Result<Child> {
+        let plan = SpawnPlan::new(self, options, SpawnMode::Running, IoMode::Spawn)?;
+        SpawnTransaction::new(&plan)?.commit_child()
     }
 
-    /// Kill the child, and everything it spawned, when the [`Child`] is
-    /// dropped.
+    /// Spawns in the suspended type state with default options.
     ///
-    /// Implemented with a job object owned by the `Child` and
-    /// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, not by walking the process tree:
-    /// a PID-walking killer races against PID reuse and misses grandchildren
-    /// that re-parented themselves.
-    pub fn kill_tree_on_drop(&mut self) -> &mut Self {
-        todo!("arrange a kill-on-close job for the child")
+    /// # Errors
+    ///
+    /// Returns validation, resource-acquisition, or process-creation errors.
+    pub fn spawn_suspended(&mut self) -> io::Result<SuspendedChild> {
+        self.spawn_suspended_with(SpawnOptions::new())
     }
 
-    /// Spawn the process.
+    /// Spawns in the suspended type state using explicit options.
     ///
-    /// Builds the attribute list, fills in `STARTUPINFOEXW`, calls
-    /// `CreateProcessW`, and closes the thread handle unless the child was
-    /// created suspended.
-    pub fn spawn(&mut self) -> Result<Child> {
-        todo!("build the attribute list and call CreateProcessW")
+    /// # Errors
+    ///
+    /// Returns validation, resource-acquisition, or process-creation errors.
+    pub fn spawn_suspended_with(
+        &mut self,
+        options: SpawnOptions<'_>,
+    ) -> io::Result<SuspendedChild> {
+        let plan = SpawnPlan::new(self, options, SpawnMode::Suspended, IoMode::Spawn)?;
+        SpawnTransaction::new(&plan)?.commit_suspended()
+    }
+
+    /// Runs the process and waits for its status using default options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error from spawning, waiting, or retrieving the exit code.
+    pub fn status(&mut self) -> io::Result<ExitStatus> {
+        self.status_with(SpawnOptions::new())
+    }
+
+    /// Runs the process and waits for its status using explicit options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error from spawning, waiting, or retrieving the exit code.
+    pub fn status_with(&mut self, options: SpawnOptions<'_>) -> io::Result<ExitStatus> {
+        self.spawn_with(options)?.wait()
+    }
+
+    /// Runs the process and captures output using default options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error from spawning, waiting, reading, or Job termination.
+    pub fn output(&mut self) -> io::Result<Output> {
+        self.output_with(SpawnOptions::new())
+    }
+
+    /// Runs the process and captures output using explicit options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error from spawning, waiting, reading, or Job termination.
+    pub fn output_with(&mut self, options: SpawnOptions<'_>) -> io::Result<Output> {
+        let plan = SpawnPlan::new(self, options, SpawnMode::Running, IoMode::Output)?;
+        SpawnTransaction::new(&plan)?
+            .commit_child()?
+            .wait_with_output()
     }
 }

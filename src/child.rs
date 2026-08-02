@@ -1,131 +1,332 @@
-//! The spawned process handle.
+//! Owned child process and suspended type state.
 
-use std::os::windows::io::{AsHandle, BorrowedHandle, OwnedHandle, RawHandle};
+use std::io::{self, Read, Write};
+use std::os::windows::io::{AsHandle, BorrowedHandle, OwnedHandle};
+use std::process::{ExitStatus, Output};
+use std::thread;
 
-use crate::attributes::Job;
-use crate::error::Result;
+use crate::handles::Job;
+use crate::sys;
 
-/// A process created by [`WindowsCommand::spawn`](crate::WindowsCommand::spawn).
-///
-/// Holding a `Child` holds an open process handle, which keeps the process's
-/// exit code and PID valid even after the process has exited — so unlike a bare
-/// PID, a `Child` cannot be aimed at the wrong process by PID reuse.
+/// The writable parent end of a child's standard-input pipe.
+#[derive(Debug)]
+pub struct ChildStdin {
+    handle: OwnedHandle,
+}
+
+impl Write for ChildStdin {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        sys::write_handle(self.handle.as_handle(), buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl AsHandle for ChildStdin {
+    fn as_handle(&self) -> BorrowedHandle<'_> {
+        self.handle.as_handle()
+    }
+}
+
+/// The readable parent end of a child's standard-output pipe.
+#[derive(Debug)]
+pub struct ChildStdout {
+    handle: OwnedHandle,
+}
+
+impl Read for ChildStdout {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        sys::read_handle(self.handle.as_handle(), buffer)
+    }
+}
+
+impl AsHandle for ChildStdout {
+    fn as_handle(&self) -> BorrowedHandle<'_> {
+        self.handle.as_handle()
+    }
+}
+
+/// The readable parent end of a child's standard-error pipe.
+#[derive(Debug)]
+pub struct ChildStderr {
+    handle: OwnedHandle,
+}
+
+impl Read for ChildStderr {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        sys::read_handle(self.handle.as_handle(), buffer)
+    }
+}
+
+impl AsHandle for ChildStderr {
+    fn as_handle(&self) -> BorrowedHandle<'_> {
+        self.handle.as_handle()
+    }
+}
+
+/// A running or exited process whose handle is owned exactly once.
 #[derive(Debug)]
 pub struct Child {
+    // Declared first so kill-on-close takes effect before pipe and process
+    // handles are released by Rust's field drop order.
+    kill_job: Option<Job>,
+    /// A pipe connected to the child's standard input, when requested.
+    pub stdin: Option<ChildStdin>,
+    /// A pipe connected to the child's standard output, when requested.
+    pub stdout: Option<ChildStdout>,
+    /// A pipe connected to the child's standard error, when requested.
+    pub stderr: Option<ChildStderr>,
     process: OwnedHandle,
-    /// Kept only when the child was created suspended; dropped by
-    /// [`Child::resume`].
-    main_thread: Option<OwnedHandle>,
     pid: u32,
-    /// Present when
-    /// [`kill_tree_on_drop`](crate::WindowsCommand::kill_tree_on_drop) was
-    /// requested: dropping this job kills the whole tree.
-    job: Option<Job>,
-    stdin: Option<OwnedHandle>,
-    stdout: Option<OwnedHandle>,
-    stderr: Option<OwnedHandle>,
+    exit: Option<ExitStatus>,
 }
 
 impl Child {
-    /// The process id.
-    pub fn id(&self) -> u32 {
-        todo!("return the pid captured at creation")
+    pub(crate) fn new(
+        process: OwnedHandle,
+        pid: u32,
+        kill_job: Option<Job>,
+        stdin: Option<OwnedHandle>,
+        stdout: Option<OwnedHandle>,
+        stderr: Option<OwnedHandle>,
+    ) -> Self {
+        Self {
+            kill_job,
+            stdin: stdin.map(|handle| ChildStdin { handle }),
+            stdout: stdout.map(|handle| ChildStdout { handle }),
+            stderr: stderr.map(|handle| ChildStderr { handle }),
+            process,
+            pid,
+            exit: None,
+        }
     }
 
-    /// Wait for the process to exit.
-    pub fn wait(&mut self) -> Result<ExitStatus> {
-        todo!("WaitForSingleObject + GetExitCodeProcess")
+    pub(crate) fn process_handle(&self) -> BorrowedHandle<'_> {
+        self.process.as_handle()
     }
 
-    /// Check whether the process has exited, without blocking.
+    /// Returns the process identifier captured at creation.
+    #[must_use]
+    pub const fn id(&self) -> u32 {
+        self.pid
+    }
+
+    /// Terminates the root process.
     ///
-    /// Returns `Ok(None)` while it is still running.
-    pub fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
-        todo!("WaitForSingleObject with a zero timeout")
-    }
-
-    /// Terminate the process.
+    /// # Errors
     ///
-    /// This is `TerminateProcess`: the child gets no chance to clean up, and
-    /// its own children are unaffected unless it was placed in a job. For a
-    /// tree kill, use
-    /// [`kill_tree_on_drop`](crate::WindowsCommand::kill_tree_on_drop) or
-    /// [`Job::kill_on_close`].
-    pub fn kill(&mut self) -> Result<()> {
-        todo!("TerminateProcess(self.process, 1)")
+    /// Returns the operating-system error from `TerminateProcess`.
+    pub fn kill(&mut self) -> io::Result<()> {
+        if self.exit.is_some() {
+            return Ok(());
+        }
+        sys::terminate_process(self.process.as_handle(), 1)
     }
 
-    /// Resume a child created with
-    /// [`suspended`](crate::WindowsCommand::suspended).
+    /// Waits for exit and caches the status.
     ///
-    /// A no-op if the child was not created suspended.
-    pub fn resume(&mut self) -> Result<()> {
-        todo!("ResumeThread on the stored main thread handle")
-    }
-
-    /// Take the parent end of the child's stdin pipe, if
-    /// [`Stdio::Piped`](crate::Stdio::Piped) was used.
-    pub fn take_stdin(&mut self) -> Option<OwnedHandle> {
-        todo!("take the pipe end")
-    }
-
-    /// Take the parent end of the child's stdout pipe, if
-    /// [`Stdio::Piped`](crate::Stdio::Piped) was used.
-    pub fn take_stdout(&mut self) -> Option<OwnedHandle> {
-        todo!("take the pipe end")
-    }
-
-    /// Take the parent end of the child's stderr pipe, if
-    /// [`Stdio::Piped`](crate::Stdio::Piped) was used.
-    pub fn take_stderr(&mut self) -> Option<OwnedHandle> {
-        todo!("take the pipe end")
-    }
-
-    /// Give up ownership of the process handle.
+    /// # Errors
     ///
-    /// The caller becomes responsible for `CloseHandle`. Any kill-on-drop job
-    /// is dropped with the `Child`, so the tree-kill guarantee does *not*
-    /// survive this call — the doc comment says so because the alternative is
-    /// a very confusing bug report.
-    pub fn into_raw_handle(self) -> RawHandle {
-        todo!("consume self and return the raw process handle")
+    /// Returns an error if waiting or retrieving the exit code fails.
+    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        if let Some(status) = self.exit {
+            return Ok(status);
+        }
+        drop(self.stdin.take());
+        sys::wait_process(self.process.as_handle())?;
+        let status = sys::exit_status(self.process.as_handle())?;
+        self.exit = Some(status);
+        Ok(status)
+    }
+
+    /// Checks for exit without blocking, returning the cached status thereafter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if querying the process or its exit code fails.
+    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        if self.exit.is_some() {
+            return Ok(self.exit);
+        }
+        if !sys::try_wait_process(self.process.as_handle())? {
+            return Ok(None);
+        }
+        let status = sys::exit_status(self.process.as_handle())?;
+        self.exit = Some(status);
+        Ok(self.exit)
+    }
+
+    /// Waits while draining both output pipes concurrently.
+    ///
+    /// Under [`crate::DropPolicy::KillTree`], descendants are terminated after
+    /// the root exits and before reader threads are joined. This guarantees EOF
+    /// even when a grandchild retained a pipe handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error from process waiting, pipe reading, or Job termination.
+    pub fn wait_with_output(mut self) -> io::Result<Output> {
+        drop(self.stdin.take());
+
+        let stdout_reader = self
+            .stdout
+            .take()
+            .map(|stream| thread::spawn(move || drain_output(stream.handle.as_handle())));
+        let stderr_reader = self
+            .stderr
+            .take()
+            .map(|stream| thread::spawn(move || drain_output(stream.handle.as_handle())));
+
+        let status = self.wait();
+        let termination = self
+            .kill_job
+            .as_ref()
+            .map_or(Ok(()), |job| job.terminate(1));
+        let stdout = join_reader(stdout_reader)?;
+        let stderr = join_reader(stderr_reader)?;
+        termination?;
+
+        Ok(Output {
+            status: status?,
+            stdout,
+            stderr,
+        })
     }
 }
 
 impl AsHandle for Child {
     fn as_handle(&self) -> BorrowedHandle<'_> {
-        todo!("borrow the process handle")
+        self.process.as_handle()
     }
 }
 
-impl Drop for Child {
-    fn drop(&mut self) {
-        // TODO(sys): if `job` is present it is dropped here, and
-        // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE terminates the tree. Handles are
-        // closed by `OwnedHandle`. Nothing to do explicitly, and deliberately
-        // no `todo!()`: destructors must not panic.
+fn drain_output(handle: BorrowedHandle<'_>) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 8_192];
+    loop {
+        let Some(read) = std::num::NonZeroUsize::new(sys::read_handle(handle, &mut buffer)?) else {
+            return Ok(bytes);
+        };
+        bytes.extend_from_slice(&buffer[..read.get()]);
     }
 }
 
-/// How a process exited.
+fn join_reader(reader: Option<thread::JoinHandle<io::Result<Vec<u8>>>>) -> io::Result<Vec<u8>> {
+    match reader {
+        Some(reader) => reader
+            .join()
+            .map_err(|_| io::Error::other("output reader thread panicked"))?,
+        None => Ok(Vec::new()),
+    }
+}
+
+/// A process whose primary thread has not yet been resumed.
 ///
-/// Windows exit codes are `DWORD`s, so this exposes a `u32` rather than
-/// std's `Option<i32>`: there is no "killed by signal" case to model, and
-/// reinterpreting `0xC0000005` as a negative `i32` helps nobody.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ExitStatus(u32);
+/// Dropping this value without resuming always terminates the process.
+/// The consuming transition makes a second resume unrepresentable:
+///
+/// ```compile_fail
+/// use windows_spawn::Command;
+///
+/// let mut command = Command::new("cmd.exe");
+/// let suspended = command.spawn_suspended().unwrap();
+/// let _child = suspended.resume().unwrap();
+/// let _second = suspended.resume().unwrap();
+/// ```
+#[derive(Debug)]
+#[must_use = "dropping a suspended child terminates it"]
+pub struct SuspendedChild {
+    child: Option<Child>,
+    main_thread: Option<OwnedHandle>,
+}
 
-impl ExitStatus {
-    /// Whether the process exited with code 0.
-    pub fn success(self) -> bool {
-        todo!("return self.0 == 0")
+impl SuspendedChild {
+    pub(crate) fn new(child: Child, main_thread: OwnedHandle) -> Self {
+        Self {
+            child: Some(child),
+            main_thread: Some(main_thread),
+        }
     }
 
-    /// The raw exit code.
+    /// Returns the process identifier captured at creation.
     ///
-    /// Values above `0xC0000000` are usually `NTSTATUS` codes from an unhandled
-    /// exception rather than something the program chose to return.
-    pub fn code(self) -> u32 {
-        todo!("return the exit code")
+    /// # Panics
+    ///
+    /// Panics only if an internal ownership invariant was violated and the
+    /// process was removed before this suspended value was consumed.
+    #[must_use]
+    pub fn id(&self) -> u32 {
+        self.child
+            .as_ref()
+            .expect("a suspended child owns its process until resume")
+            .id()
+    }
+
+    /// Borrows the suspended process's primary thread handle.
+    ///
+    /// This handle is available for supported thread configuration and
+    /// inspection before [`Self::resume`] consumes the suspended state.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if an internal ownership invariant was violated and the
+    /// primary thread was removed before this suspended value was consumed.
+    #[must_use]
+    pub fn primary_thread_handle(&self) -> BorrowedHandle<'_> {
+        self.main_thread
+            .as_ref()
+            .expect("a suspended child owns its primary thread until resume")
+            .as_handle()
+    }
+
+    /// Resumes the primary thread and transitions to an ordinary [`Child`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the operating-system error when the primary thread cannot be
+    /// resumed. The suspended process is then terminated during rollback.
+    pub fn resume(mut self) -> io::Result<Child> {
+        let main_thread = self
+            .main_thread
+            .take()
+            .ok_or_else(|| io::Error::other("suspended child lost its primary thread"))?;
+        sys::resume_thread(main_thread.as_handle())?;
+        self.child
+            .take()
+            .ok_or_else(|| io::Error::other("suspended child lost its process"))
+    }
+}
+
+impl AsHandle for SuspendedChild {
+    fn as_handle(&self) -> BorrowedHandle<'_> {
+        self.child
+            .as_ref()
+            .expect("a suspended child owns its process until resume")
+            .as_handle()
+    }
+}
+
+impl Drop for SuspendedChild {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.child {
+            let _ = child.kill();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absent_and_panicked_output_readers_become_results() {
+        assert!(join_reader(None).unwrap().is_empty());
+        let panicked = thread::spawn(|| -> io::Result<Vec<u8>> { panic!("reader panic") });
+        assert_eq!(
+            join_reader(Some(panicked)).unwrap_err().kind(),
+            io::ErrorKind::Other
+        );
     }
 }

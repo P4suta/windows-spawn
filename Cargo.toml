@@ -1,28 +1,62 @@
 [package]
-name = "spawnkit"
-# Scaffold: the API is sketched, nothing is implemented yet. The first release
-# with working code will be 0.1.0 (see the roadmap in README.md).
-version = "0.0.1"
+name = "windows-spawn"
+version = "0.1.0"
 authors = ["Yasunobu Sakashita"]
-edition = "2024"
-rust-version = "1.88"
+edition = "2021"
+rust-version = "1.75"
 license = "MIT OR Apache-2.0"
 description = "Advanced Windows process creation: CreateProcessW with STARTUPINFOEX and PROC_THREAD_ATTRIBUTE_LIST, with attribute-value lifetimes enforced by the type system"
+documentation = "https://docs.rs/windows-spawn"
+repository = "https://github.com/P4suta/windows-spawn"
 readme = "README.md"
 keywords = ["windows", "process", "createprocess", "job-object", "spawn"]
 categories = ["os::windows-apis", "api-bindings"]
-# Publishing is disabled while this is a scaffold; flip it when 0.1.0 is real.
-publish = false
+include = [
+  "/src/**",
+  "/tests/**",
+  "/examples/**",
+  "/docs/adr/**",
+  "/docs/crate.md",
+  "/README.md",
+  "/CHANGELOG.md",
+  "/REUSE.toml",
+  "/LICENSE-APACHE",
+  "/LICENSE-MIT",
+  "/LICENSES/**",
+]
 
-[target.'cfg(windows)'.dependencies]
-thiserror = "2"
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
+
+[[test]]
+name = "argv_roundtrip"
+path = "tests/argv_roundtrip.rs"
+harness = false
 
 [target.'cfg(windows)'.dependencies.windows-sys]
 version = "0.61"
 features = [
   "Win32_Foundation",
-  "Win32_System_Threading",
+  "Win32_Globalization",
   "Win32_Security",
-  "Win32_System_JobObjects",
+  "Win32_Storage_FileSystem",
   "Win32_System_Console",
+  "Win32_System_Environment",
+  "Win32_System_IO",
+  "Win32_System_JobObjects",
+  "Win32_System_Pipes",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
 ]
+
+[lints.rust]
+missing_docs = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+unsafe_op_in_unsafe_fn = "deny"
+unreachable_pub = "deny"
+unused_qualifications = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }

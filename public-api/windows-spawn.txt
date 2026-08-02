@@ -1,0 +1,581 @@
+pub mod windows_spawn
+#[repr(u64)] pub enum windows_spawn::BlockNonCetBinaries
+pub windows_spawn::BlockNonCetBinaries::AlwaysOff = 2
+pub windows_spawn::BlockNonCetBinaries::AlwaysOn = 1
+pub windows_spawn::BlockNonCetBinaries::Defer = 0
+pub windows_spawn::BlockNonCetBinaries::NonEhContinuation = 3
+impl core::clone::Clone for windows_spawn::BlockNonCetBinaries
+pub fn windows_spawn::BlockNonCetBinaries::clone(&self) -> windows_spawn::BlockNonCetBinaries
+impl core::cmp::Eq for windows_spawn::BlockNonCetBinaries
+impl core::cmp::PartialEq for windows_spawn::BlockNonCetBinaries
+pub fn windows_spawn::BlockNonCetBinaries::eq(&self, &windows_spawn::BlockNonCetBinaries) -> bool
+impl core::default::Default for windows_spawn::BlockNonCetBinaries
+pub fn windows_spawn::BlockNonCetBinaries::default() -> windows_spawn::BlockNonCetBinaries
+impl core::fmt::Debug for windows_spawn::BlockNonCetBinaries
+pub fn windows_spawn::BlockNonCetBinaries::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for windows_spawn::BlockNonCetBinaries
+pub fn windows_spawn::BlockNonCetBinaries::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for windows_spawn::BlockNonCetBinaries
+impl core::marker::StructuralPartialEq for windows_spawn::BlockNonCetBinaries
+impl core::marker::Freeze for windows_spawn::BlockNonCetBinaries
+impl core::marker::Send for windows_spawn::BlockNonCetBinaries
+impl core::marker::Sync for windows_spawn::BlockNonCetBinaries
+impl core::marker::Unpin for windows_spawn::BlockNonCetBinaries
+impl core::marker::UnsafeUnpin for windows_spawn::BlockNonCetBinaries
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::BlockNonCetBinaries
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::BlockNonCetBinaries
+#[repr(u64)] pub enum windows_spawn::CetShadowStacks
+pub windows_spawn::CetShadowStacks::AlwaysOff = 2
+pub windows_spawn::CetShadowStacks::AlwaysOn = 1
+pub windows_spawn::CetShadowStacks::Defer = 0
+pub windows_spawn::CetShadowStacks::Strict = 3
+impl core::clone::Clone for windows_spawn::CetShadowStacks
+pub fn windows_spawn::CetShadowStacks::clone(&self) -> windows_spawn::CetShadowStacks
+impl core::cmp::Eq for windows_spawn::CetShadowStacks
+impl core::cmp::PartialEq for windows_spawn::CetShadowStacks
+pub fn windows_spawn::CetShadowStacks::eq(&self, &windows_spawn::CetShadowStacks) -> bool
+impl core::default::Default for windows_spawn::CetShadowStacks
+pub fn windows_spawn::CetShadowStacks::default() -> windows_spawn::CetShadowStacks
+impl core::fmt::Debug for windows_spawn::CetShadowStacks
+pub fn windows_spawn::CetShadowStacks::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for windows_spawn::CetShadowStacks
+pub fn windows_spawn::CetShadowStacks::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for windows_spawn::CetShadowStacks
+impl core::marker::StructuralPartialEq for windows_spawn::CetShadowStacks
+impl core::marker::Freeze for windows_spawn::CetShadowStacks
+impl core::marker::Send for windows_spawn::CetShadowStacks
+impl core::marker::Sync for windows_spawn::CetShadowStacks
+impl core::marker::Unpin for windows_spawn::CetShadowStacks
+impl core::marker::UnsafeUnpin for windows_spawn::CetShadowStacks
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::CetShadowStacks
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::CetShadowStacks
+#[repr(u64)] pub enum windows_spawn::ControlFlowGuard
+pub windows_spawn::ControlFlowGuard::AlwaysOff = 2
+pub windows_spawn::ControlFlowGuard::AlwaysOn = 1
+pub windows_spawn::ControlFlowGuard::Defer = 0
+pub windows_spawn::ControlFlowGuard::ExportSuppression = 3
+impl core::clone::Clone for windows_spawn::ControlFlowGuard
+pub fn windows_spawn::ControlFlowGuard::clone(&self) -> windows_spawn::ControlFlowGuard
+impl core::cmp::Eq for windows_spawn::ControlFlowGuard
+impl core::cmp::PartialEq for windows_spawn::ControlFlowGuard
+pub fn windows_spawn::ControlFlowGuard::eq(&self, &windows_spawn::ControlFlowGuard) -> bool
+impl core::default::Default for windows_spawn::ControlFlowGuard
+pub fn windows_spawn::ControlFlowGuard::default() -> windows_spawn::ControlFlowGuard
+impl core::fmt::Debug for windows_spawn::ControlFlowGuard
+pub fn windows_spawn::ControlFlowGuard::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for windows_spawn::ControlFlowGuard
+pub fn windows_spawn::ControlFlowGuard::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for windows_spawn::ControlFlowGuard
+impl core::marker::StructuralPartialEq for windows_spawn::ControlFlowGuard
+impl core::marker::Freeze for windows_spawn::ControlFlowGuard
+impl core::marker::Send for windows_spawn::ControlFlowGuard
+impl core::marker::Sync for windows_spawn::ControlFlowGuard
+impl core::marker::Unpin for windows_spawn::ControlFlowGuard
+impl core::marker::UnsafeUnpin for windows_spawn::ControlFlowGuard
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::ControlFlowGuard
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::ControlFlowGuard
+pub enum windows_spawn::DropPolicy
+pub windows_spawn::DropPolicy::Detach
+pub windows_spawn::DropPolicy::KillTree
+impl core::clone::Clone for windows_spawn::DropPolicy
+pub fn windows_spawn::DropPolicy::clone(&self) -> windows_spawn::DropPolicy
+impl core::cmp::Eq for windows_spawn::DropPolicy
+impl core::cmp::PartialEq for windows_spawn::DropPolicy
+pub fn windows_spawn::DropPolicy::eq(&self, &windows_spawn::DropPolicy) -> bool
+impl core::default::Default for windows_spawn::DropPolicy
+pub fn windows_spawn::DropPolicy::default() -> windows_spawn::DropPolicy
+impl core::fmt::Debug for windows_spawn::DropPolicy
+pub fn windows_spawn::DropPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for windows_spawn::DropPolicy
+pub fn windows_spawn::DropPolicy::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for windows_spawn::DropPolicy
+impl core::marker::StructuralPartialEq for windows_spawn::DropPolicy
+impl core::marker::Freeze for windows_spawn::DropPolicy
+impl core::marker::Send for windows_spawn::DropPolicy
+impl core::marker::Sync for windows_spawn::DropPolicy
+impl core::marker::Unpin for windows_spawn::DropPolicy
+impl core::marker::UnsafeUnpin for windows_spawn::DropPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::DropPolicy
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::DropPolicy
+#[repr(u64)] pub enum windows_spawn::DynamicCode
+pub windows_spawn::DynamicCode::Allow = 2
+pub windows_spawn::DynamicCode::Defer = 0
+pub windows_spawn::DynamicCode::Prohibit = 1
+pub windows_spawn::DynamicCode::ProhibitWithOptOut = 3
+impl core::clone::Clone for windows_spawn::DynamicCode
+pub fn windows_spawn::DynamicCode::clone(&self) -> windows_spawn::DynamicCode
+impl core::cmp::Eq for windows_spawn::DynamicCode
+impl core::cmp::PartialEq for windows_spawn::DynamicCode
+pub fn windows_spawn::DynamicCode::eq(&self, &windows_spawn::DynamicCode) -> bool
+impl core::default::Default for windows_spawn::DynamicCode
+pub fn windows_spawn::DynamicCode::default() -> windows_spawn::DynamicCode
+impl core::fmt::Debug for windows_spawn::DynamicCode
+pub fn windows_spawn::DynamicCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for windows_spawn::DynamicCode
+pub fn windows_spawn::DynamicCode::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for windows_spawn::DynamicCode
+impl core::marker::StructuralPartialEq for windows_spawn::DynamicCode
+impl core::marker::Freeze for windows_spawn::DynamicCode
+impl core::marker::Send for windows_spawn::DynamicCode
+impl core::marker::Sync for windows_spawn::DynamicCode
+impl core::marker::Unpin for windows_spawn::DynamicCode
+impl core::marker::UnsafeUnpin for windows_spawn::DynamicCode
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::DynamicCode
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::DynamicCode
+#[repr(u64)] pub enum windows_spawn::FontDisable
+pub windows_spawn::FontDisable::Allow = 2
+pub windows_spawn::FontDisable::Audit = 3
+pub windows_spawn::FontDisable::Block = 1
+pub windows_spawn::FontDisable::Defer = 0
+impl core::clone::Clone for windows_spawn::FontDisable
+pub fn windows_spawn::FontDisable::clone(&self) -> windows_spawn::FontDisable
+impl core::cmp::Eq for windows_spawn::FontDisable
+impl core::cmp::PartialEq for windows_spawn::FontDisable
+pub fn windows_spawn::FontDisable::eq(&self, &windows_spawn::FontDisable) -> bool
+impl core::default::Default for windows_spawn::FontDisable
+pub fn windows_spawn::FontDisable::default() -> windows_spawn::FontDisable
+impl core::fmt::Debug for windows_spawn::FontDisable
+pub fn windows_spawn::FontDisable::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for windows_spawn::FontDisable
+pub fn windows_spawn::FontDisable::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for windows_spawn::FontDisable
+impl core::marker::StructuralPartialEq for windows_spawn::FontDisable
+impl core::marker::Freeze for windows_spawn::FontDisable
+impl core::marker::Send for windows_spawn::FontDisable
+impl core::marker::Sync for windows_spawn::FontDisable
+impl core::marker::Unpin for windows_spawn::FontDisable
+impl core::marker::UnsafeUnpin for windows_spawn::FontDisable
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::FontDisable
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::FontDisable
+#[repr(u64)] pub enum windows_spawn::LoaderIntegrity
+pub windows_spawn::LoaderIntegrity::AlwaysOff = 2
+pub windows_spawn::LoaderIntegrity::AlwaysOn = 1
+pub windows_spawn::LoaderIntegrity::Audit = 3
+pub windows_spawn::LoaderIntegrity::Defer = 0
+impl core::clone::Clone for windows_spawn::LoaderIntegrity
+pub fn windows_spawn::LoaderIntegrity::clone(&self) -> windows_spawn::LoaderIntegrity
+impl core::cmp::Eq for windows_spawn::LoaderIntegrity
+impl core::cmp::PartialEq for windows_spawn::LoaderIntegrity
+pub fn windows_spawn::LoaderIntegrity::eq(&self, &windows_spawn::LoaderIntegrity) -> bool
+impl core::default::Default for windows_spawn::LoaderIntegrity
+pub fn windows_spawn::LoaderIntegrity::default() -> windows_spawn::LoaderIntegrity
+impl core::fmt::Debug for windows_spawn::LoaderIntegrity
+pub fn windows_spawn::LoaderIntegrity::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for windows_spawn::LoaderIntegrity
+pub fn windows_spawn::LoaderIntegrity::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for windows_spawn::LoaderIntegrity
+impl core::marker::StructuralPartialEq for windows_spawn::LoaderIntegrity
+impl core::marker::Freeze for windows_spawn::LoaderIntegrity
+impl core::marker::Send for windows_spawn::LoaderIntegrity
+impl core::marker::Sync for windows_spawn::LoaderIntegrity
+impl core::marker::Unpin for windows_spawn::LoaderIntegrity
+impl core::marker::UnsafeUnpin for windows_spawn::LoaderIntegrity
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::LoaderIntegrity
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::LoaderIntegrity
+#[repr(u64)] pub enum windows_spawn::Mitigation
+pub windows_spawn::Mitigation::AlwaysOff = 2
+pub windows_spawn::Mitigation::AlwaysOn = 1
+pub windows_spawn::Mitigation::Defer = 0
+impl core::clone::Clone for windows_spawn::Mitigation
+pub fn windows_spawn::Mitigation::clone(&self) -> windows_spawn::Mitigation
+impl core::cmp::Eq for windows_spawn::Mitigation
+impl core::cmp::PartialEq for windows_spawn::Mitigation
+pub fn windows_spawn::Mitigation::eq(&self, &windows_spawn::Mitigation) -> bool
+impl core::default::Default for windows_spawn::Mitigation
+pub fn windows_spawn::Mitigation::default() -> windows_spawn::Mitigation
+impl core::fmt::Debug for windows_spawn::Mitigation
+pub fn windows_spawn::Mitigation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for windows_spawn::Mitigation
+pub fn windows_spawn::Mitigation::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for windows_spawn::Mitigation
+impl core::marker::StructuralPartialEq for windows_spawn::Mitigation
+impl core::marker::Freeze for windows_spawn::Mitigation
+impl core::marker::Send for windows_spawn::Mitigation
+impl core::marker::Sync for windows_spawn::Mitigation
+impl core::marker::Unpin for windows_spawn::Mitigation
+impl core::marker::UnsafeUnpin for windows_spawn::Mitigation
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::Mitigation
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::Mitigation
+#[repr(u64)] pub enum windows_spawn::ModuleTampering
+pub windows_spawn::ModuleTampering::AlwaysOff = 2
+pub windows_spawn::ModuleTampering::AlwaysOn = 1
+pub windows_spawn::ModuleTampering::Defer = 0
+pub windows_spawn::ModuleTampering::NoInherit = 3
+impl core::clone::Clone for windows_spawn::ModuleTampering
+pub fn windows_spawn::ModuleTampering::clone(&self) -> windows_spawn::ModuleTampering
+impl core::cmp::Eq for windows_spawn::ModuleTampering
+impl core::cmp::PartialEq for windows_spawn::ModuleTampering
+pub fn windows_spawn::ModuleTampering::eq(&self, &windows_spawn::ModuleTampering) -> bool
+impl core::default::Default for windows_spawn::ModuleTampering
+pub fn windows_spawn::ModuleTampering::default() -> windows_spawn::ModuleTampering
+impl core::fmt::Debug for windows_spawn::ModuleTampering
+pub fn windows_spawn::ModuleTampering::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for windows_spawn::ModuleTampering
+pub fn windows_spawn::ModuleTampering::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for windows_spawn::ModuleTampering
+impl core::marker::StructuralPartialEq for windows_spawn::ModuleTampering
+impl core::marker::Freeze for windows_spawn::ModuleTampering
+impl core::marker::Send for windows_spawn::ModuleTampering
+impl core::marker::Sync for windows_spawn::ModuleTampering
+impl core::marker::Unpin for windows_spawn::ModuleTampering
+impl core::marker::UnsafeUnpin for windows_spawn::ModuleTampering
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::ModuleTampering
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::ModuleTampering
+#[repr(u64)] pub enum windows_spawn::RelocateImages
+pub windows_spawn::RelocateImages::AlwaysOff = 2
+pub windows_spawn::RelocateImages::AlwaysOn = 1
+pub windows_spawn::RelocateImages::Defer = 0
+pub windows_spawn::RelocateImages::RequireRelocations = 3
+impl core::clone::Clone for windows_spawn::RelocateImages
+pub fn windows_spawn::RelocateImages::clone(&self) -> windows_spawn::RelocateImages
+impl core::cmp::Eq for windows_spawn::RelocateImages
+impl core::cmp::PartialEq for windows_spawn::RelocateImages
+pub fn windows_spawn::RelocateImages::eq(&self, &windows_spawn::RelocateImages) -> bool
+impl core::default::Default for windows_spawn::RelocateImages
+pub fn windows_spawn::RelocateImages::default() -> windows_spawn::RelocateImages
+impl core::fmt::Debug for windows_spawn::RelocateImages
+pub fn windows_spawn::RelocateImages::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for windows_spawn::RelocateImages
+pub fn windows_spawn::RelocateImages::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for windows_spawn::RelocateImages
+impl core::marker::StructuralPartialEq for windows_spawn::RelocateImages
+impl core::marker::Freeze for windows_spawn::RelocateImages
+impl core::marker::Send for windows_spawn::RelocateImages
+impl core::marker::Sync for windows_spawn::RelocateImages
+impl core::marker::Unpin for windows_spawn::RelocateImages
+impl core::marker::UnsafeUnpin for windows_spawn::RelocateImages
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::RelocateImages
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::RelocateImages
+#[repr(u64)] pub enum windows_spawn::SignedBinaries
+pub windows_spawn::SignedBinaries::AlwaysOff = 2
+pub windows_spawn::SignedBinaries::Defer = 0
+pub windows_spawn::SignedBinaries::MicrosoftAndStore = 3
+pub windows_spawn::SignedBinaries::MicrosoftOnly = 1
+impl core::clone::Clone for windows_spawn::SignedBinaries
+pub fn windows_spawn::SignedBinaries::clone(&self) -> windows_spawn::SignedBinaries
+impl core::cmp::Eq for windows_spawn::SignedBinaries
+impl core::cmp::PartialEq for windows_spawn::SignedBinaries
+pub fn windows_spawn::SignedBinaries::eq(&self, &windows_spawn::SignedBinaries) -> bool
+impl core::default::Default for windows_spawn::SignedBinaries
+pub fn windows_spawn::SignedBinaries::default() -> windows_spawn::SignedBinaries
+impl core::fmt::Debug for windows_spawn::SignedBinaries
+pub fn windows_spawn::SignedBinaries::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for windows_spawn::SignedBinaries
+pub fn windows_spawn::SignedBinaries::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for windows_spawn::SignedBinaries
+impl core::marker::StructuralPartialEq for windows_spawn::SignedBinaries
+impl core::marker::Freeze for windows_spawn::SignedBinaries
+impl core::marker::Send for windows_spawn::SignedBinaries
+impl core::marker::Sync for windows_spawn::SignedBinaries
+impl core::marker::Unpin for windows_spawn::SignedBinaries
+impl core::marker::UnsafeUnpin for windows_spawn::SignedBinaries
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::SignedBinaries
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::SignedBinaries
+#[repr(u64)] pub enum windows_spawn::UserCetContextIpValidation
+pub windows_spawn::UserCetContextIpValidation::AlwaysOff = 2
+pub windows_spawn::UserCetContextIpValidation::AlwaysOn = 1
+pub windows_spawn::UserCetContextIpValidation::Defer = 0
+pub windows_spawn::UserCetContextIpValidation::Relaxed = 3
+impl core::clone::Clone for windows_spawn::UserCetContextIpValidation
+pub fn windows_spawn::UserCetContextIpValidation::clone(&self) -> windows_spawn::UserCetContextIpValidation
+impl core::cmp::Eq for windows_spawn::UserCetContextIpValidation
+impl core::cmp::PartialEq for windows_spawn::UserCetContextIpValidation
+pub fn windows_spawn::UserCetContextIpValidation::eq(&self, &windows_spawn::UserCetContextIpValidation) -> bool
+impl core::default::Default for windows_spawn::UserCetContextIpValidation
+pub fn windows_spawn::UserCetContextIpValidation::default() -> windows_spawn::UserCetContextIpValidation
+impl core::fmt::Debug for windows_spawn::UserCetContextIpValidation
+pub fn windows_spawn::UserCetContextIpValidation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for windows_spawn::UserCetContextIpValidation
+pub fn windows_spawn::UserCetContextIpValidation::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for windows_spawn::UserCetContextIpValidation
+impl core::marker::StructuralPartialEq for windows_spawn::UserCetContextIpValidation
+impl core::marker::Freeze for windows_spawn::UserCetContextIpValidation
+impl core::marker::Send for windows_spawn::UserCetContextIpValidation
+impl core::marker::Sync for windows_spawn::UserCetContextIpValidation
+impl core::marker::Unpin for windows_spawn::UserCetContextIpValidation
+impl core::marker::UnsafeUnpin for windows_spawn::UserCetContextIpValidation
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::UserCetContextIpValidation
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::UserCetContextIpValidation
+pub struct windows_spawn::Child
+pub windows_spawn::Child::stderr: core::option::Option<windows_spawn::ChildStderr>
+pub windows_spawn::Child::stdin: core::option::Option<windows_spawn::ChildStdin>
+pub windows_spawn::Child::stdout: core::option::Option<windows_spawn::ChildStdout>
+impl windows_spawn::Child
+pub const fn windows_spawn::Child::id(&self) -> u32
+pub fn windows_spawn::Child::kill(&mut self) -> core::io::error::Result<()>
+pub fn windows_spawn::Child::try_wait(&mut self) -> core::io::error::Result<core::option::Option<std::process::ExitStatus>>
+pub fn windows_spawn::Child::wait(&mut self) -> core::io::error::Result<std::process::ExitStatus>
+pub fn windows_spawn::Child::wait_with_output(self) -> core::io::error::Result<std::process::Output>
+impl core::fmt::Debug for windows_spawn::Child
+pub fn windows_spawn::Child::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl std::os::windows::io::handle::AsHandle for windows_spawn::Child
+pub fn windows_spawn::Child::as_handle(&self) -> std::os::windows::io::handle::BorrowedHandle<'_>
+impl core::marker::Freeze for windows_spawn::Child
+impl core::marker::Send for windows_spawn::Child
+impl core::marker::Sync for windows_spawn::Child
+impl core::marker::Unpin for windows_spawn::Child
+impl core::marker::UnsafeUnpin for windows_spawn::Child
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::Child
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::Child
+pub struct windows_spawn::ChildStderr
+impl core::fmt::Debug for windows_spawn::ChildStderr
+pub fn windows_spawn::ChildStderr::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl std::io::Read for windows_spawn::ChildStderr
+pub fn windows_spawn::ChildStderr::read(&mut self, &mut [u8]) -> core::io::error::Result<usize>
+impl std::os::windows::io::handle::AsHandle for windows_spawn::ChildStderr
+pub fn windows_spawn::ChildStderr::as_handle(&self) -> std::os::windows::io::handle::BorrowedHandle<'_>
+impl core::marker::Freeze for windows_spawn::ChildStderr
+impl core::marker::Send for windows_spawn::ChildStderr
+impl core::marker::Sync for windows_spawn::ChildStderr
+impl core::marker::Unpin for windows_spawn::ChildStderr
+impl core::marker::UnsafeUnpin for windows_spawn::ChildStderr
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::ChildStderr
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::ChildStderr
+pub struct windows_spawn::ChildStdin
+impl core::fmt::Debug for windows_spawn::ChildStdin
+pub fn windows_spawn::ChildStdin::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl std::io::Write for windows_spawn::ChildStdin
+pub fn windows_spawn::ChildStdin::flush(&mut self) -> core::io::error::Result<()>
+pub fn windows_spawn::ChildStdin::write(&mut self, &[u8]) -> core::io::error::Result<usize>
+impl std::os::windows::io::handle::AsHandle for windows_spawn::ChildStdin
+pub fn windows_spawn::ChildStdin::as_handle(&self) -> std::os::windows::io::handle::BorrowedHandle<'_>
+impl core::marker::Freeze for windows_spawn::ChildStdin
+impl core::marker::Send for windows_spawn::ChildStdin
+impl core::marker::Sync for windows_spawn::ChildStdin
+impl core::marker::Unpin for windows_spawn::ChildStdin
+impl core::marker::UnsafeUnpin for windows_spawn::ChildStdin
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::ChildStdin
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::ChildStdin
+pub struct windows_spawn::ChildStdout
+impl core::fmt::Debug for windows_spawn::ChildStdout
+pub fn windows_spawn::ChildStdout::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl std::io::Read for windows_spawn::ChildStdout
+pub fn windows_spawn::ChildStdout::read(&mut self, &mut [u8]) -> core::io::error::Result<usize>
+impl std::os::windows::io::handle::AsHandle for windows_spawn::ChildStdout
+pub fn windows_spawn::ChildStdout::as_handle(&self) -> std::os::windows::io::handle::BorrowedHandle<'_>
+impl core::marker::Freeze for windows_spawn::ChildStdout
+impl core::marker::Send for windows_spawn::ChildStdout
+impl core::marker::Sync for windows_spawn::ChildStdout
+impl core::marker::Unpin for windows_spawn::ChildStdout
+impl core::marker::UnsafeUnpin for windows_spawn::ChildStdout
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::ChildStdout
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::ChildStdout
+pub struct windows_spawn::Command
+impl windows_spawn::Command
+pub fn windows_spawn::Command::arg<S: core::convert::AsRef<std::ffi::os_str::OsStr>>(&mut self, S) -> &mut Self
+pub fn windows_spawn::Command::arg_handle<T: std::os::windows::io::handle::AsHandle>(&mut self, &T) -> core::io::error::Result<&mut Self>
+pub fn windows_spawn::Command::args<I, S>(&mut self, I) -> &mut Self where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<std::ffi::os_str::OsStr>
+pub fn windows_spawn::Command::current_dir<P: core::convert::AsRef<std::path::Path>>(&mut self, P) -> &mut Self
+pub fn windows_spawn::Command::env<K, V>(&mut self, K, V) -> &mut Self where K: core::convert::AsRef<std::ffi::os_str::OsStr>, V: core::convert::AsRef<std::ffi::os_str::OsStr>
+pub fn windows_spawn::Command::env_clear(&mut self) -> &mut Self
+pub fn windows_spawn::Command::env_handle<K: core::convert::AsRef<std::ffi::os_str::OsStr>, T: std::os::windows::io::handle::AsHandle>(&mut self, K, &T) -> core::io::error::Result<&mut Self>
+pub fn windows_spawn::Command::env_remove<K: core::convert::AsRef<std::ffi::os_str::OsStr>>(&mut self, K) -> &mut Self
+pub fn windows_spawn::Command::envs<I, K, V>(&mut self, I) -> &mut Self where I: core::iter::traits::collect::IntoIterator<Item = (K, V)>, K: core::convert::AsRef<std::ffi::os_str::OsStr>, V: core::convert::AsRef<std::ffi::os_str::OsStr>
+pub fn windows_spawn::Command::get_current_dir(&self) -> core::option::Option<&std::path::Path>
+pub fn windows_spawn::Command::get_program(&self) -> &std::ffi::os_str::OsStr
+pub fn windows_spawn::Command::new<S: core::convert::AsRef<std::ffi::os_str::OsStr>>(S) -> Self
+pub fn windows_spawn::Command::output(&mut self) -> core::io::error::Result<std::process::Output>
+pub fn windows_spawn::Command::output_with(&mut self, windows_spawn::SpawnOptions<'_>) -> core::io::error::Result<std::process::Output>
+pub fn windows_spawn::Command::raw_arg<S: core::convert::AsRef<std::ffi::os_str::OsStr>>(&mut self, S) -> &mut Self
+pub fn windows_spawn::Command::spawn(&mut self) -> core::io::error::Result<windows_spawn::Child>
+pub fn windows_spawn::Command::spawn_suspended(&mut self) -> core::io::error::Result<windows_spawn::SuspendedChild>
+pub fn windows_spawn::Command::spawn_suspended_with(&mut self, windows_spawn::SpawnOptions<'_>) -> core::io::error::Result<windows_spawn::SuspendedChild>
+pub fn windows_spawn::Command::spawn_with(&mut self, windows_spawn::SpawnOptions<'_>) -> core::io::error::Result<windows_spawn::Child>
+pub fn windows_spawn::Command::status(&mut self) -> core::io::error::Result<std::process::ExitStatus>
+pub fn windows_spawn::Command::status_with(&mut self, windows_spawn::SpawnOptions<'_>) -> core::io::error::Result<std::process::ExitStatus>
+pub fn windows_spawn::Command::stderr<T: core::convert::Into<windows_spawn::Stdio>>(&mut self, T) -> &mut Self
+pub fn windows_spawn::Command::stdin<T: core::convert::Into<windows_spawn::Stdio>>(&mut self, T) -> &mut Self
+pub fn windows_spawn::Command::stdout<T: core::convert::Into<windows_spawn::Stdio>>(&mut self, T) -> &mut Self
+impl core::fmt::Debug for windows_spawn::Command
+pub fn windows_spawn::Command::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for windows_spawn::Command
+impl core::marker::Send for windows_spawn::Command
+impl core::marker::Sync for windows_spawn::Command
+impl core::marker::Unpin for windows_spawn::Command
+impl core::marker::UnsafeUnpin for windows_spawn::Command
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::Command
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::Command
+pub struct windows_spawn::CreationFlags(_)
+impl windows_spawn::CreationFlags
+pub const windows_spawn::CreationFlags::BREAKAWAY_FROM_JOB: Self
+pub const windows_spawn::CreationFlags::DEFAULT_ERROR_MODE: Self
+pub const windows_spawn::CreationFlags::DETACHED_PROCESS: Self
+pub const windows_spawn::CreationFlags::INHERIT_PARENT_AFFINITY: Self
+pub const windows_spawn::CreationFlags::NEW_CONSOLE: Self
+pub const windows_spawn::CreationFlags::NEW_PROCESS_GROUP: Self
+pub const windows_spawn::CreationFlags::NO_WINDOW: Self
+pub const windows_spawn::CreationFlags::PRESERVE_CODE_AUTHZ_LEVEL: Self
+pub const fn windows_spawn::CreationFlags::new() -> Self
+impl core::clone::Clone for windows_spawn::CreationFlags
+pub fn windows_spawn::CreationFlags::clone(&self) -> windows_spawn::CreationFlags
+impl core::cmp::Eq for windows_spawn::CreationFlags
+impl core::cmp::PartialEq for windows_spawn::CreationFlags
+pub fn windows_spawn::CreationFlags::eq(&self, &windows_spawn::CreationFlags) -> bool
+impl core::default::Default for windows_spawn::CreationFlags
+pub fn windows_spawn::CreationFlags::default() -> windows_spawn::CreationFlags
+impl core::fmt::Debug for windows_spawn::CreationFlags
+pub fn windows_spawn::CreationFlags::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for windows_spawn::CreationFlags
+pub fn windows_spawn::CreationFlags::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for windows_spawn::CreationFlags
+impl core::marker::StructuralPartialEq for windows_spawn::CreationFlags
+impl core::ops::bit::BitOr for windows_spawn::CreationFlags
+pub type windows_spawn::CreationFlags::Output = windows_spawn::CreationFlags
+pub fn windows_spawn::CreationFlags::bitor(self, Self) -> Self::Output
+impl core::ops::bit::BitOrAssign for windows_spawn::CreationFlags
+pub fn windows_spawn::CreationFlags::bitor_assign(&mut self, Self)
+impl core::marker::Freeze for windows_spawn::CreationFlags
+impl core::marker::Send for windows_spawn::CreationFlags
+impl core::marker::Sync for windows_spawn::CreationFlags
+impl core::marker::Unpin for windows_spawn::CreationFlags
+impl core::marker::UnsafeUnpin for windows_spawn::CreationFlags
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::CreationFlags
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::CreationFlags
+pub struct windows_spawn::Job
+impl windows_spawn::Job
+pub fn windows_spawn::Job::assign(&self, &windows_spawn::Child) -> core::io::error::Result<()>
+pub fn windows_spawn::Job::create() -> core::io::error::Result<Self>
+pub fn windows_spawn::Job::duplicate(&self) -> core::io::error::Result<Self>
+pub fn windows_spawn::Job::from_handle(std::os::windows::io::handle::OwnedHandle) -> core::io::error::Result<Self>
+pub fn windows_spawn::Job::set_kill_on_close(&self, bool) -> core::io::error::Result<()>
+pub fn windows_spawn::Job::terminate(&self, u32) -> core::io::error::Result<()>
+impl core::fmt::Debug for windows_spawn::Job
+pub fn windows_spawn::Job::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl std::os::windows::io::handle::AsHandle for windows_spawn::Job
+pub fn windows_spawn::Job::as_handle(&self) -> std::os::windows::io::handle::BorrowedHandle<'_>
+impl core::marker::Freeze for windows_spawn::Job
+impl core::marker::Send for windows_spawn::Job
+impl core::marker::Sync for windows_spawn::Job
+impl core::marker::Unpin for windows_spawn::Job
+impl core::marker::UnsafeUnpin for windows_spawn::Job
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::Job
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::Job
+pub struct windows_spawn::MitigationPolicy
+impl windows_spawn::MitigationPolicy
+pub const fn windows_spawn::MitigationPolicy::allow_downgrade_dynamic_code(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::block_low_label_images(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::block_non_cet_binaries(self, windows_spawn::BlockNonCetBinaries) -> Self
+pub const fn windows_spawn::MitigationPolicy::block_remote_images(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::bottom_up_aslr(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::cet_dynamic_apis_out_of_process(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::cet_user_shadow_stacks(self, windows_spawn::CetShadowStacks) -> Self
+pub const fn windows_spawn::MitigationPolicy::control_flow_guard(self, windows_spawn::ControlFlowGuard) -> Self
+pub const fn windows_spawn::MitigationPolicy::dep(self, bool) -> Self
+pub const fn windows_spawn::MitigationPolicy::dep_atl_thunk(self, bool) -> Self
+pub const fn windows_spawn::MitigationPolicy::disable_extension_points(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::disable_fsctl_system_calls(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::disable_speculative_store_bypass(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::disable_win32k_system_calls(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::dynamic_code(self, windows_spawn::DynamicCode) -> Self
+pub const fn windows_spawn::MitigationPolicy::extended_control_flow_guard(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::font_disable(self, windows_spawn::FontDisable) -> Self
+pub const fn windows_spawn::MitigationPolicy::heap_terminate(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::high_entropy_aslr(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::loader_integrity(self, windows_spawn::LoaderIntegrity) -> Self
+pub const fn windows_spawn::MitigationPolicy::module_tampering(self, windows_spawn::ModuleTampering) -> Self
+pub const fn windows_spawn::MitigationPolicy::new() -> Self
+pub const fn windows_spawn::MitigationPolicy::pointer_authentication(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::prefer_system32_images(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::relocate_images(self, windows_spawn::RelocateImages) -> Self
+pub const fn windows_spawn::MitigationPolicy::restrict_core_sharing(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::restrict_indirect_branch_prediction(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::sehop(self, bool) -> Self
+pub const fn windows_spawn::MitigationPolicy::signed_binaries(self, windows_spawn::SignedBinaries) -> Self
+pub const fn windows_spawn::MitigationPolicy::strict_control_flow_guard(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::strict_handle_checks(self, windows_spawn::Mitigation) -> Self
+pub const fn windows_spawn::MitigationPolicy::user_cet_context_ip_validation(self, windows_spawn::UserCetContextIpValidation) -> Self
+pub const fn windows_spawn::MitigationPolicy::words(self) -> [u64; 2]
+impl core::clone::Clone for windows_spawn::MitigationPolicy
+pub fn windows_spawn::MitigationPolicy::clone(&self) -> windows_spawn::MitigationPolicy
+impl core::cmp::Eq for windows_spawn::MitigationPolicy
+impl core::cmp::PartialEq for windows_spawn::MitigationPolicy
+pub fn windows_spawn::MitigationPolicy::eq(&self, &windows_spawn::MitigationPolicy) -> bool
+impl core::default::Default for windows_spawn::MitigationPolicy
+pub fn windows_spawn::MitigationPolicy::default() -> windows_spawn::MitigationPolicy
+impl core::fmt::Debug for windows_spawn::MitigationPolicy
+pub fn windows_spawn::MitigationPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for windows_spawn::MitigationPolicy
+pub fn windows_spawn::MitigationPolicy::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for windows_spawn::MitigationPolicy
+impl core::marker::StructuralPartialEq for windows_spawn::MitigationPolicy
+impl core::marker::Freeze for windows_spawn::MitigationPolicy
+impl core::marker::Send for windows_spawn::MitigationPolicy
+impl core::marker::Sync for windows_spawn::MitigationPolicy
+impl core::marker::Unpin for windows_spawn::MitigationPolicy
+impl core::marker::UnsafeUnpin for windows_spawn::MitigationPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::MitigationPolicy
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::MitigationPolicy
+pub struct windows_spawn::ParentProcess
+impl windows_spawn::ParentProcess
+pub fn windows_spawn::ParentProcess::from_handle(std::os::windows::io::handle::OwnedHandle) -> core::io::error::Result<Self>
+pub fn windows_spawn::ParentProcess::open(u32) -> core::io::error::Result<Self>
+impl core::fmt::Debug for windows_spawn::ParentProcess
+pub fn windows_spawn::ParentProcess::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl std::os::windows::io::handle::AsHandle for windows_spawn::ParentProcess
+pub fn windows_spawn::ParentProcess::as_handle(&self) -> std::os::windows::io::handle::BorrowedHandle<'_>
+impl core::marker::Freeze for windows_spawn::ParentProcess
+impl core::marker::Send for windows_spawn::ParentProcess
+impl core::marker::Sync for windows_spawn::ParentProcess
+impl core::marker::Unpin for windows_spawn::ParentProcess
+impl core::marker::UnsafeUnpin for windows_spawn::ParentProcess
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::ParentProcess
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::ParentProcess
+pub struct windows_spawn::SpawnOptions<'a>
+impl<'a> windows_spawn::SpawnOptions<'a>
+pub const fn windows_spawn::SpawnOptions<'a>::creation_flags(self, windows_spawn::CreationFlags) -> Self
+pub const fn windows_spawn::SpawnOptions<'a>::drop_policy(self, windows_spawn::DropPolicy) -> Self
+pub fn windows_spawn::SpawnOptions<'a>::job(self, &'a windows_spawn::Job) -> Self
+pub const fn windows_spawn::SpawnOptions<'a>::mitigation(self, windows_spawn::MitigationPolicy) -> Self
+pub fn windows_spawn::SpawnOptions<'a>::new() -> Self
+pub fn windows_spawn::SpawnOptions<'a>::parent_process(self, &'a windows_spawn::ParentProcess) -> Self
+pub fn windows_spawn::SpawnOptions<'a>::pseudoconsole<T: windows_spawn::AsPseudoConsole>(self, &'a T) -> Self
+impl core::default::Default for windows_spawn::SpawnOptions<'_>
+pub fn windows_spawn::SpawnOptions<'_>::default() -> Self
+impl core::fmt::Debug for windows_spawn::SpawnOptions<'_>
+pub fn windows_spawn::SpawnOptions<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Freeze for windows_spawn::SpawnOptions<'a>
+impl<'a> !core::marker::Send for windows_spawn::SpawnOptions<'a>
+impl<'a> !core::marker::Sync for windows_spawn::SpawnOptions<'a>
+impl<'a> core::marker::Unpin for windows_spawn::SpawnOptions<'a>
+impl<'a> core::marker::UnsafeUnpin for windows_spawn::SpawnOptions<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for windows_spawn::SpawnOptions<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for windows_spawn::SpawnOptions<'a>
+pub struct windows_spawn::Stdio
+impl windows_spawn::Stdio
+pub fn windows_spawn::Stdio::from_borrowed<T: std::os::windows::io::handle::AsHandle>(&T) -> core::io::error::Result<Self>
+pub const fn windows_spawn::Stdio::inherit() -> Self
+pub const fn windows_spawn::Stdio::null() -> Self
+pub const fn windows_spawn::Stdio::piped() -> Self
+impl core::convert::From<std::fs::File> for windows_spawn::Stdio
+pub fn windows_spawn::Stdio::from(std::fs::File) -> Self
+impl core::convert::From<std::os::windows::io::handle::OwnedHandle> for windows_spawn::Stdio
+pub fn windows_spawn::Stdio::from(std::os::windows::io::handle::OwnedHandle) -> Self
+impl core::fmt::Debug for windows_spawn::Stdio
+pub fn windows_spawn::Stdio::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for windows_spawn::Stdio
+impl core::marker::Send for windows_spawn::Stdio
+impl core::marker::Sync for windows_spawn::Stdio
+impl core::marker::Unpin for windows_spawn::Stdio
+impl core::marker::UnsafeUnpin for windows_spawn::Stdio
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::Stdio
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::Stdio
+pub struct windows_spawn::SuspendedChild
+impl windows_spawn::SuspendedChild
+pub fn windows_spawn::SuspendedChild::id(&self) -> u32
+pub fn windows_spawn::SuspendedChild::primary_thread_handle(&self) -> std::os::windows::io::handle::BorrowedHandle<'_>
+pub fn windows_spawn::SuspendedChild::resume(self) -> core::io::error::Result<windows_spawn::Child>
+impl core::fmt::Debug for windows_spawn::SuspendedChild
+pub fn windows_spawn::SuspendedChild::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for windows_spawn::SuspendedChild
+pub fn windows_spawn::SuspendedChild::drop(&mut self)
+impl std::os::windows::io::handle::AsHandle for windows_spawn::SuspendedChild
+pub fn windows_spawn::SuspendedChild::as_handle(&self) -> std::os::windows::io::handle::BorrowedHandle<'_>
+impl core::marker::Freeze for windows_spawn::SuspendedChild
+impl core::marker::Send for windows_spawn::SuspendedChild
+impl core::marker::Sync for windows_spawn::SuspendedChild
+impl core::marker::Unpin for windows_spawn::SuspendedChild
+impl core::marker::UnsafeUnpin for windows_spawn::SuspendedChild
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::SuspendedChild
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::SuspendedChild
+pub unsafe trait windows_spawn::AsPseudoConsole
+pub fn windows_spawn::AsPseudoConsole::raw_pseudoconsole(&self) -> isize

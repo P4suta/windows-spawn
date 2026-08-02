@@ -1,0 +1,14 @@
+additional_cargo_args = ["--locked"]
+timeout_multiplier = 5.0
+minimum_test_timeout = 60.0
+gitignore = true
+cap_lints = false
+
+# Each exclusion is an audited equivalent transformation documented in
+# docs/adr/0008-mutation-testing.md. No file or mutation class is excluded.
+exclude_re = [
+  'src/mitigation\.rs:.*replace \| with \^ in replace',
+  'src/sys\.rs:.*replace \| with \^ in <impl Drop for RemoteHandle',
+  'src/sys\.rs:.*replace \| with \^ in open_parent_process',
+  'src/sys\.rs:.*replace \| with \^ in create_process',
+]
