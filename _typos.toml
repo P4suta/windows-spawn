@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 Yasunobu Sakashita
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[files]
+ignore-hidden = false
+extend-exclude = [
+    ".git/",
+    "target/",
+    "mutants.out/",
+]

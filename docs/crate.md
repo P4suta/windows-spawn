@@ -68,7 +68,10 @@ See
 [`SpawnOptions`] borrows one-spawn capabilities such as Jobs, an alternate
 parent, or a pseudoconsole. A borrowed `ConPTY` remains owned by the terminal
 library implementing [`AsPseudoConsole`]. That library defines when terminal
-pipes close and when terminal EOF occurs.
+pipes close and when terminal EOF occurs. Pseudoconsole process creation sets
+`STARTF_USESTDHANDLES` with all three standard-handle slots null and does not
+put standard handles in the inheritance list. This prevents a hosted child
+from falling back to redirected standard handles owned by the parent.
 
 # Drop, wait, and EOF contract
 

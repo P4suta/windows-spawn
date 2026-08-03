@@ -85,10 +85,14 @@ pub(crate) fn duplicate_local(
     source: BorrowedHandle<'_>,
     inheritable: bool,
 ) -> io::Result<OwnedHandle> {
+    // SAFETY: `GetCurrentProcess` takes no arguments, cannot fail, and returns
+    // the current-process pseudo-handle. The value is a constant that stays
+    // valid for the lifetime of the process and must never be closed.
+    let current = unsafe { GetCurrentProcess() };
     duplicate_between(
-        unsafe { GetCurrentProcess() },
+        current,
         raw(source),
-        unsafe { GetCurrentProcess() },
+        current,
         inheritable,
         DUPLICATE_SAME_ACCESS,
     )
@@ -135,13 +139,17 @@ impl RemoteHandle<'_> {
 
 impl Drop for RemoteHandle<'_> {
     fn drop(&mut self) {
+        // SAFETY: `GetCurrentProcess` takes no arguments, cannot fail, and
+        // returns the current-process pseudo-handle. The value is a constant
+        // that stays valid for the lifetime of the process and is never closed.
+        let current = unsafe { GetCurrentProcess() };
         // `duplicate_between` turns the temporary local copy into an
         // `OwnedHandle`; discarding the result closes it immediately. The
         // close-source option atomically removes the remote value.
         let _ = duplicate_between(
             raw(self.process),
             self.value,
-            unsafe { GetCurrentProcess() },
+            current,
             false,
             DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE,
         );
@@ -462,12 +470,18 @@ pub(crate) struct StandardHandles {
     pub(crate) stderr: isize,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum StartupStdio {
+    Ordinary(StandardHandles),
+    PseudoConsole,
+}
+
 pub(crate) struct ProcessRequest<'a> {
     pub(crate) application: &'a [u16],
     pub(crate) command_line: &'a mut [u16],
     pub(crate) environment: Option<&'a [u16]>,
     pub(crate) current_dir: Option<&'a [u16]>,
-    pub(crate) stdio: Option<StandardHandles>,
+    pub(crate) stdio: StartupStdio,
     pub(crate) inherit_handles: bool,
     pub(crate) creation_flags: u32,
     pub(crate) suspended: bool,
@@ -542,9 +556,9 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
     })
 }
 
-fn set_standard_handles(startup: &mut STARTUPINFOEXW, handles: Option<StandardHandles>) {
-    if let Some(handles) = handles {
-        startup.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
+fn set_standard_handles(startup: &mut STARTUPINFOEXW, stdio: StartupStdio) {
+    startup.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
+    if let StartupStdio::Ordinary(handles) = stdio {
         startup.StartupInfo.hStdInput = handles.stdin as HANDLE;
         startup.StartupInfo.hStdOutput = handles.stdout as HANDLE;
         startup.StartupInfo.hStdError = handles.stderr as HANDLE;
@@ -710,10 +724,11 @@ pub(crate) fn environment_strings() -> io::Result<Vec<(OsString, OsString)>> {
                 OsString::from_wide(&entry[separator + 1..]),
             ));
         }
-        // SAFETY: move to the first unit after this entry's terminator.
         let advance = length
             .checked_add(1)
             .ok_or_else(|| io::Error::other("environment block is too large"))?;
+        // SAFETY: `advance` moves to the first unit after this entry's
+        // terminator, which is still inside the double-NUL-terminated block.
         cursor = unsafe { cursor.add(advance) };
     }
     Ok(entries)
@@ -821,6 +836,14 @@ mod tests {
         }
     }
 
+    fn current_process() -> BorrowedHandle<'static> {
+        // SAFETY: `GetCurrentProcess` cannot fail and returns the
+        // current-process pseudo-handle, a constant that stays valid for the
+        // whole process lifetime. `BorrowedHandle` never closes what it borrows,
+        // so a `'static` borrow of it can never dangle or double-close.
+        unsafe { BorrowedHandle::borrow_raw(GetCurrentProcess() as RawHandle) }
+    }
+
     #[test]
     fn pipe_null_and_duplicate_primitives_preserve_ownership() -> io::Result<()> {
         assert_eq!(
@@ -854,20 +877,13 @@ mod tests {
         let target = open_parent_process(host.id())?;
         drop(target);
         let before = process_handle_count(host.as_handle())?;
-        let local_before = process_handle_count(unsafe {
-            BorrowedHandle::borrow_raw(GetCurrentProcess() as RawHandle)
-        })?;
+        let local_before = process_handle_count(current_process())?;
         let remote = duplicate_remote(writable_null.as_handle(), host.as_handle(), true)?;
         assert_ne!(remote.value(), 0);
         assert!(process_handle_count(host.as_handle())? > before);
         drop(remote);
         assert_eq!(process_handle_count(host.as_handle())?, before);
-        assert_eq!(
-            process_handle_count(unsafe {
-                BorrowedHandle::borrow_raw(GetCurrentProcess() as RawHandle)
-            })?,
-            local_before
-        );
+        assert_eq!(process_handle_count(current_process())?, local_before);
         let _ = host.kill();
         let _ = host.wait();
         Ok(())
@@ -921,10 +937,10 @@ mod tests {
     }
 
     #[test]
-    fn startup_info_uses_standard_handles_only_when_supplied() {
+    fn startup_info_distinguishes_pseudoconsole_and_ordinary_stdio() {
         let mut conpty = STARTUPINFOEXW::default();
-        set_standard_handles(&mut conpty, None);
-        assert_eq!(conpty.StartupInfo.dwFlags & STARTF_USESTDHANDLES, 0);
+        set_standard_handles(&mut conpty, StartupStdio::PseudoConsole);
+        assert_ne!(conpty.StartupInfo.dwFlags & STARTF_USESTDHANDLES, 0);
         assert!(conpty.StartupInfo.hStdInput.is_null());
         assert!(conpty.StartupInfo.hStdOutput.is_null());
         assert!(conpty.StartupInfo.hStdError.is_null());
@@ -932,7 +948,7 @@ mod tests {
         let mut ordinary = STARTUPINFOEXW::default();
         set_standard_handles(
             &mut ordinary,
-            Some(StandardHandles {
+            StartupStdio::Ordinary(StandardHandles {
                 stdin: 1,
                 stdout: 2,
                 stderr: 3,

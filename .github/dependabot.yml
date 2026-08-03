@@ -13,6 +13,16 @@ updates:
       - rust
     commit-message:
       prefix: deps
+    # `just msrv` and the Rust 1.75 test legs check the whole workspace, so an
+    # xtask dependency that raises its own MSRV above ours breaks CI even though
+    # it never ships. sha2 0.11 requires Rust 1.85; the checksum code already
+    # handles both generations, so this only needs lifting when the crate MSRV
+    # moves past 1.85.
+    ignore:
+      - dependency-name: sha2
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-major
     groups:
       cargo-minor-and-patch:
         applies-to: version-updates

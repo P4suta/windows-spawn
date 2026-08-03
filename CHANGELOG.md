@@ -5,19 +5,35 @@ Versioning with Cargo's pre-1.0 compatibility rules.
 
 ## [Unreleased]
 
+### Added
+
+- A compiled, executed `Command` documentation example. The crate previously had
+  only `compile_fail` boundary pins, so no usage example was ever type-checked.
+- `clippy::undocumented_unsafe_blocks` is denied, making CONTRIBUTING's
+  "every `unsafe` block carries a specific safety justification" rule
+  machine-checked instead of a convention.
+- A `_typos.toml` so the spell-check gate has a checked-in configuration
+  matching the sibling repositories.
+
 ### Changed
 
 - Strengthened process creation with private running/suspended typestates,
   unified handle-transfer ownership, and value-based pseudoconsole storage.
-- Aligned ConPTY startup with the Windows reference sequence by leaving
-  ordinary standard handles unused and omitting `STARTF_USESTDHANDLES`.
+- Aligned ConPTY startup with Microsoft Terminal by setting
+  `STARTF_USESTDHANDLES` while keeping all ordinary standard handles null.
 - Require `SuspendedChild::resume` to observe the expected suspend count of
   exactly one; externally changed counts now fail and roll back the process.
 
 ### Fixed
 
+- Prevented ConPTY children from reading or writing the parent's redirected
+  standard streams instead of the pseudoconsole channels.
 - Always join both output reader threads when output capture encounters a
   reader error or panic.
+- The release-artifact checksum helper no longer relies on `LowerHex` being
+  implemented for the digest output, so it builds against both `sha2` 0.10 and
+  0.11. The bump itself stays deferred because `sha2` 0.11 requires Rust 1.85,
+  above this crate's 1.75 minimum.
 
 ## [0.1.0] - 2026-08-02
 

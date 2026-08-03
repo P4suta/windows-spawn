@@ -38,6 +38,26 @@ pub(crate) enum EnvValue {
 /// privately duplicated when configured. Each spawn duplicates those handles
 /// again into the actual parent process and only then lowers their numeric
 /// values to decimal text.
+///
+/// # Examples
+///
+/// Run a command to completion and capture what it wrote, terminating any
+/// descendants it leaves behind:
+///
+/// ```
+/// use windows_spawn::{Command, DropPolicy, SpawnOptions};
+///
+/// // `.bat` and `.cmd` are rejected, so a shell boundary is always explicit.
+/// let shell = std::env::var_os("COMSPEC").expect("COMSPEC is set on Windows");
+/// let mut command = Command::new(shell);
+/// command.args(["/D", "/S", "/C"]).raw_arg("echo hello");
+///
+/// let output = command.output_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
+///
+/// assert!(output.status.success());
+/// assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
+/// # Ok::<(), std::io::Error>(())
+/// ```
 #[derive(Debug)]
 pub struct Command {
     pub(crate) program: OsString,

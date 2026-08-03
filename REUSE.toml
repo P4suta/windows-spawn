@@ -6,6 +6,7 @@ path = [
   ".cargo/**",
   ".gitattributes",
   ".gitignore",
+  "_typos.toml",
   "Cargo.toml",
   "CHANGELOG.md",
   "CONTRIBUTING.md",

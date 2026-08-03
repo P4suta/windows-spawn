@@ -15,7 +15,9 @@ use crate::child::{Child, SuspendedChild};
 use crate::command::{Arg, Command, EnvOp, EnvValue};
 use crate::handles::{Job, StdioInner};
 use crate::options::DropPolicy;
-use crate::plan::{Running, SpawnPlan, SpawnState, StandardHandles, StdioSpec, Suspended};
+use crate::plan::{
+    Running, SpawnPlan, SpawnState, StandardHandles, StandardIo, StdioSpec, Suspended,
+};
 use crate::sys::{self, NullAccess, StandardStream};
 
 const QUOTE: u16 = 0x22;
@@ -39,22 +41,22 @@ impl<M: SpawnState> SpawnTransaction<M> {
         let parent: Option<BorrowedHandle<'options>> = plan.options.parent.map(AsHandle::as_handle);
         let mut transfer = HandleTransfer::new(parent);
         let (stdio_values, stdio) = match &plan.stdio {
-            Some(specs) => {
+            StandardIo::Ordinary(specs) => {
                 let prepared = prepare_standard_handles(specs, &mut transfer)?;
-                let values = sys::StandardHandles {
+                let values = sys::StartupStdio::Ordinary(sys::StandardHandles {
                     stdin: prepared.stdin.child,
                     stdout: prepared.stdout.child,
                     stderr: prepared.stderr.child,
-                };
+                });
                 let owners = StandardHandles {
                     stdin: prepared.stdin.parent,
                     stdout: prepared.stdout.parent,
                     stderr: prepared.stderr.parent,
                 };
-                (Some(values), owners)
+                (values, owners)
             }
-            None => (
-                None,
+            StandardIo::PseudoConsole => (
+                sys::StartupStdio::PseudoConsole,
                 StandardHandles {
                     stdin: None,
                     stdout: None,
@@ -626,6 +628,40 @@ mod tests {
         assert_eq!(lower, upper);
         assert_eq!(lower.partial_cmp(&upper), Some(Ordering::Equal));
         assert_ne!(lower, EnvKey::new(OsString::from("beta")));
+    }
+
+    #[test]
+    fn environment_preserves_windows_ordinal_distinctions() {
+        let mut command = Command::new("cmd.exe");
+        command
+            .env_clear()
+            .env("S", "latin-s")
+            .env("ſ", "long-s")
+            .env("Μ", "greek-mu")
+            .env("µ", "micro-sign");
+        let mut transfer = HandleTransfer::new(None);
+        let block = build_environment(&command, &mut transfer)
+            .unwrap()
+            .block
+            .unwrap();
+        let entries: Vec<String> = block
+            .split(|unit| *unit == 0)
+            .filter(|entry| !entry.is_empty())
+            .map(String::from_utf16_lossy)
+            .collect();
+
+        assert_eq!(entries.len(), 4, "Windows-distinct keys were overwritten");
+        for expected in ["S=latin-s", "ſ=long-s", "Μ=greek-mu", "µ=micro-sign"] {
+            assert!(entries.iter().any(|entry| entry == expected));
+        }
+        assert_ne!(
+            EnvKey::new(OsString::from("S")),
+            EnvKey::new(OsString::from("ſ"))
+        );
+        assert_ne!(
+            EnvKey::new(OsString::from("Μ")),
+            EnvKey::new(OsString::from("µ"))
+        );
     }
 
     #[test]

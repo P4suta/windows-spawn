@@ -34,6 +34,12 @@ use windows_sys::Win32::System::Threading::{
     WaitForSingleObject,
 };
 
+const PCON_ISOLATION_HELPER: &str = "WINDOWS_SPAWN_PCON_ISOLATION_HELPER";
+const PCON_STDIO_PROBE: &str = "WINDOWS_SPAWN_PCON_STDIO_PROBE";
+const PCON_STDIN_MARKER: &[u8] = b"windows-spawn-pcon-stdin";
+const PCON_STDOUT_MARKER: &[u8] = b"windows-spawn-pcon-stdout";
+const PCON_STDERR_MARKER: &[u8] = b"windows-spawn-pcon-stderr";
+
 fn cmd(script: &str) -> Command {
     let mut command = Command::new("cmd.exe");
     command.args(["/D", "/S", "/C"]).raw_arg(script);
@@ -131,6 +137,19 @@ impl Drop for ProcessExitGuard {
     }
 }
 
+fn wait_bounded(child: &mut windows_spawn::Child) -> io::Result<Option<std::process::ExitStatus>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn args_environment_cwd_and_wait_cache_work() -> io::Result<()> {
     let directory = temporary_path("cwd");
@@ -222,10 +241,9 @@ fn resume_rejects_an_externally_changed_suspend_count() -> io::Result<()> {
     let mut process = ProcessExitGuard::new(local_duplicate(&suspended, false)?);
     // SAFETY: the primary thread handle remains owned by SuspendedChild and
     // has THREAD_SUSPEND_RESUME access from CreateProcessW.
-    assert_eq!(
-        unsafe { SuspendThread(suspended.primary_thread_handle().as_raw_handle()) },
-        1
-    );
+    let previous_suspend_count =
+        unsafe { SuspendThread(suspended.primary_thread_handle().as_raw_handle()) };
+    assert_eq!(previous_suspend_count, 1);
 
     assert_eq!(
         suspended.resume().unwrap_err().kind(),
@@ -260,9 +278,11 @@ fn native_standard_handle_probe() {
     let Ok(mode) = std::env::var("WINDOWS_SPAWN_STDIO_PROBE") else {
         return;
     };
-    // SAFETY: these calls only inspect the process-owned standard handle slots.
+    // SAFETY: this only inspects the process-owned standard input slot.
     let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    // SAFETY: this only inspects the process-owned standard output slot.
     let output = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    // SAFETY: this only inspects the process-owned standard error slot.
     let error = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
     let valid = |handle: HANDLE| {
         !handle.is_null()
@@ -279,22 +299,20 @@ fn native_standard_handle_probe() {
         let mut byte = [0_u8; 1];
         let mut read = 0_u32;
         // SAFETY: buffers and byte-count outputs are valid for synchronous I/O.
-        assert_ne!(
-            unsafe { ReadFile(input, byte.as_mut_ptr(), 1, &mut read, std::ptr::null_mut()) },
-            0
-        );
+        let read_succeeded =
+            unsafe { ReadFile(input, byte.as_mut_ptr(), 1, &mut read, std::ptr::null_mut()) };
+        assert_ne!(read_succeeded, 0);
         assert_eq!(read, 0);
         let mut written = 0_u32;
         // SAFETY: the one-byte buffer and byte-count output remain valid.
-        assert_ne!(
-            unsafe { WriteFile(output, byte.as_ptr(), 1, &mut written, std::ptr::null_mut()) },
-            0
-        );
+        let wrote_stdout =
+            unsafe { WriteFile(output, byte.as_ptr(), 1, &mut written, std::ptr::null_mut()) };
+        assert_ne!(wrote_stdout, 0);
         assert_eq!(written, 1);
-        assert_ne!(
-            unsafe { WriteFile(error, byte.as_ptr(), 1, &mut written, std::ptr::null_mut()) },
-            0
-        );
+        // SAFETY: the one-byte buffer and byte-count output remain valid.
+        let wrote_stderr =
+            unsafe { WriteFile(error, byte.as_ptr(), 1, &mut written, std::ptr::null_mut()) };
+        assert_ne!(wrote_stderr, 0);
         assert_eq!(written, 1);
     }
 }
@@ -329,12 +347,20 @@ fn explicit_job_attachment_and_kill_tree_output_complete() -> io::Result<()> {
 
     // The background grandchild inherits stdout. Without terminating the
     // private Job after root exit, wait_with_output would never observe EOF.
-    let mut tree = cmd("start \"\" /b cmd.exe /D /C \"ping -n 8 127.0.0.1 >nul\" & echo root");
+    // Keep the natural grandchild lifetime well beyond the assertion budget.
+    // This preserves the EOF proof without making a three-second wall-clock
+    // deadline flaky when the full integration suite creates processes in
+    // parallel on a loaded CI host.
+    let mut tree = cmd("start \"\" /b cmd.exe /D /C \"ping -n 20 127.0.0.1 >nul\" & echo root");
     let started = Instant::now();
     let output = tree.output_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
+    let elapsed = started.elapsed();
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("root"));
-    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "root-bounded output waited {elapsed:?} for the background grandchild"
+    );
     Ok(())
 }
 
@@ -661,7 +687,38 @@ impl TestPseudoConsole {
         })
     }
 
-    fn wait_for_output(&self, expected: &[u8]) -> io::Result<bool> {
+    fn write_input(&self, input: &[u8]) -> io::Result<()> {
+        let writer = self
+            .input_writer
+            .as_ref()
+            .expect("a live pseudoconsole retains its input writer");
+        let mut written = 0_u32;
+        let length = u32::try_from(input.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "input is too large"))?;
+        // SAFETY: the input buffer and byte-count output are valid for the
+        // synchronous write, and the writer remains owned by self.
+        if unsafe {
+            WriteFile(
+                writer.as_raw_handle(),
+                input.as_ptr(),
+                length,
+                &mut written,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if written != length {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "the pseudoconsole input write was incomplete",
+            ));
+        }
+        Ok(())
+    }
+
+    fn wait_for_output_markers(&self, expected: &[&[u8]]) -> io::Result<bool> {
         let output = self
             .output_reader
             .as_ref()
@@ -703,10 +760,11 @@ impl TestPseudoConsole {
                     return Err(io::Error::last_os_error());
                 }
                 received.extend_from_slice(&buffer[..read as usize]);
-                if received
-                    .windows(expected.len())
-                    .any(|window| window == expected)
-                {
+                if expected.iter().all(|marker| {
+                    received
+                        .windows(marker.len())
+                        .any(|window| window == *marker)
+                }) {
                     return Ok(true);
                 }
             }
@@ -746,21 +804,6 @@ unsafe impl AsPseudoConsole for TestPseudoConsole {
 
 #[test]
 fn pseudoconsole_attribute_connects_the_child_console() -> io::Result<()> {
-    fn wait_bounded(
-        child: &mut windows_spawn::Child,
-    ) -> io::Result<Option<std::process::ExitStatus>> {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            if let Some(status) = child.try_wait()? {
-                return Ok(Some(status));
-            }
-            if Instant::now() >= deadline {
-                return Ok(None);
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-    }
-
     let pseudoconsole = TestPseudoConsole::create()?;
     let mut command = Command::new(std::env::current_exe()?);
     command
@@ -774,7 +817,7 @@ fn pseudoconsole_attribute_connects_the_child_console() -> io::Result<()> {
         wait_bounded(&mut child)?.expect("ConPTY child must terminate after kill")
     };
     assert!(status.success());
-    assert!(pseudoconsole.wait_for_output(b"windows-spawn-pcon-attached")?);
+    assert!(pseudoconsole.wait_for_output_markers(&[b"windows-spawn-pcon-attached"])?);
     Ok(())
 }
 
@@ -784,11 +827,105 @@ fn pseudoconsole_child_probe() {
         return;
     }
     // SAFETY: GetConsoleCP has no pointer preconditions. A nonzero code page
-    // proves this process was attached to a console even though ConPTY startup
-    // intentionally leaves all ordinary standard-handle slots zero.
+    // proves this process was attached to a console. Opening CONOUT$ directly
+    // is only an auxiliary connection check; the isolated stdio regression
+    // below exercises the child's ordinary stdin/stdout/stderr slots.
     assert_ne!(unsafe { GetConsoleCP() }, 0);
     let mut output = File::options().write(true).open("CONOUT$").unwrap();
     output.write_all(b"windows-spawn-pcon-attached").unwrap();
+}
+
+#[test]
+fn pseudoconsole_regular_stdio_stays_off_parent_pipes() -> io::Result<()> {
+    let mut helper = Command::new(std::env::current_exe()?);
+    helper
+        .args([
+            "--exact",
+            "pseudoconsole_stdio_isolation_helper",
+            "--nocapture",
+        ])
+        .env(PCON_ISOLATION_HELPER, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = helper.output()?;
+    assert!(
+        output.status.success(),
+        "isolated ConPTY stdio helper failed: stdout={:?}, stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for marker in [PCON_STDOUT_MARKER, PCON_STDERR_MARKER] {
+        assert!(
+            !output
+                .stdout
+                .windows(marker.len())
+                .any(|window| window == marker),
+            "ConPTY child output leaked to its parent's stdout"
+        );
+        assert!(
+            !output
+                .stderr
+                .windows(marker.len())
+                .any(|window| window == marker),
+            "ConPTY child output leaked to its parent's stderr"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn pseudoconsole_stdio_isolation_helper() -> io::Result<()> {
+    if std::env::var_os(PCON_ISOLATION_HELPER).is_none() {
+        return Ok(());
+    }
+
+    let pseudoconsole = TestPseudoConsole::create()?;
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .args([
+            "--exact",
+            "pseudoconsole_regular_stdio_probe",
+            "--nocapture",
+        ])
+        .env(PCON_STDIO_PROBE, "1");
+    let mut child = command.spawn_with(SpawnOptions::new().pseudoconsole(&pseudoconsole))?;
+    let mut input = PCON_STDIN_MARKER.to_vec();
+    input.extend_from_slice(b"\r\n");
+    pseudoconsole.write_input(&input)?;
+
+    let status = if let Some(status) = wait_bounded(&mut child)? {
+        status
+    } else {
+        let _ = child.kill();
+        wait_bounded(&mut child)?.expect("ConPTY stdio probe must terminate after kill")
+    };
+    assert!(status.success());
+    assert!(pseudoconsole.wait_for_output_markers(&[PCON_STDOUT_MARKER, PCON_STDERR_MARKER])?);
+    Ok(())
+}
+
+#[test]
+fn pseudoconsole_regular_stdio_probe() -> io::Result<()> {
+    if std::env::var_os(PCON_STDIO_PROBE).is_none() {
+        return Ok(());
+    }
+
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
+    if !line
+        .as_bytes()
+        .windows(PCON_STDIN_MARKER.len())
+        .any(|window| window == PCON_STDIN_MARKER)
+    {
+        return Err(io::Error::other(
+            "standard input did not arrive through ConPTY",
+        ));
+    }
+    io::stdout().write_all(PCON_STDOUT_MARKER)?;
+    io::stdout().flush()?;
+    io::stderr().write_all(PCON_STDERR_MARKER)?;
+    io::stderr().flush()
 }
 
 #[test]
