@@ -648,7 +648,20 @@ fn sha256(path: &Path) -> Result<String> {
         }
         digest.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(lower_hex(&digest.finalize()))
+}
+
+// `sha2` 0.11 returns `hybrid_array::Array` instead of `GenericArray`, and that
+// type no longer implements `LowerHex`. Formatting the bytes ourselves keeps the
+// checksum output identical across both generations of the crate.
+fn lower_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut output, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    output
 }
 
 fn verify_release_tag(root: &Path, tag: &str) -> Result<()> {

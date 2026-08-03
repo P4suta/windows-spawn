@@ -66,5 +66,15 @@ unused_qualifications = "deny"
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 
+# CONTRIBUTING requires a specific safety justification on every `unsafe` block.
+# This restriction lint is what makes that rule machine-checked rather than a
+# convention, so a missing justification fails the build.
+#
+# `multiple_unsafe_ops_per_block` is deliberately not enabled: several blocks
+# here acquire two OS resources that must be adopted together to stay
+# exception-safe (see `pipe`), and splitting them would widen the window in
+# which one handle can leak.
+undocumented_unsafe_blocks = "deny"
+
 [lints]
 workspace = true

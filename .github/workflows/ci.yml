@@ -65,6 +65,22 @@ jobs:
           tool: just@1.57.0
       - run: just test
 
+  i686-smoke:
+    name: Windows i686 execution smoke
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
+        with:
+          toolchain: stable
+          targets: i686-pc-windows-msvc
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - name: Run the ConPTY stdio isolation regression as a 32-bit process
+        run: >-
+          cargo test --target i686-pc-windows-msvc --test windows_spawn
+          pseudoconsole_regular_stdio_stays_off_parent_pipes -- --exact
+
   linux:
     name: Linux empty API
     runs-on: ubuntu-latest
@@ -107,7 +123,7 @@ jobs:
   ci-required:
     name: CI required
     if: always()
-    needs: [hygiene, test, linux, coverage, package]
+    needs: [hygiene, test, i686-smoke, linux, coverage, package]
     runs-on: ubuntu-latest
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')

@@ -15,10 +15,12 @@ Non-Windows targets expose no public API.
 
 ## Installation
 
-```toml
-[dependencies]
-windows-spawn = "0.1"
-```
+`windows-spawn` 0.1.0 is not published yet, so registry installation is not
+available. This repository is self-contained: it neither requires nor checks
+out a downstream terminal crate. A downstream that validates the unpublished
+version may temporarily supply its own local Cargo path override; that
+bootstrap belongs to the downstream repository and is removed after 0.1.0 is
+published.
 
 ## Minimal example
 

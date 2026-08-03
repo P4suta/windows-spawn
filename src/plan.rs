@@ -50,10 +50,16 @@ pub(crate) struct StandardHandles<T> {
 }
 
 #[derive(Debug)]
+pub(crate) enum StandardIo<'a> {
+    Ordinary(StandardHandles<StdioSpec<'a>>),
+    PseudoConsole,
+}
+
+#[derive(Debug)]
 pub(crate) struct SpawnPlan<'command, 'options, M> {
     pub(crate) command: &'command Command,
     pub(crate) options: SpawnOptions<'options>,
-    pub(crate) stdio: Option<StandardHandles<StdioSpec<'command>>>,
+    pub(crate) stdio: StandardIo<'command>,
     state: PhantomData<M>,
 }
 
@@ -112,7 +118,7 @@ impl<'command, 'options, M> SpawnPlan<'command, 'options, M> {
             ));
         }
         let stdio = if options.pseudoconsole_raw().is_some() {
-            None
+            StandardIo::PseudoConsole
         } else {
             let handles = match io_mode {
                 IoMode::Spawn => StandardHandles {
@@ -126,7 +132,7 @@ impl<'command, 'options, M> SpawnPlan<'command, 'options, M> {
                     stderr: configured_or(command.stderr.as_ref(), StdioSpec::Piped),
                 },
             };
-            Some(handles)
+            StandardIo::Ordinary(handles)
         };
 
         Ok(Self {
@@ -398,7 +404,9 @@ mod tests {
     fn successful_plans_choose_the_expected_stdio_modes() {
         let command = Command::new("cmd.exe");
         let output = SpawnPlan::new_running(&command, SpawnOptions::new(), IoMode::Output).unwrap();
-        let output_stdio = output.stdio.unwrap();
+        let StandardIo::Ordinary(output_stdio) = output.stdio else {
+            panic!("output capture must use ordinary standard I/O");
+        };
         assert!(matches!(output_stdio.stdin, StdioSpec::Null));
         assert!(matches!(output_stdio.stdout, StdioSpec::Piped));
         assert!(matches!(output_stdio.stderr, StdioSpec::Piped));
@@ -410,6 +418,6 @@ mod tests {
             IoMode::Spawn,
         )
         .unwrap();
-        assert!(pcon.stdio.is_none());
+        assert!(matches!(pcon.stdio, StandardIo::PseudoConsole));
     }
 }
