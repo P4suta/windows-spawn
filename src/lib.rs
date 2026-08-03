@@ -1,6 +1,14 @@
 #![doc = include_str!("../docs/crate.md")]
 #![deny(unsafe_code)]
 
+// The rendered crate documentation comes from `docs/crate.md`, so the README
+// would otherwise ship to crates.io without ever being compiled. Including it
+// under `cfg(doctest)` type-checks and runs its examples without adding a
+// second copy of the front page to the rendered docs.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+mod readme_examples {}
+
 #[cfg(windows)]
 mod child;
 #[cfg(windows)]

@@ -13,18 +13,18 @@ Use `std::process::Command` for portable child processes. Use this crate for
 The crate requires Windows 10 version 1809 or later and Rust 1.75 or later.
 Non-Windows targets expose no public API.
 
+This project is not affiliated with Microsoft or the `windows-rs` project. The
+`windows-` prefix describes the target platform, not the publisher.
+
 ## Installation
 
-`windows-spawn` 0.1.0 is not published yet, so registry installation is not
-available. This repository is self-contained: it neither requires nor checks
-out a downstream terminal crate. A downstream that validates the unpublished
-version may temporarily supply its own local Cargo path override; that
-bootstrap belongs to the downstream repository and is removed after 0.1.0 is
-published.
+```console
+cargo add windows-spawn
+```
 
 ## Minimal example
 
-```rust,no_run
+```rust
 use windows_spawn::{Command, DropPolicy, SpawnOptions};
 
 let mut command = Command::new(r"C:\Windows\System32\cmd.exe");
