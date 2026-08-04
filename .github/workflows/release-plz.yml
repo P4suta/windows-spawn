@@ -19,6 +19,12 @@ name: Release-plz
 "on":
   push:
     branches: [main]
+  # A release that fails partway cannot be recovered by re-running: a run that
+  # fails at startup is not retryable, and `main` only moves through pull
+  # requests. Manual dispatch is the retry path. It is not a second way to
+  # release -- release-plz still publishes only when the manifest version is
+  # ahead of the registry.
+  workflow_dispatch:
 
 permissions: {}
 
