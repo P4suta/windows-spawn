@@ -1,0 +1,101 @@
+name: Finalize release
+
+# Called by release-plz.yml once release-plz has published the crate and created
+# the tag. `git_release_enable = false` leaves the GitHub release to this
+# workflow, because the crate, SBOM, checksums, and attestations have to be
+# attached before it is published.
+"on":
+  workflow_call:
+    inputs:
+      tag:
+        description: Exact release tag created by release-plz
+        required: true
+        type: string
+      version:
+        description: Exact crate version released by release-plz
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-finalize-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    name: Attest and publish the release
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
+        with:
+          tool: cargo-cyclonedx@0.5.9
+      - run: python -m pip install "reuse[charset-normalizer]==6.2.0"
+      - name: Verify tag, commit, and Cargo version
+        run: cargo xtask verify-release-tag "$env:RELEASE_TAG"
+      - name: Build and verify release candidate
+        id: candidate
+        run: cargo xtask release-candidate --github-output
+
+      # The attestations below cover the archive built here, so it has to be
+      # the archive crates.io actually serves. `cargo package` is deterministic
+      # for a given source tree, and release-plz published from this same tag,
+      # so a mismatch means something diverged and the release must not proceed.
+      - name: Require the built archive to match the published crate
+        shell: pwsh
+        run: |
+          $crate = Get-ChildItem target/release-candidate/*.crate |
+            Select-Object -First 1
+          if ($null -eq $crate) { throw 'release candidate has no .crate archive' }
+          $built = (Get-FileHash $crate.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $uri = "https://crates.io/api/v1/crates/windows-spawn/$env:RELEASE_VERSION/download"
+          $probe = Join-Path $env:RUNNER_TEMP 'published.crate'
+          Invoke-WebRequest -Uri $uri -OutFile $probe -TimeoutSec 60 `
+            -Headers @{ 'User-Agent' = 'windows-spawn-release-finalize' }
+          $published = (Get-FileHash $probe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($built -ne $published) {
+            throw "built archive $built does not match the published crate $published"
+          }
+          "built and published archives match: $built" | Write-Output
+
+      - name: Attest SLSA v1 provenance
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d  # v4
+        with:
+          subject-path: |
+            target/release-candidate/*.crate
+            target/release-candidate/*.cdx.json
+            target/release-candidate/*.reuse.spdx
+            target/release-candidate/SHA256SUMS
+
+      - name: Attest CycloneDX SBOM
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d  # v4
+        with:
+          subject-path: target/release-candidate/*.crate
+          sbom-path: ${{ steps.candidate.outputs.sbom }}
+
+      - name: Create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: cargo xtask draft-release "$env:RELEASE_TAG" --github-output
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit $env:RELEASE_TAG --draft=false

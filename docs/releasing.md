@@ -24,39 +24,53 @@ SBOM, validates both SBOMs, and writes `target/release-candidate/SHA256SUMS`.
 
 ## Repository setup
 
-Create a GitHub environment named `release` with at least one required reviewer
-before adding a publishing credential. Apply the repository's release branch
-restrictions.
+Create a GitHub environment named `release` and apply the repository's release
+branch restrictions. It holds the `RELEASE_PLZ_APP_CLIENT_ID` variable and the
+`RELEASE_PLZ_APP_PRIVATE_KEY` secret for the installed `p4suta-release-plz`
+App, which needs repository **Contents** and **Pull requests** read/write.
 
-The workflow needs the repository's default `GITHUB_TOKEN` permissions only;
-its job requests `contents: write`, `id-token: write`, `attestations: write`,
-and `artifact-metadata: write`. Every third-party or GitHub action is pinned to
-a complete commit SHA.
+The App token is there because the default `GITHUB_TOKEN` cannot trigger other
+workflows, so CI would never run on a release pull request; release-plz
+documents this and uses an App itself. Every third-party or GitHub action is
+pinned to a complete commit SHA.
 
-## First crates.io publication
+## Release flow
 
-crates.io trusted publishing cannot be configured before the package exists.
-For the first publication only:
+`release-plz.yml` runs on every push to `main`. It publishes only when the
+manifest version is ahead of the registry, so an unrelated merge cannot
+release: **merging a reviewed release pull request is what authorises a
+publish.** Let release-plz own the version bump; editing `version` by hand
+still reaches the registry but skips the review the release pull request
+exists to provide.
+
+release-plz publishes the crate and creates `vX.Y.Z`. `git_release_enable =
+false` leaves the GitHub release to `release-finalize.yml`, which the same run
+calls: draft releases fire no release event, so there is nothing to hook
+instead, and the crate, SBOMs, checksums, and attestations have to be attached
+before the release is published.
+
+The finalizer verifies the tag, rebuilds the release candidate, and requires
+the rebuilt archive's SHA-256 to equal the crate crates.io actually serves
+before attesting anything. It then creates SLSA v1 build provenance and
+CycloneDX SBOM attestations, uploads the crate, both SBOMs, and checksums to a
+draft GitHub Release, and only then makes it public. A failure can leave a
+draft release; inspect and remove that draft before re-running.
+
+## crates.io credentials
+
+A trusted publisher can only be registered against a crate that already exists,
+so the first publication of a crate needs a token:
 
 1. Create a short-lived crates.io API token and store it as the
-   `CRATES_IO_BOOTSTRAP_TOKEN` secret on the protected `release` environment.
-2. Manually run the **Release** workflow for the existing tag with
-   `publish_crates_io` enabled, then approve the environment deployment.
-3. Immediately remove the environment secret and revoke the crates.io token.
-4. Configure the crate's crates.io trusted publisher for this repository,
-   `.github/workflows/release.yml`, and the `release` environment.
+   `CRATES_IO_BOOTSTRAP_TOKEN` secret on the `release` environment.
+2. Release normally. `cargo xtask crates-io-auth-mode` reports which credential
+   the run selected.
+3. Configure the crate's crates.io trusted publisher for this repository,
+   `.github/workflows/release-plz.yml`, and the `release` environment.
+4. Remove the environment secret and revoke the crates.io token. Later releases
+   then use only the short-lived OpenID Connect exchange.
 
-For later publications, leave `CRATES_IO_BOOTSTRAP_TOKEN` absent. The workflow
-uses the crates.io authentication action to obtain and revoke a short-lived
-OIDC token.
-
-## Publishing and verification
-
-After approval, the workflow regenerates the candidate, creates SLSA v1 build
-provenance and CycloneDX SBOM attestations, uploads the crate, both SBOMs, and
-checksums to a draft GitHub Release, optionally publishes to crates.io, and
-only then makes the GitHub Release public. A failure can leave a draft release;
-inspect and remove that draft before retrying the same tag.
+## Verification
 
 Consumers can download the release assets, verify `SHA256SUMS`, and verify
 provenance with:
