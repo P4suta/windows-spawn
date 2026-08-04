@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Yasunobu Sakashita
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[workspace]
+allow_dirty = false
+changelog_update = true
+dependencies_update = false
+# `release_always` is left at its default of true. Setting it to false makes
+# release-plz publish only from a commit it authored through its own release
+# pull request, so a version bumped by hand leaves the crate unreleasable: no
+# release pull request is proposed because the version is already ahead of the
+# registry, and no release happens because there was no release pull request.
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+# release-plz publishes the crate and creates the tag. The GitHub release is
+# left to release-finalize.yml, which needs to attach the crate, SBOM, and
+# attestations before anything is published.
+git_release_enable = false
+publish = true
+semver_check = true
+
+[[package]]
+name = "xtask"
+release = false
+
+[changelog]
+protect_breaking_commits = true
+tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
