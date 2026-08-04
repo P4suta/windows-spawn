@@ -23,6 +23,11 @@ semver_check = true
 [[package]]
 name = "xtask"
 release = false
+# `release = false` stops release-plz from releasing xtask, but the workspace
+# `publish = true` above still reaches it, and release-plz rejects a package
+# whose Cargo.toml says `publish = false` while its configuration says
+# otherwise. Restate it here.
+publish = false
 
 [changelog]
 protect_breaking_commits = true
