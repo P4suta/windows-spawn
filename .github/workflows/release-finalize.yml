@@ -44,7 +44,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
         with:
           toolchain: stable
-      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
+      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: cargo-cyclonedx@0.5.9
       - run: python -m pip install "reuse[charset-normalizer]==6.2.0"
@@ -76,7 +76,7 @@ jobs:
           "built and published archives match: $built" | Write-Output
 
       - name: Attest SLSA v1 provenance
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d  # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4
         with:
           subject-path: |
             target/release-candidate/*.crate
@@ -85,7 +85,7 @@ jobs:
             target/release-candidate/SHA256SUMS
 
       - name: Attest CycloneDX SBOM
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d  # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4
         with:
           subject-path: target/release-candidate/*.crate
           sbom-path: ${{ steps.candidate.outputs.sbom }}
