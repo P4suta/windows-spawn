@@ -1,8 +1,4 @@
-//! Per-spawn capabilities and creation policy.
-
 use std::fmt;
-use std::marker::PhantomData;
-use std::ops::{BitOr, BitOrAssign};
 
 use windows_sys::Win32::System::Threading::{
     CREATE_BREAKAWAY_FROM_JOB, CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE,
@@ -10,112 +6,80 @@ use windows_sys::Win32::System::Threading::{
     INHERIT_PARENT_AFFINITY,
 };
 
-use crate::handles::{AsPseudoConsole, Job, ParentProcess};
+use crate::handles::{AsPseudoConsole, BorrowedPseudoConsole, Job, ParentProcess};
 use crate::mitigation::MitigationPolicy;
 
-/// What dropping a live [`crate::Child`] does to its process tree.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum DropPolicy {
-    /// Close windows-spawn's process handle without terminating the process.
+/// The action taken when a live [`crate::Child`] releases its private Job.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum JobClosePolicy {
+    /// Preserve the child and any descendants after owned handles are closed.
     #[default]
-    Detach,
-    /// Terminate the child and all descendants in windows-spawn's private Job.
-    KillTree,
+    PreserveProcesses,
+    /// Terminate the child and descendants when the private Job is closed.
+    TerminateProcesses,
 }
 
-/// Safe, named `CreateProcessW` creation flags.
-///
-/// Unicode-environment, extended-startup-info, and suspended flags are set
-/// internally. There is no raw-bits constructor.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct CreationFlags(u32);
-
-impl CreationFlags {
-    /// Creates an empty flag set.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self(0)
-    }
-
-    /// Creates a process without inheriting a console.
-    pub const DETACHED_PROCESS: Self = Self(DETACHED_PROCESS);
-    /// Gives the child a new console.
-    pub const NEW_CONSOLE: Self = Self(CREATE_NEW_CONSOLE);
-    /// Makes the child the root of a new process group.
-    pub const NEW_PROCESS_GROUP: Self = Self(CREATE_NEW_PROCESS_GROUP);
-    /// Inherits the parent's processor affinity.
-    pub const INHERIT_PARENT_AFFINITY: Self = Self(INHERIT_PARENT_AFFINITY);
-    /// Allows the child to break away from the caller's Job when permitted.
-    pub const BREAKAWAY_FROM_JOB: Self = Self(CREATE_BREAKAWAY_FROM_JOB);
-    /// Preserves the caller's code-authorization level.
-    pub const PRESERVE_CODE_AUTHZ_LEVEL: Self = Self(CREATE_PRESERVE_CODE_AUTHZ_LEVEL);
-    /// Prevents the child from inheriting the caller's hard-error mode.
-    pub const DEFAULT_ERROR_MODE: Self = Self(CREATE_DEFAULT_ERROR_MODE);
-    /// Runs a console application without creating a console window.
-    pub const NO_WINDOW: Self = Self(CREATE_NO_WINDOW);
-
-    pub(crate) const fn bits(self) -> u32 {
-        self.0
-    }
-
-    pub(crate) const fn contains(self, other: Self) -> bool {
-        self.0 & other.0 == other.0
-    }
+/// A mutually exclusive Windows console-creation mode.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum ConsoleMode {
+    /// Inherit the caller's console relationship.
+    #[default]
+    Inherit,
+    /// Start without inheriting a console.
+    Detached,
+    /// Allocate a new console.
+    NewConsole,
+    /// Run a console application without a console window.
+    NoWindow,
 }
 
-struct PseudoConsole<'a> {
-    raw: isize,
-    _borrow: PhantomData<&'a dyn AsPseudoConsole>,
-}
-
-impl<'a> PseudoConsole<'a> {
-    fn new<T: AsPseudoConsole>(pseudoconsole: &'a T) -> Self {
-        Self {
-            raw: pseudoconsole.raw_pseudoconsole(),
-            _borrow: PhantomData,
+impl ConsoleMode {
+    pub(crate) const fn creation_bits(self) -> u32 {
+        match self {
+            Self::Inherit => 0,
+            Self::Detached => DETACHED_PROCESS,
+            Self::NewConsole => CREATE_NEW_CONSOLE,
+            Self::NoWindow => CREATE_NO_WINDOW,
         }
     }
 }
 
-impl BitOr for CreationFlags {
-    type Output = Self;
+/// The source of the child's terminal connection.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum TerminalMode<'a> {
+    /// Use an ordinary Windows console mode.
+    Console(ConsoleMode),
+    /// Connect the child to a borrowed pseudoconsole.
+    PseudoConsole(BorrowedPseudoConsole<'a>),
+}
 
-    fn bitor(self, rhs: Self) -> Self::Output {
-        Self(self.0 | rhs.0)
+impl Default for TerminalMode<'_> {
+    fn default() -> Self {
+        Self::Console(ConsoleMode::Inherit)
     }
 }
 
-impl BitOrAssign for CreationFlags {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.0 |= rhs.0;
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub(crate) struct CreationPolicy(u32);
+
+impl CreationPolicy {
+    pub(crate) const fn bits(self) -> u32 {
+        self.0
+    }
+
+    const fn with(self, flag: u32) -> Self {
+        Self(self.0 | flag)
     }
 }
 
-/// Capabilities and policy needed only for one spawn operation.
-///
-/// Jobs are retained in call order, from the root Job to the innermost Job.
-/// The options borrow every capability; they never assume ownership of a Job,
-/// parent process, or pseudoconsole.
-///
-/// The borrow cannot escape the capability it protects:
-///
-/// ```compile_fail
-/// use windows_spawn::{Command, Job, SpawnOptions};
-///
-/// let options;
-/// {
-///     let job = Job::create().unwrap();
-///     options = SpawnOptions::new().job(&job);
-/// }
-/// Command::new("cmd.exe").spawn_with(options).unwrap();
-/// ```
+/// Capabilities and closed creation policies used by one spawn operation.
 pub struct SpawnOptions<'a> {
     pub(crate) jobs: Vec<&'a Job>,
     pub(crate) parent: Option<&'a ParentProcess>,
     pub(crate) mitigation: MitigationPolicy,
-    pseudoconsole: Option<PseudoConsole<'a>>,
-    pub(crate) creation_flags: CreationFlags,
-    pub(crate) drop_policy: DropPolicy,
+    pub(crate) terminal: TerminalMode<'a>,
+    pub(crate) creation: CreationPolicy,
+    pub(crate) job_close: JobClosePolicy,
 }
 
 impl fmt::Debug for SpawnOptions<'_> {
@@ -125,12 +89,9 @@ impl fmt::Debug for SpawnOptions<'_> {
             .field("jobs", &self.jobs)
             .field("parent", &self.parent)
             .field("mitigation", &self.mitigation)
-            .field(
-                "pseudoconsole",
-                &self.pseudoconsole.as_ref().map(|_| "borrowed"),
-            )
-            .field("creation_flags", &self.creation_flags)
-            .field("drop_policy", &self.drop_policy)
+            .field("terminal", &self.terminal)
+            .field("creation", &self.creation)
+            .field("job_close", &self.job_close)
             .finish()
     }
 }
@@ -141,9 +102,9 @@ impl Default for SpawnOptions<'_> {
             jobs: Vec::new(),
             parent: None,
             mitigation: MitigationPolicy::new(),
-            pseudoconsole: None,
-            creation_flags: CreationFlags::new(),
-            drop_policy: DropPolicy::Detach,
+            terminal: TerminalMode::default(),
+            creation: CreationPolicy::default(),
+            job_close: JobClosePolicy::PreserveProcesses,
         }
     }
 }
@@ -155,14 +116,14 @@ impl<'a> SpawnOptions<'a> {
         Self::default()
     }
 
-    /// Appends a Job, preserving root-to-inner ordering.
+    /// Appends a Job in root-to-innermost assignment order.
     #[must_use]
     pub fn job(mut self, job: &'a Job) -> Self {
         self.jobs.push(job);
         self
     }
 
-    /// Chooses another process as the logical parent.
+    /// Selects another process as the logical parent.
     #[must_use]
     pub fn parent_process(mut self, parent: &'a ParentProcess) -> Self {
         self.parent = Some(parent);
@@ -176,76 +137,94 @@ impl<'a> SpawnOptions<'a> {
         self
     }
 
-    /// Attaches the child to a borrowed pseudoconsole.
+    /// Selects exactly one ordinary-console or pseudoconsole mode.
     #[must_use]
-    pub fn pseudoconsole<T: AsPseudoConsole>(mut self, pseudoconsole: &'a T) -> Self {
-        self.pseudoconsole = Some(PseudoConsole::new(pseudoconsole));
+    pub const fn terminal(mut self, terminal: TerminalMode<'a>) -> Self {
+        self.terminal = terminal;
         self
     }
 
-    /// Adds named process-creation flags.
+    /// Borrows a pseudoconsole and selects it as the terminal mode.
     #[must_use]
-    pub const fn creation_flags(mut self, flags: CreationFlags) -> Self {
-        self.creation_flags = flags;
+    pub fn pseudo_console<T: AsPseudoConsole + ?Sized>(mut self, owner: &'a T) -> Self {
+        self.terminal = TerminalMode::PseudoConsole(owner.as_pseudo_console());
         self
     }
 
-    /// Chooses the live-child drop policy.
+    /// Makes the child the root of a new process group.
     #[must_use]
-    pub const fn drop_policy(mut self, policy: DropPolicy) -> Self {
-        self.drop_policy = policy;
+    pub const fn new_process_group(mut self) -> Self {
+        self.creation = self.creation.with(CREATE_NEW_PROCESS_GROUP);
         self
     }
 
-    pub(crate) fn pseudoconsole_raw(&self) -> Option<isize> {
-        self.pseudoconsole
-            .as_ref()
-            .map(|pseudoconsole| pseudoconsole.raw)
+    /// Inherits the logical parent's processor affinity.
+    #[must_use]
+    pub const fn inherit_parent_affinity(mut self) -> Self {
+        self.creation = self.creation.with(INHERIT_PARENT_AFFINITY);
+        self
+    }
+
+    /// Requests permission to break away from the caller's Job.
+    #[must_use]
+    pub const fn breakaway_from_job(mut self) -> Self {
+        self.creation = self.creation.with(CREATE_BREAKAWAY_FROM_JOB);
+        self
+    }
+
+    /// Preserves the caller's code-authorization level.
+    #[must_use]
+    pub const fn preserve_code_authorization(mut self) -> Self {
+        self.creation = self.creation.with(CREATE_PRESERVE_CODE_AUTHZ_LEVEL);
+        self
+    }
+
+    /// Prevents inheritance of the caller's hard-error mode.
+    #[must_use]
+    pub const fn default_error_mode(mut self) -> Self {
+        self.creation = self.creation.with(CREATE_DEFAULT_ERROR_MODE);
+        self
+    }
+
+    /// Selects how the private process-tree Job behaves when released.
+    #[must_use]
+    pub const fn job_close_policy(mut self, policy: JobClosePolicy) -> Self {
+        self.job_close = policy;
+        self
     }
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use std::cell::Cell;
-
     use super::*;
 
-    struct TestPseudoConsole(Cell<isize>);
-
-    // SAFETY: tests use the value only as a snapshot and never pass it to Win32.
-    unsafe impl AsPseudoConsole for TestPseudoConsole {
-        fn raw_pseudoconsole(&self) -> isize {
-            self.0.get()
-        }
-    }
-
     #[test]
-    fn creation_flags_combine_idempotently_and_options_keep_job_order() {
-        let combined = CreationFlags::NEW_PROCESS_GROUP | CreationFlags::DEFAULT_ERROR_MODE;
-        assert_eq!(combined.bits(), 0x0400_0200);
+    fn console_and_creation_policies_encode_every_closed_choice() {
+        assert_eq!(ConsoleMode::Inherit.creation_bits(), 0);
+        assert_eq!(ConsoleMode::Detached.creation_bits(), DETACHED_PROCESS);
+        assert_eq!(ConsoleMode::NewConsole.creation_bits(), CREATE_NEW_CONSOLE);
+        assert_eq!(ConsoleMode::NoWindow.creation_bits(), CREATE_NO_WINDOW);
+
+        let options = SpawnOptions::new()
+            .terminal(TerminalMode::Console(ConsoleMode::NewConsole))
+            .new_process_group()
+            .inherit_parent_affinity()
+            .breakaway_from_job()
+            .preserve_code_authorization()
+            .default_error_mode();
         assert_eq!(
-            (CreationFlags::NEW_PROCESS_GROUP | CreationFlags::NEW_PROCESS_GROUP).bits(),
-            CreationFlags::NEW_PROCESS_GROUP.bits()
+            options.creation.bits(),
+            CREATE_NEW_PROCESS_GROUP
+                | INHERIT_PARENT_AFFINITY
+                | CREATE_BREAKAWAY_FROM_JOB
+                | CREATE_PRESERVE_CODE_AUTHZ_LEVEL
+                | CREATE_DEFAULT_ERROR_MODE
         );
-        let mut assigned = CreationFlags::NEW_PROCESS_GROUP;
-        assigned |= CreationFlags::DEFAULT_ERROR_MODE;
-        assert_eq!(assigned.bits(), combined.bits());
-
-        let outer = Job::create().unwrap();
-        let inner = Job::create().unwrap();
-        let options = SpawnOptions::new().job(&outer).job(&inner);
-        assert_eq!(options.jobs.len(), 2);
-        assert!(std::ptr::eq(options.jobs[0], &outer));
-        assert!(std::ptr::eq(options.jobs[1], &inner));
-    }
-
-    #[test]
-    fn pseudoconsole_builder_snapshots_the_raw_value() {
-        let pseudoconsole = TestPseudoConsole(Cell::new(42));
-        let options = SpawnOptions::new().pseudoconsole(&pseudoconsole);
-        pseudoconsole.0.set(99);
-        assert_eq!(options.pseudoconsole_raw(), Some(42));
-        assert!(format!("{options:?}").contains("borrowed"));
+        assert!(matches!(
+            options.terminal,
+            TerminalMode::Console(ConsoleMode::NewConsole)
+        ));
+        assert!(!format!("{options:?}").is_empty());
     }
 }

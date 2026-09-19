@@ -1,0 +1,53 @@
+name: Deep verification
+
+"on":
+  schedule:
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  property:
+    name: One million property cases
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      WINDOWS_SPAWN_PROPERTY_CASES: "1000000"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - run: cargo test --lib core_logic::tests::generated_quoting_and_fields_preserve_properties -- --exact
+
+  stress-x64:
+    name: Windows x64 nightly stress
+    runs-on: windows-latest
+    timeout-minutes: 600
+    env:
+      WINDOWS_SPAWN_STRESS_CASES: "100000"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - run: cargo test --test windows_spawn spawn_cleanup_stress -- --ignored --exact --test-threads=1
+
+  stress-i686:
+    name: Windows i686 nightly stress
+    runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      WINDOWS_SPAWN_STRESS_CASES: "20000"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+          targets: i686-pc-windows-msvc
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - run: cargo test --target i686-pc-windows-msvc --test windows_spawn spawn_cleanup_stress -- --ignored --exact --test-threads=1

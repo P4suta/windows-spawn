@@ -1,8 +1,7 @@
-//! The only Win32 FFI boundary in the crate.
-
 use std::cmp::Ordering;
 use std::ffi::{c_void, OsString};
 use std::io;
+use std::marker::PhantomData;
 use std::mem::{size_of, size_of_val};
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle, RawHandle};
@@ -33,6 +32,8 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
+#[cfg(test)]
+use windows_sys::Win32::System::Threading::GetProcessHandleCount;
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess, GetExitCodeProcess,
     GetProcessId, InitializeProcThreadAttributeList, OpenProcess, ResumeThread, TerminateProcess,
@@ -44,7 +45,12 @@ use windows_sys::Win32::System::Threading::{
     STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 
-pub(crate) const INVALID_RAW_HANDLE: isize = -1;
+use crate::resource::ChildHandleValue;
+
+const MAXIMUM_WINDOWS_PATH_UNITS: u32 = 32_768;
+const _: () = assert!(size_of::<STARTUPINFOEXW>() <= u32::MAX as usize);
+const _: () =
+    assert!(size_of::<windows_sys::Win32::System::Threading::STARTUPINFOW>() <= u32::MAX as usize);
 
 struct EnvironmentBlock(*mut u16);
 
@@ -81,9 +87,41 @@ pub(crate) enum NullAccess {
     Write,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Inheritability {
+    Private,
+    Inheritable,
+}
+
+impl Inheritability {
+    const fn as_win32(self) -> i32 {
+        match self {
+            Self::Private => 0,
+            Self::Inheritable => 1,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PipeDirection {
+    ParentReads,
+    ParentWrites,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InitialState {
+    Suspended,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SystemDirectory {
+    System,
+    Windows,
+}
+
 pub(crate) fn duplicate_local(
     source: BorrowedHandle<'_>,
-    inheritable: bool,
+    inheritability: Inheritability,
 ) -> io::Result<OwnedHandle> {
     // SAFETY: `GetCurrentProcess` takes no arguments, cannot fail, and returns
     // the current-process pseudo-handle. The value is a constant that stays
@@ -93,7 +131,7 @@ pub(crate) fn duplicate_local(
         current,
         raw(source),
         current,
-        inheritable,
+        inheritability,
         DUPLICATE_SAME_ACCESS,
     )
 }
@@ -102,7 +140,7 @@ fn duplicate_between(
     source_process: HANDLE,
     source: HANDLE,
     target_process: HANDLE,
-    inheritable: bool,
+    inheritability: Inheritability,
     options: u32,
 ) -> io::Result<OwnedHandle> {
     let mut duplicate = ptr::null_mut();
@@ -115,7 +153,7 @@ fn duplicate_between(
             target_process,
             &mut duplicate,
             0,
-            i32::from(inheritable),
+            inheritability.as_win32(),
             options,
         )
     } == 0
@@ -126,52 +164,91 @@ fn duplicate_between(
 }
 
 #[derive(Debug)]
+enum RemoteState<'a> {
+    Open {
+        process: BorrowedHandle<'a>,
+        value: HANDLE,
+    },
+    Reclaimed,
+}
+
+#[derive(Debug)]
 pub(crate) struct RemoteHandle<'a> {
-    process: BorrowedHandle<'a>,
-    value: HANDLE,
+    state: RemoteState<'a>,
+    marker: PhantomData<(
+        crate::resource::RemoteKind,
+        crate::resource::AlternateTable<'a>,
+    )>,
 }
 
 impl RemoteHandle<'_> {
-    pub(crate) fn value(&self) -> isize {
-        self.value as isize
+    pub(crate) fn value<Table>(&self) -> ChildHandleValue<Table> {
+        ChildHandleValue::from_raw(match self.state {
+            RemoteState::Open { value, .. } => value as isize,
+            RemoteState::Reclaimed => -1,
+        })
+    }
+
+    pub(crate) fn reclaim(mut self) -> io::Result<()> {
+        let state = std::mem::replace(&mut self.state, RemoteState::Reclaimed);
+        match state {
+            RemoteState::Open { process, value } => {
+                if let Err(error) = close_remote(process, value) {
+                    self.state = RemoteState::Open { process, value };
+                    Err(error)
+                } else {
+                    Ok(())
+                }
+            }
+            RemoteState::Reclaimed => Ok(()),
+        }
     }
 }
 
 impl Drop for RemoteHandle<'_> {
     fn drop(&mut self) {
-        // SAFETY: `GetCurrentProcess` takes no arguments, cannot fail, and
-        // returns the current-process pseudo-handle. The value is a constant
-        // that stays valid for the lifetime of the process and is never closed.
-        let current = unsafe { GetCurrentProcess() };
-        // `duplicate_between` turns the temporary local copy into an
-        // `OwnedHandle`; discarding the result closes it immediately. The
-        // close-source option atomically removes the remote value.
-        let _ = duplicate_between(
-            raw(self.process),
-            self.value,
-            current,
-            false,
-            DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE,
-        );
+        let state = std::mem::replace(&mut self.state, RemoteState::Reclaimed);
+        let RemoteState::Open { process, value } = state else {
+            return;
+        };
+        let _ = close_remote(process, value);
     }
+}
+
+fn close_remote(process: BorrowedHandle<'_>, value: HANDLE) -> io::Result<()> {
+    // SAFETY: `GetCurrentProcess` takes no arguments, cannot fail, and
+    // returns the current-process pseudo-handle. The value is a constant
+    // that stays valid for the lifetime of the process and is never closed.
+    let current = unsafe { GetCurrentProcess() };
+    duplicate_between(
+        raw(process),
+        value,
+        current,
+        Inheritability::Private,
+        DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE,
+    )
+    .map(drop)
 }
 
 pub(crate) fn duplicate_remote<'a>(
     source: BorrowedHandle<'_>,
     target_process: BorrowedHandle<'a>,
-    inheritable: bool,
+    inheritability: Inheritability,
 ) -> io::Result<RemoteHandle<'a>> {
     let mut value = ptr::null_mut();
+    // SAFETY: `GetCurrentProcess` has no preconditions and returns a stable
+    // pseudo-handle which is not closed by this module.
+    let current = unsafe { GetCurrentProcess() };
     // SAFETY: both process handles and `source` remain valid. The returned
     // numeric handle belongs to `target_process` and is owned by RemoteHandle.
     if unsafe {
         DuplicateHandle(
-            GetCurrentProcess(),
+            current,
             raw(source),
             raw(target_process),
             &mut value,
             0,
-            i32::from(inheritable),
+            inheritability.as_win32(),
             DUPLICATE_SAME_ACCESS,
         )
     } == 0
@@ -179,8 +256,11 @@ pub(crate) fn duplicate_remote<'a>(
         return Err(io::Error::last_os_error());
     }
     Ok(RemoteHandle {
-        process: target_process,
-        value,
+        state: RemoteState::Open {
+            process: target_process,
+            value,
+        },
+        marker: PhantomData,
     })
 }
 
@@ -198,7 +278,7 @@ pub(crate) fn standard_handle(stream: StandardStream) -> io::Result<Option<Owned
     // SAFETY: GetStdHandle returned a live borrowed handle. The borrow is used
     // only during DuplicateHandle and is never closed.
     let borrowed = unsafe { BorrowedHandle::borrow_raw(handle as RawHandle) };
-    duplicate_local(borrowed, false).map(Some)
+    duplicate_local(borrowed, Inheritability::Private).map(Some)
 }
 
 pub(crate) fn null_handle(access: NullAccess) -> io::Result<OwnedHandle> {
@@ -234,7 +314,7 @@ pub(crate) struct Pipe {
     pub(crate) child: OwnedHandle,
 }
 
-pub(crate) fn create_pipe(parent_reads: bool) -> io::Result<Pipe> {
+pub(crate) fn create_pipe(direction: PipeDirection) -> io::Result<Pipe> {
     let mut read = ptr::null_mut();
     let mut write = ptr::null_mut();
     // SAFETY: both output pointers are valid. Null security attributes make
@@ -243,15 +323,13 @@ pub(crate) fn create_pipe(parent_reads: bool) -> io::Result<Pipe> {
     if unsafe { CreatePipe(&mut read, &mut write, ptr::null::<SECURITY_ATTRIBUTES>(), 0) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: successful CreatePipe guarantees two valid, distinct handles;
-    // ownership of both is transferred together before either can be lost.
-    let (read, write) = unsafe {
-        (
-            OwnedHandle::from_raw_handle(read as RawHandle),
-            OwnedHandle::from_raw_handle(write as RawHandle),
-        )
-    };
-    if parent_reads {
+    // SAFETY: successful CreatePipe guarantees a valid read handle and
+    // transfers its sole local ownership here.
+    let read = unsafe { OwnedHandle::from_raw_handle(read as RawHandle) };
+    // SAFETY: successful CreatePipe guarantees a distinct valid write handle
+    // and transfers its sole local ownership here.
+    let write = unsafe { OwnedHandle::from_raw_handle(write as RawHandle) };
+    if direction == PipeDirection::ParentReads {
         Ok(Pipe {
             parent: read,
             child: write,
@@ -288,12 +366,19 @@ pub(crate) fn validate_job_handle(handle: BorrowedHandle<'_>) -> io::Result<()> 
     query_job_limits(handle).map(drop)
 }
 
-pub(crate) fn set_job_kill_on_close(handle: BorrowedHandle<'_>, enable: bool) -> io::Result<()> {
+pub(crate) fn set_job_close_policy(
+    handle: BorrowedHandle<'_>,
+    policy: crate::JobClosePolicy,
+) -> io::Result<()> {
     let mut limits = query_job_limits(handle)?;
-    if enable {
-        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    } else {
-        limits.BasicLimitInformation.LimitFlags &= !JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    let limit_size = checked_u32_size::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>()?;
+    match policy {
+        crate::JobClosePolicy::PreserveProcesses => {
+            limits.BasicLimitInformation.LimitFlags &= !JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        }
+        crate::JobClosePolicy::TerminateProcesses => {
+            limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        }
     }
     // SAFETY: `limits` is the exact structure required by the information
     // class and remains readable for the call.
@@ -302,8 +387,7 @@ pub(crate) fn set_job_kill_on_close(handle: BorrowedHandle<'_>, enable: bool) ->
             raw(handle),
             JobObjectExtendedLimitInformation,
             ptr::addr_of!(limits).cast(),
-            u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
-                .expect("Job limit structure size fits u32"),
+            limit_size,
         )
     } == 0
     {
@@ -317,6 +401,7 @@ fn query_job_limits(
     handle: BorrowedHandle<'_>,
 ) -> io::Result<JOBOBJECT_EXTENDED_LIMIT_INFORMATION> {
     let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    let limit_size = checked_u32_size::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>()?;
     // SAFETY: `limits` is correctly sized writable storage for the selected
     // information class; the optional returned-size pointer is null.
     if unsafe {
@@ -324,8 +409,7 @@ fn query_job_limits(
             raw(handle),
             JobObjectExtendedLimitInformation,
             ptr::addr_of_mut!(limits).cast(),
-            u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
-                .expect("Job limit structure size fits u32"),
+            limit_size,
             ptr::null_mut(),
         )
     } == 0
@@ -357,13 +441,9 @@ impl AttributeList {
         let probe =
             unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), count, 0, &mut bytes) };
         let probe_error = io::Error::last_os_error();
-        if probe != 0
-            || probe_error.raw_os_error()
-                != Some(
-                    i32::try_from(ERROR_INSUFFICIENT_BUFFER).expect("Win32 error code fits i32"),
-                )
-            || bytes == 0
-        {
+        let insufficient_buffer = i32::try_from(ERROR_INSUFFICIENT_BUFFER)
+            .map_err(|_| io::Error::other("Win32 error code does not fit i32"))?;
+        if probe != 0 || probe_error.raw_os_error() != Some(insufficient_buffer) || bytes == 0 {
             return Err(if probe != 0 {
                 io::Error::other("attribute-list size probe unexpectedly succeeded")
             } else {
@@ -385,7 +465,10 @@ impl AttributeList {
         Ok(Self { storage })
     }
 
-    pub(crate) fn set_handle_list(&mut self, handles: &[isize]) -> io::Result<()> {
+    pub(crate) fn set_handle_list<Table>(
+        &mut self,
+        handles: &[ChildHandleValue<Table>],
+    ) -> io::Result<()> {
         self.update(
             PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
             handles.as_ptr().cast(),
@@ -393,10 +476,10 @@ impl AttributeList {
         )
     }
 
-    pub(crate) fn set_parent(&mut self, parent: &isize) -> io::Result<()> {
+    pub(crate) fn set_parent<Table>(&mut self, parent: &ChildHandleValue<Table>) -> io::Result<()> {
         self.update(
             PROC_THREAD_ATTRIBUTE_PARENT_PROCESS as usize,
-            (parent as *const isize).cast(),
+            (parent as *const ChildHandleValue<Table>).cast(),
             size_of::<isize>(),
         )
     }
@@ -409,7 +492,7 @@ impl AttributeList {
         )
     }
 
-    pub(crate) fn set_jobs(&mut self, jobs: &[isize]) -> io::Result<()> {
+    pub(crate) fn set_jobs<Table>(&mut self, jobs: &[ChildHandleValue<Table>]) -> io::Result<()> {
         self.update(
             PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
             jobs.as_ptr().cast(),
@@ -417,12 +500,13 @@ impl AttributeList {
         )
     }
 
-    pub(crate) fn set_pseudoconsole(&mut self, pseudoconsole: isize) -> io::Result<()> {
-        // PSEUDOCONSOLE is the sole attribute whose lpValue is the HPCON value
-        // itself, matching Microsoft's ConPTY sample, not `&HPCON`.
+    pub(crate) fn set_pseudoconsole(
+        &mut self,
+        pseudoconsole: crate::BorrowedPseudoConsole<'_>,
+    ) -> io::Result<()> {
         self.update(
             PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
-            pseudoconsole as *const c_void,
+            pseudoconsole.value.get() as *const c_void,
             size_of::<isize>(),
         )
     }
@@ -464,27 +548,27 @@ impl Drop for AttributeList {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct StandardHandles {
-    pub(crate) stdin: isize,
-    pub(crate) stdout: isize,
-    pub(crate) stderr: isize,
+pub(crate) struct StandardHandles<Table> {
+    pub(crate) stdin: ChildHandleValue<Table>,
+    pub(crate) stdout: ChildHandleValue<Table>,
+    pub(crate) stderr: ChildHandleValue<Table>,
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum StartupStdio {
-    Ordinary(StandardHandles),
+pub(crate) enum StartupStdio<Table> {
+    Ordinary(StandardHandles<Table>),
     PseudoConsole,
 }
 
-pub(crate) struct ProcessRequest<'a> {
+pub(crate) struct ProcessRequest<'a, Table> {
     pub(crate) application: &'a [u16],
     pub(crate) command_line: &'a mut [u16],
     pub(crate) environment: Option<&'a [u16]>,
     pub(crate) current_dir: Option<&'a [u16]>,
-    pub(crate) stdio: StartupStdio,
-    pub(crate) inherit_handles: bool,
+    pub(crate) stdio: StartupStdio<Table>,
+    pub(crate) inheritability: Inheritability,
     pub(crate) creation_flags: u32,
-    pub(crate) suspended: bool,
+    pub(crate) initial_state: InitialState,
     pub(crate) attributes: Option<&'a AttributeList>,
 }
 
@@ -494,22 +578,23 @@ pub(crate) struct CreatedProcess {
     pub(crate) pid: u32,
 }
 
-pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<CreatedProcess> {
+pub(crate) fn create_process<Table>(
+    request: &mut ProcessRequest<'_, Table>,
+) -> io::Result<CreatedProcess> {
     let mut startup = STARTUPINFOEXW::default();
     startup.StartupInfo.cb = if request.attributes.is_some() {
-        u32::try_from(size_of::<STARTUPINFOEXW>()).expect("startup structure size fits u32")
+        checked_u32_size::<STARTUPINFOEXW>()?
     } else {
-        u32::try_from(size_of::<windows_sys::Win32::System::Threading::STARTUPINFOW>())
-            .expect("startup structure size fits u32")
+        checked_u32_size::<windows_sys::Win32::System::Threading::STARTUPINFOW>()?
     };
-    set_standard_handles(&mut startup, request.stdio);
+    set_standard_handles(&mut startup, &request.stdio);
     startup.lpAttributeList = request
         .attributes
         .map_or(ptr::null_mut(), AttributeList::pointer);
 
     let mut flags = request.creation_flags | CREATE_UNICODE_ENVIRONMENT;
-    if request.suspended {
-        flags |= CREATE_SUSPENDED;
+    match request.initial_state {
+        InitialState::Suspended => flags |= CREATE_SUSPENDED,
     }
     if request.attributes.is_some() {
         flags |= EXTENDED_STARTUPINFO_PRESENT;
@@ -529,7 +614,7 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
             request.command_line.as_mut_ptr(),
             ptr::null(),
             ptr::null(),
-            i32::from(request.inherit_handles),
+            request.inheritability.as_win32(),
             flags,
             environment,
             current_dir,
@@ -541,14 +626,11 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
         return Err(io::Error::last_os_error());
     }
 
-    // SAFETY: successful CreateProcessW guarantees valid process and primary
-    // thread handles. Adopt both in one step so no success-only handle can leak.
-    let (process, thread) = unsafe {
-        (
-            OwnedHandle::from_raw_handle(information.hProcess as RawHandle),
-            OwnedHandle::from_raw_handle(information.hThread as RawHandle),
-        )
-    };
+    // SAFETY: successful CreateProcessW transfers a valid process handle here.
+    let process = unsafe { OwnedHandle::from_raw_handle(information.hProcess as RawHandle) };
+    // SAFETY: successful CreateProcessW transfers a distinct valid primary
+    // thread handle here.
+    let thread = unsafe { OwnedHandle::from_raw_handle(information.hThread as RawHandle) };
     Ok(CreatedProcess {
         process,
         thread,
@@ -556,13 +638,21 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
     })
 }
 
-fn set_standard_handles(startup: &mut STARTUPINFOEXW, stdio: StartupStdio) {
+fn set_standard_handles<Table>(startup: &mut STARTUPINFOEXW, stdio: &StartupStdio<Table>) {
     startup.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
     if let StartupStdio::Ordinary(handles) = stdio {
-        startup.StartupInfo.hStdInput = handles.stdin as HANDLE;
-        startup.StartupInfo.hStdOutput = handles.stdout as HANDLE;
-        startup.StartupInfo.hStdError = handles.stderr as HANDLE;
+        startup.StartupInfo.hStdInput = handles.stdin.as_raw() as HANDLE;
+        startup.StartupInfo.hStdOutput = handles.stdout.as_raw() as HANDLE;
+        startup.StartupInfo.hStdError = handles.stderr.as_raw() as HANDLE;
     }
+}
+
+pub(crate) fn child_handle_value<Table>(handle: BorrowedHandle<'_>) -> ChildHandleValue<Table> {
+    ChildHandleValue::from_raw(handle.as_raw_handle() as isize)
+}
+
+pub(crate) const fn invalid_child_handle<Table>() -> ChildHandleValue<Table> {
+    ChildHandleValue::from_raw(-1)
 }
 
 pub(crate) fn wait_process(process: BorrowedHandle<'_>) -> io::Result<()> {
@@ -583,6 +673,7 @@ pub(crate) fn try_wait_process(process: BorrowedHandle<'_>) -> io::Result<bool> 
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn wait_process_for_test(
     process: BorrowedHandle<'_>,
     timeout_millis: u32,
@@ -596,8 +687,8 @@ pub(crate) fn wait_process_for_test(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn cleanup_process_for_test(process: BorrowedHandle<'_>) {
-    // Bypass the production wrapper so its mutants cannot disable cleanup.
     // SAFETY: tests pass a duplicate with the source process handle's access.
     let _ = unsafe { TerminateProcess(raw(process), 1) };
     // SAFETY: the same borrowed process handle remains valid for the wait.
@@ -653,8 +744,8 @@ pub(crate) fn read_handle(handle: BorrowedHandle<'_>, buffer: &mut [u8]) -> io::
         if matches!(
             error.raw_os_error(),
             Some(code)
-                if code == i32::try_from(ERROR_BROKEN_PIPE).expect("Win32 error code fits i32")
-                    || code == i32::try_from(ERROR_HANDLE_EOF).expect("Win32 error code fits i32")
+                if win32_code_is(code, ERROR_BROKEN_PIPE)
+                    || win32_code_is(code, ERROR_HANDLE_EOF)
         ) {
             Ok(0)
         } else {
@@ -706,23 +797,38 @@ pub(crate) fn environment_strings() -> io::Result<Vec<(OsString, OsString)>> {
             break;
         }
         let mut length = 0_usize;
-        // SAFETY: the OS-provided current entry is NUL-terminated.
-        while unsafe { *cursor.add(length) } != 0 {
+        loop {
+            // SAFETY: the OS-provided current entry is NUL-terminated and
+            // `length` advances only within that entry.
+            let unit = unsafe { cursor.add(length) };
+            // SAFETY: `unit` addresses the current NUL-terminated entry.
+            if unsafe { *unit } == 0 {
+                break;
+            }
             length = length
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("environment entry is too large"))?;
         }
         // SAFETY: the just-computed range lies within the current entry.
         let entry = unsafe { std::slice::from_raw_parts(cursor, length) };
-        if let Some(separator) = entry[1..]
+        let searchable = entry
+            .get(1..)
+            .ok_or_else(|| io::Error::other("environment entry is empty"))?;
+        if let Some(separator) = searchable
             .iter()
             .position(|unit| *unit == u16::from(b'='))
             .map(|index| index + 1)
         {
-            entries.push((
-                OsString::from_wide(&entry[..separator]),
-                OsString::from_wide(&entry[separator + 1..]),
-            ));
+            let name = entry
+                .get(..separator)
+                .ok_or_else(|| io::Error::other("environment name range is invalid"))?;
+            let value_start = separator
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("environment value range overflowed"))?;
+            let value = entry
+                .get(value_start..)
+                .ok_or_else(|| io::Error::other("environment value range is invalid"))?;
+            entries.push((OsString::from_wide(name), OsString::from_wide(value)));
         }
         let advance = length
             .checked_add(1)
@@ -752,30 +858,23 @@ pub(crate) fn program_exists(path: &[u16]) -> bool {
 }
 
 pub(crate) fn system_directory() -> io::Result<OsString> {
-    system_path(false)
+    system_path(SystemDirectory::System)
 }
 
 pub(crate) fn windows_directory() -> io::Result<OsString> {
-    system_path(true)
+    system_path(SystemDirectory::Windows)
 }
 
-fn system_path(windows: bool) -> io::Result<OsString> {
-    // Windows paths cannot exceed 32,767 UTF-16 code units. A single maximum
-    // sized allocation avoids a retry loop whose termination would otherwise
-    // depend on a length reported by the operating system.
-    let mut buffer = vec![0_u16; 32_768];
-    // SAFETY: buffer is writable for its reported length.
-    let length = unsafe {
-        if windows {
-            GetWindowsDirectoryW(
-                buffer.as_mut_ptr(),
-                u32::try_from(buffer.len()).expect("maximum Windows path fits u32"),
-            )
-        } else {
-            GetSystemDirectoryW(
-                buffer.as_mut_ptr(),
-                u32::try_from(buffer.len()).expect("maximum Windows path fits u32"),
-            )
+fn system_path(directory: SystemDirectory) -> io::Result<OsString> {
+    let mut buffer = vec![0_u16; MAXIMUM_WINDOWS_PATH_UNITS as usize];
+    let length = match directory {
+        SystemDirectory::Windows => {
+            // SAFETY: buffer is writable for its reported length.
+            unsafe { GetWindowsDirectoryW(buffer.as_mut_ptr(), MAXIMUM_WINDOWS_PATH_UNITS) }
+        }
+        SystemDirectory::System => {
+            // SAFETY: buffer is writable for its reported length.
+            unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), MAXIMUM_WINDOWS_PATH_UNITS) }
         }
     } as usize;
     if length == 0 {
@@ -792,6 +891,14 @@ fn system_path(windows: bool) -> io::Result<OsString> {
 
 fn raw(handle: BorrowedHandle<'_>) -> HANDLE {
     handle.as_raw_handle() as HANDLE
+}
+
+fn checked_u32_size<T>() -> io::Result<u32> {
+    u32::try_from(size_of::<T>()).map_err(|_| io::Error::other("FFI structure is too large"))
+}
+
+fn win32_code_is(actual: i32, expected: u32) -> bool {
+    i32::try_from(expected).ok() == Some(actual)
 }
 
 fn owned(handle: HANDLE) -> io::Result<OwnedHandle> {
@@ -817,6 +924,21 @@ fn bool_result(result: i32) -> io::Result<()> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn current_process_handle_count() -> io::Result<u32> {
+    let mut count = 0;
+    // SAFETY: GetCurrentProcess has no preconditions and returns a stable pseudo-handle.
+    let process = unsafe { GetCurrentProcess() };
+    // SAFETY: the pseudo-handle remains valid and count is writable DWORD storage.
+    if unsafe { GetProcessHandleCount(process, &mut count) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(count)
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::fs::File;
     use std::os::windows::ffi::OsStrExt;
@@ -824,8 +946,6 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use windows_sys::Win32::System::Threading::GetProcessHandleCount;
-
     fn process_handle_count(process: BorrowedHandle<'_>) -> io::Result<u32> {
         let mut count = 0;
         // SAFETY: `process` remains valid and count is writable DWORD storage.
@@ -841,7 +961,10 @@ mod tests {
         // current-process pseudo-handle, a constant that stays valid for the
         // whole process lifetime. `BorrowedHandle` never closes what it borrows,
         // so a `'static` borrow of it can never dangle or double-close.
-        unsafe { BorrowedHandle::borrow_raw(GetCurrentProcess() as RawHandle) }
+        let current = unsafe { GetCurrentProcess() };
+        // SAFETY: the pseudo-handle above has process lifetime and is never
+        // closed through the returned borrow.
+        unsafe { BorrowedHandle::borrow_raw(current as RawHandle) }
     }
 
     #[test]
@@ -856,19 +979,19 @@ mod tests {
         assert_eq!(write_handle(writable_null.as_handle(), &[])?, 0);
         assert_eq!(write_handle(writable_null.as_handle(), b"discard")?, 7);
 
-        let parent_reads = create_pipe(true)?;
+        let parent_reads = create_pipe(PipeDirection::ParentReads)?;
         assert_eq!(write_handle(parent_reads.child.as_handle(), b"a")?, 1);
         let mut byte = [0_u8; 1];
         assert_eq!(read_handle(parent_reads.parent.as_handle(), &mut byte)?, 1);
         assert_eq!(byte, [b'a']);
 
-        let parent_writes = create_pipe(false)?;
+        let parent_writes = create_pipe(PipeDirection::ParentWrites)?;
         assert_eq!(write_handle(parent_writes.parent.as_handle(), b"b")?, 1);
         assert_eq!(read_handle(parent_writes.child.as_handle(), &mut byte)?, 1);
         assert_eq!(byte, [b'b']);
 
-        let private = duplicate_local(writable_null.as_handle(), false)?;
-        let inheritable = duplicate_local(writable_null.as_handle(), true)?;
+        let private = duplicate_local(writable_null.as_handle(), Inheritability::Private)?;
+        let inheritable = duplicate_local(writable_null.as_handle(), Inheritability::Inheritable)?;
         drop((private, inheritable));
 
         let mut host = std::process::Command::new("cmd.exe")
@@ -878,8 +1001,12 @@ mod tests {
         drop(target);
         let before = process_handle_count(host.as_handle())?;
         let local_before = process_handle_count(current_process())?;
-        let remote = duplicate_remote(writable_null.as_handle(), host.as_handle(), true)?;
-        assert_ne!(remote.value(), 0);
+        let remote = duplicate_remote(
+            writable_null.as_handle(),
+            host.as_handle(),
+            Inheritability::Inheritable,
+        )?;
+        assert_ne!(remote.value::<crate::resource::CurrentTable>().as_raw(), 0);
         assert!(process_handle_count(host.as_handle())? > before);
         drop(remote);
         assert_eq!(process_handle_count(host.as_handle())?, before);
@@ -894,7 +1021,7 @@ mod tests {
         let drops_before = ATTRIBUTE_LIST_DROPS.load(std::sync::atomic::Ordering::Relaxed);
         let job = create_job()?;
         validate_job_handle(job.as_handle())?;
-        set_job_kill_on_close(job.as_handle(), true)?;
+        set_job_close_policy(job.as_handle(), crate::JobClosePolicy::TerminateProcesses)?;
         assert_ne!(
             query_job_limits(job.as_handle())?
                 .BasicLimitInformation
@@ -902,7 +1029,7 @@ mod tests {
                 & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             0
         );
-        set_job_kill_on_close(job.as_handle(), false)?;
+        set_job_close_policy(job.as_handle(), crate::JobClosePolicy::PreserveProcesses)?;
         assert_eq!(
             query_job_limits(job.as_handle())?
                 .BasicLimitInformation
@@ -911,10 +1038,14 @@ mod tests {
             0
         );
         let process = open_parent_process(std::process::id())?;
-        let inherited = duplicate_local(job.as_handle(), true)?;
-        let handles = [inherited.as_raw_handle() as isize];
-        let jobs = [job.as_raw_handle() as isize];
-        let parent = process.as_raw_handle() as isize;
+        let inherited = duplicate_local(job.as_handle(), Inheritability::Inheritable)?;
+        let handles = [child_handle_value::<crate::resource::CurrentTable>(
+            inherited.as_handle(),
+        )];
+        let jobs = [child_handle_value::<crate::resource::CurrentTable>(
+            job.as_handle(),
+        )];
+        let parent = child_handle_value::<crate::resource::CurrentTable>(process.as_handle());
         let words = [1_u64, 0_u64];
         let mut attributes = AttributeList::new(4)?;
         attributes.set_handle_list(&handles)?;
@@ -924,7 +1055,12 @@ mod tests {
         drop(attributes);
 
         let mut pseudoconsole = AttributeList::new(1)?;
-        let _ = pseudoconsole.set_pseudoconsole(1);
+        let owner = ();
+        let value = std::num::NonZeroIsize::new(1)
+            .ok_or_else(|| io::Error::other("nonzero test pseudoconsole expected"))?;
+        // SAFETY: the sentinel is used only to exercise attribute encoding and is never submitted to CreateProcessW.
+        let borrowed = unsafe { crate::BorrowedPseudoConsole::from_raw(value, &owner) };
+        let _ = pseudoconsole.set_pseudoconsole(borrowed);
         drop(pseudoconsole);
         assert!(ATTRIBUTE_LIST_DROPS.load(std::sync::atomic::Ordering::Relaxed) > drops_before);
 
@@ -932,14 +1068,20 @@ mod tests {
         let output = standard_handle(StandardStream::Output)?;
         let error = standard_handle(StandardStream::Error)?;
         assert!(input.is_some() || output.is_some() || error.is_some());
-        assert_eq!(INVALID_RAW_HANDLE, -1);
+        assert_eq!(
+            invalid_child_handle::<crate::resource::CurrentTable>().as_raw(),
+            -1
+        );
         Ok(())
     }
 
     #[test]
     fn startup_info_distinguishes_pseudoconsole_and_ordinary_stdio() {
         let mut conpty = STARTUPINFOEXW::default();
-        set_standard_handles(&mut conpty, StartupStdio::PseudoConsole);
+        set_standard_handles(
+            &mut conpty,
+            &StartupStdio::<crate::resource::CurrentTable>::PseudoConsole,
+        );
         assert_ne!(conpty.StartupInfo.dwFlags & STARTF_USESTDHANDLES, 0);
         assert!(conpty.StartupInfo.hStdInput.is_null());
         assert!(conpty.StartupInfo.hStdOutput.is_null());
@@ -948,10 +1090,10 @@ mod tests {
         let mut ordinary = STARTUPINFOEXW::default();
         set_standard_handles(
             &mut ordinary,
-            StartupStdio::Ordinary(StandardHandles {
-                stdin: 1,
-                stdout: 2,
-                stderr: 3,
+            &StartupStdio::Ordinary(StandardHandles {
+                stdin: ChildHandleValue::<crate::resource::CurrentTable>::from_raw(1),
+                stdout: ChildHandleValue::<crate::resource::CurrentTable>::from_raw(2),
+                stderr: ChildHandleValue::<crate::resource::CurrentTable>::from_raw(3),
             }),
         );
         assert_ne!(ordinary.StartupInfo.dwFlags & STARTF_USESTDHANDLES, 0);

@@ -1,17 +1,36 @@
-//! Reusable process-launch intent.
-
 use std::ffi::{OsStr, OsString};
 use std::io;
-use std::os::windows::io::{AsHandle, OwnedHandle};
+use std::os::windows::io::{AsHandle, BorrowedHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output};
 
 use crate::child::{Child, SuspendedChild};
+use crate::error::{Error, Operation, Phase, Result};
 use crate::handles::Stdio;
 use crate::options::SpawnOptions;
-use crate::plan::{IoMode, SpawnPlan};
+use crate::plan::{IoMode, ValidatedPlan};
 use crate::sys;
-use crate::transaction::SpawnTransaction;
+use crate::trace::{self, ResourceKind};
+use crate::transaction::PreparedSpawn;
+
+fn duplicate_command_handle<T: AsHandle>(handle: &T) -> Result<OwnedHandle> {
+    duplicate_command_handle_with(handle.as_handle(), |source| {
+        sys::duplicate_local(source, sys::Inheritability::Private)
+    })
+}
+
+fn duplicate_command_handle_with(
+    source: BorrowedHandle<'_>,
+    duplicate: impl FnOnce(BorrowedHandle<'_>) -> io::Result<OwnedHandle>,
+) -> Result<OwnedHandle> {
+    trace::io(
+        Phase::Preparation,
+        Operation::DuplicateLocalHandle,
+        ResourceKind::Handle,
+        || duplicate(source),
+    )
+    .map_err(|error| Error::windows(Phase::Preparation, Operation::DuplicateLocalHandle, error))
+}
 
 #[derive(Debug)]
 pub(crate) enum Arg {
@@ -32,6 +51,12 @@ pub(crate) enum EnvValue {
     Handle(OwnedHandle),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EnvironmentBase {
+    Inherit,
+    Empty,
+}
+
 /// A reusable description of a Windows process launch.
 ///
 /// Handles embedded by [`Self::arg_handle`] and [`Self::env_handle`] are
@@ -45,24 +70,26 @@ pub(crate) enum EnvValue {
 /// descendants it leaves behind:
 ///
 /// ```
-/// use windows_spawn::{Command, DropPolicy, SpawnOptions};
+/// use windows_spawn::{Command, JobClosePolicy, SpawnOptions};
 ///
 /// // `.bat` and `.cmd` are rejected, so a shell boundary is always explicit.
 /// let shell = std::env::var_os("COMSPEC").expect("COMSPEC is set on Windows");
 /// let mut command = Command::new(shell);
 /// command.args(["/D", "/S", "/C"]).raw_arg("echo hello");
 ///
-/// let output = command.output_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
+/// let output = command.output_with(
+///     SpawnOptions::new().job_close_policy(JobClosePolicy::TerminateProcesses),
+/// )?;
 ///
 /// assert!(output.status.success());
 /// assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
-/// # Ok::<(), std::io::Error>(())
+/// # Ok::<(), windows_spawn::Error>(())
 /// ```
 #[derive(Debug)]
 pub struct Command {
     pub(crate) program: OsString,
     pub(crate) args: Vec<Arg>,
-    pub(crate) env_clear: bool,
+    pub(crate) environment_base: EnvironmentBase,
     pub(crate) env_ops: Vec<EnvOp>,
     pub(crate) cwd: Option<PathBuf>,
     pub(crate) stdin: Option<Stdio>,
@@ -77,7 +104,7 @@ impl Command {
         Self {
             program: program.as_ref().to_os_string(),
             args: Vec::new(),
-            env_clear: false,
+            environment_base: EnvironmentBase::Inherit,
             env_ops: Vec::new(),
             cwd: None,
             stdin: None,
@@ -118,11 +145,9 @@ impl Command {
     /// # Errors
     ///
     /// Returns an error if the source handle cannot be duplicated.
-    pub fn arg_handle<T: AsHandle>(&mut self, handle: &T) -> io::Result<&mut Self> {
-        self.args.push(Arg::Handle(sys::duplicate_local(
-            handle.as_handle(),
-            false,
-        )?));
+    pub fn arg_handle<T: AsHandle>(&mut self, handle: &T) -> Result<&mut Self> {
+        self.args
+            .push(Arg::Handle(duplicate_command_handle(handle)?));
         Ok(self)
     }
 
@@ -161,10 +186,10 @@ impl Command {
         &mut self,
         key: K,
         handle: &T,
-    ) -> io::Result<&mut Self> {
+    ) -> Result<&mut Self> {
         self.env_ops.push(EnvOp::Set(
             key.as_ref().to_os_string(),
-            EnvValue::Handle(sys::duplicate_local(handle.as_handle(), false)?),
+            EnvValue::Handle(duplicate_command_handle(handle)?),
         ));
         Ok(self)
     }
@@ -178,7 +203,7 @@ impl Command {
 
     /// Clears the inherited environment and prior recorded modifications.
     pub fn env_clear(&mut self) -> &mut Self {
-        self.env_clear = true;
+        self.environment_base = EnvironmentBase::Empty;
         self.env_ops.clear();
         self
     }
@@ -224,7 +249,7 @@ impl Command {
     /// # Errors
     ///
     /// Returns validation, resource-acquisition, or process-creation errors.
-    pub fn spawn(&mut self) -> io::Result<Child> {
+    pub fn spawn(&mut self) -> Result<Child> {
         self.spawn_with(SpawnOptions::new())
     }
 
@@ -233,9 +258,12 @@ impl Command {
     /// # Errors
     ///
     /// Returns validation, resource-acquisition, or process-creation errors.
-    pub fn spawn_with(&mut self, options: SpawnOptions<'_>) -> io::Result<Child> {
-        let plan = SpawnPlan::new_running(self, options, IoMode::Spawn)?;
-        Ok(SpawnTransaction::new(&plan)?.commit_child())
+    pub fn spawn_with(&mut self, options: SpawnOptions<'_>) -> Result<Child> {
+        let plan = ValidatedPlan::running(self, options, IoMode::Spawn)?;
+        PreparedSpawn::prepare(plan)?
+            .create_suspended()?
+            .reclaim()?
+            .resume()
     }
 
     /// Spawns in the suspended type state with default options.
@@ -243,7 +271,7 @@ impl Command {
     /// # Errors
     ///
     /// Returns validation, resource-acquisition, or process-creation errors.
-    pub fn spawn_suspended(&mut self) -> io::Result<SuspendedChild> {
+    pub fn spawn_suspended(&mut self) -> Result<SuspendedChild> {
         self.spawn_suspended_with(SpawnOptions::new())
     }
 
@@ -252,12 +280,12 @@ impl Command {
     /// # Errors
     ///
     /// Returns validation, resource-acquisition, or process-creation errors.
-    pub fn spawn_suspended_with(
-        &mut self,
-        options: SpawnOptions<'_>,
-    ) -> io::Result<SuspendedChild> {
-        let plan = SpawnPlan::new_suspended(self, options, IoMode::Spawn)?;
-        Ok(SpawnTransaction::new(&plan)?.commit_suspended())
+    pub fn spawn_suspended_with(&mut self, options: SpawnOptions<'_>) -> Result<SuspendedChild> {
+        let plan = ValidatedPlan::suspended(self, options, IoMode::Spawn)?;
+        Ok(PreparedSpawn::prepare(plan)?
+            .create_suspended()?
+            .reclaim()?
+            .into_suspended())
     }
 
     /// Runs the process and waits for its status using default options.
@@ -265,7 +293,7 @@ impl Command {
     /// # Errors
     ///
     /// Returns an error from spawning, waiting, or retrieving the exit code.
-    pub fn status(&mut self) -> io::Result<ExitStatus> {
+    pub fn status(&mut self) -> Result<ExitStatus> {
         self.status_with(SpawnOptions::new())
     }
 
@@ -274,7 +302,7 @@ impl Command {
     /// # Errors
     ///
     /// Returns an error from spawning, waiting, or retrieving the exit code.
-    pub fn status_with(&mut self, options: SpawnOptions<'_>) -> io::Result<ExitStatus> {
+    pub fn status_with(&mut self, options: SpawnOptions<'_>) -> Result<ExitStatus> {
         self.spawn_with(options)?.wait()
     }
 
@@ -283,7 +311,7 @@ impl Command {
     /// # Errors
     ///
     /// Returns an error from spawning, waiting, reading, or Job termination.
-    pub fn output(&mut self) -> io::Result<Output> {
+    pub fn output(&mut self) -> Result<Output> {
         self.output_with(SpawnOptions::new())
     }
 
@@ -292,10 +320,40 @@ impl Command {
     /// # Errors
     ///
     /// Returns an error from spawning, waiting, reading, or Job termination.
-    pub fn output_with(&mut self, options: SpawnOptions<'_>) -> io::Result<Output> {
-        let plan = SpawnPlan::new_running(self, options, IoMode::Output)?;
-        SpawnTransaction::new(&plan)?
-            .commit_child()
+    pub fn output_with(&mut self, options: SpawnOptions<'_>) -> Result<Output> {
+        let plan = ValidatedPlan::running(self, options, IoMode::Output)?;
+        PreparedSpawn::prepare(plan)?
+            .create_suspended()?
+            .reclaim()?
+            .resume()?
             .wait_with_output()
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use std::fs::File;
+
+    use super::*;
+
+    #[test]
+    fn bulk_environment_builder_records_each_pair() {
+        let mut command = Command::new("program.exe");
+        command.envs([("A", "1"), ("B", "2")]);
+        assert_eq!(command.env_ops.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_failures_keep_the_typed_operation() {
+        let file = File::open("NUL").unwrap();
+        let error = duplicate_command_handle_with(file.as_handle(), |_| {
+            Err(io::Error::from_raw_os_error(5))
+        })
+        .unwrap_err();
+        let Error::Windows(error) = error else {
+            panic!("Windows error expected");
+        };
+        assert_eq!(error.operation(), Operation::DuplicateLocalHandle);
     }
 }

@@ -1,6 +1,9 @@
 //! Repository automation for windows-spawn.
 
 mod cli;
+mod comment_policy;
+mod invariant_registry;
+mod source_policy;
 mod tasks;
 
 use std::env;

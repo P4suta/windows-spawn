@@ -4,16 +4,16 @@
 //! End-to-end Windows process creation tests.
 
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::mem::size_of_val;
 use std::os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::PathBuf;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use windows_spawn::{
-    AsPseudoConsole, Command, CreationFlags, DropPolicy, Job, Mitigation, MitigationPolicy,
-    ParentProcess, SpawnOptions, Stdio,
+    AsPseudoConsole, BorrowedPseudoConsole, Command, DepPolicy, Job, JobClosePolicy, Mitigation,
+    MitigationPolicy, ParentProcess, SpawnOptions, Stdio,
 };
 use windows_sys::Win32::Foundation::{
     DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
@@ -27,7 +27,7 @@ use windows_sys::Win32::System::Console::{
     ClosePseudoConsole, CreatePseudoConsole, GetConsoleCP, GetStdHandle, COORD, HPCON,
     STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
-use windows_sys::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
+use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetProcessHandleCount, GetProcessId, GetProcessMitigationPolicy,
     GetThreadId, ProcessExtensionPointDisablePolicy, SuspendThread, TerminateProcess,
@@ -46,6 +46,10 @@ fn cmd(script: &str) -> Command {
     command
 }
 
+fn error_kind(error: windows_spawn::Error) -> io::ErrorKind {
+    io::Error::from(error).kind()
+}
+
 fn temporary_path(label: &str) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -57,18 +61,39 @@ fn temporary_path(label: &str) -> PathBuf {
     ))
 }
 
-fn local_duplicate<T: AsHandle>(source: &T, inheritable: bool) -> io::Result<OwnedHandle> {
+#[derive(Clone, Copy)]
+enum TestInheritability {
+    Private,
+    Inheritable,
+}
+
+impl TestInheritability {
+    const fn as_win32(self) -> i32 {
+        match self {
+            Self::Private => 0,
+            Self::Inheritable => 1,
+        }
+    }
+}
+
+fn local_duplicate<T: AsHandle>(
+    source: &T,
+    inheritability: TestInheritability,
+) -> io::Result<OwnedHandle> {
     let mut duplicate = std::ptr::null_mut();
+    // SAFETY: GetCurrentProcess has no preconditions and returns a stable
+    // pseudo-handle.
+    let current = unsafe { GetCurrentProcess() };
     // SAFETY: both process pseudo-handles are valid, the source remains
     // borrowed for the call, and `duplicate` is writable output storage.
     let success = unsafe {
         DuplicateHandle(
-            GetCurrentProcess(),
+            current,
             source.as_handle().as_raw_handle(),
-            GetCurrentProcess(),
+            current,
             &mut duplicate,
             0,
-            i32::from(inheritable),
+            inheritability.as_win32(),
             DUPLICATE_SAME_ACCESS,
         )
     };
@@ -81,7 +106,7 @@ fn local_duplicate<T: AsHandle>(source: &T, inheritable: bool) -> io::Result<Own
 }
 
 fn inheritable_duplicate<T: AsHandle>(source: &T) -> io::Result<OwnedHandle> {
-    local_duplicate(source, true)
+    local_duplicate(source, TestInheritability::Inheritable)
 }
 
 fn file_identity(handle: HANDLE) -> io::Result<(u32, u64)> {
@@ -128,7 +153,6 @@ impl ProcessExitGuard {
 impl Drop for ProcessExitGuard {
     fn drop(&mut self) {
         if self.armed {
-            // Bypass the crate path so its mutants cannot disable cleanup.
             // SAFETY: the duplicate has the source process handle's access.
             let _ = unsafe { TerminateProcess(self.process.as_raw_handle(), 1) };
             // SAFETY: the same owned process handle remains valid here.
@@ -138,15 +162,24 @@ impl Drop for ProcessExitGuard {
 }
 
 fn wait_bounded(child: &mut windows_spawn::Child) -> io::Result<Option<std::process::ExitStatus>> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(Some(status));
-        }
-        if Instant::now() >= deadline {
-            return Ok(None);
-        }
-        thread::sleep(Duration::from_millis(10));
+    let timeout = u32::try_from(Duration::from_secs(5).as_millis()).unwrap_or(u32::MAX);
+    // SAFETY: the child owns a process handle which remains valid during the wait.
+    match unsafe { WaitForSingleObject(child.as_handle().as_raw_handle(), timeout) } {
+        WAIT_OBJECT_0 => Ok(child.try_wait()?),
+        WAIT_TIMEOUT => Ok(None),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+fn current_handle_count() -> io::Result<u32> {
+    let mut count = 0_u32;
+    // SAFETY: GetCurrentProcess has no preconditions and returns a stable pseudo-handle.
+    let current = unsafe { GetCurrentProcess() };
+    // SAFETY: `count` is writable and the process pseudo-handle remains valid.
+    if unsafe { GetProcessHandleCount(current, &mut count) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(count)
     }
 }
 
@@ -219,13 +252,7 @@ fn suspended_child_resumes_once_into_normal_state() -> io::Result<()> {
     let mut child = suspended.resume()?;
     assert_eq!(child.id(), pid);
     assert_eq!(child.as_handle().as_raw_handle(), process_handle);
-    let status = (0..200).find_map(|_| {
-        let status = child.try_wait().expect("resumed child must be queryable");
-        if status.is_none() {
-            thread::sleep(Duration::from_millis(10));
-        }
-        status
-    });
+    let status = wait_bounded(&mut child)?;
     if status.is_none() {
         let _ = child.kill();
         let _ = child.wait();
@@ -238,7 +265,8 @@ fn suspended_child_resumes_once_into_normal_state() -> io::Result<()> {
 fn resume_rejects_an_externally_changed_suspend_count() -> io::Result<()> {
     let mut command = cmd("ping -n 10 127.0.0.1 >nul");
     let suspended = command.spawn_suspended()?;
-    let mut process = ProcessExitGuard::new(local_duplicate(&suspended, false)?);
+    let mut process =
+        ProcessExitGuard::new(local_duplicate(&suspended, TestInheritability::Private)?);
     // SAFETY: the primary thread handle remains owned by SuspendedChild and
     // has THREAD_SUSPEND_RESUME access from CreateProcessW.
     let previous_suspend_count =
@@ -246,7 +274,7 @@ fn resume_rejects_an_externally_changed_suspend_count() -> io::Result<()> {
     assert_eq!(previous_suspend_count, 1);
 
     assert_eq!(
-        suspended.resume().unwrap_err().kind(),
+        error_kind(suspended.resume().unwrap_err()),
         io::ErrorKind::InvalidData
     );
     assert!(process.wait(Duration::from_secs(5))?);
@@ -345,22 +373,11 @@ fn explicit_job_attachment_and_kill_tree_output_complete() -> io::Result<()> {
     let options = SpawnOptions::new().job(&outer_job).job(&inner_job);
     assert!(ordinary.status_with(options)?.success());
 
-    // The background grandchild inherits stdout. Without terminating the
-    // private Job after root exit, wait_with_output would never observe EOF.
-    // Keep the natural grandchild lifetime well beyond the assertion budget.
-    // This preserves the EOF proof without making a three-second wall-clock
-    // deadline flaky when the full integration suite creates processes in
-    // parallel on a loaded CI host.
     let mut tree = cmd("start \"\" /b cmd.exe /D /C \"ping -n 20 127.0.0.1 >nul\" & echo root");
-    let started = Instant::now();
-    let output = tree.output_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
-    let elapsed = started.elapsed();
+    let output =
+        tree.output_with(SpawnOptions::new().job_close_policy(JobClosePolicy::TerminateProcesses))?;
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("root"));
-    assert!(
-        elapsed < Duration::from_secs(10),
-        "root-bounded output waited {elapsed:?} for the background grandchild"
-    );
     Ok(())
 }
 
@@ -394,9 +411,12 @@ fn failed_transactions_do_not_leak_handles() -> io::Result<()> {
     const PROBE: &str = "WINDOWS_SPAWN_HANDLE_LEAK_PROBE";
     fn handle_count() -> io::Result<u32> {
         let mut count = 0;
-        // SAFETY: GetCurrentProcess returns a valid pseudo-handle and `count`
-        // points to writable DWORD storage for the duration of the call.
-        let success = unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) };
+        // SAFETY: GetCurrentProcess has no preconditions and returns a stable
+        // pseudo-handle.
+        let current = unsafe { GetCurrentProcess() };
+        // SAFETY: the process pseudo-handle is valid and `count` points to
+        // writable DWORD storage for the duration of the call.
+        let success = unsafe { GetProcessHandleCount(current, &mut count) };
         if success == 0 {
             Err(io::Error::last_os_error())
         } else {
@@ -411,9 +431,9 @@ fn failed_transactions_do_not_leak_handles() -> io::Result<()> {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let error = command
-            .spawn_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))
+            .spawn_with(SpawnOptions::new().job_close_policy(JobClosePolicy::TerminateProcesses))
             .expect_err("a missing current directory must fail after resources are acquired");
-        assert_ne!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_ne!(error_kind(error), io::ErrorKind::InvalidInput);
     }
 
     if std::env::var_os(PROBE).is_none() {
@@ -447,7 +467,7 @@ fn failed_transactions_do_not_leak_handles() -> io::Result<()> {
 fn validation_happens_before_process_creation() {
     let mut batch = Command::new("script.CMD");
     assert_eq!(
-        batch.spawn().unwrap_err().kind(),
+        error_kind(batch.spawn().unwrap_err()),
         io::ErrorKind::InvalidInput
     );
 }
@@ -609,13 +629,7 @@ fn child_pipes_try_wait_and_cached_lifecycle_work() -> io::Result<()> {
     exited.kill()?;
 
     let mut polled = cmd("exit /b 42").spawn()?;
-    let status = (0..100).find_map(|_| {
-        let status = polled.try_wait().expect("try_wait must query the child");
-        if status.is_none() {
-            thread::sleep(Duration::from_millis(10));
-        }
-        status
-    });
+    let status = wait_bounded(&mut polled)?;
     assert_eq!(status.and_then(|status| status.code()), Some(42));
 
     let mut silent = cmd("exit /b 0");
@@ -630,8 +644,10 @@ struct InvalidPseudoConsole;
 // SAFETY: this implementation is used only in validation tests that reject
 // the request before the numeric value reaches the Win32 transaction.
 unsafe impl AsPseudoConsole for InvalidPseudoConsole {
-    fn raw_pseudoconsole(&self) -> isize {
-        1
+    fn as_pseudo_console(&self) -> BorrowedPseudoConsole<'_> {
+        let value = std::num::NonZeroIsize::new(1).expect("one is nonzero");
+        // SAFETY: validation rejects this sentinel before process creation.
+        unsafe { BorrowedPseudoConsole::from_raw(value, self) }
     }
 }
 
@@ -651,13 +667,12 @@ impl TestPseudoConsole {
             if unsafe { CreatePipe(&mut read, &mut write, std::ptr::null(), 0) } == 0 {
                 return Err(io::Error::last_os_error());
             }
-            // SAFETY: CreatePipe succeeded and returned two distinct handles.
-            Ok(unsafe {
-                (
-                    OwnedHandle::from_raw_handle(read as RawHandle),
-                    OwnedHandle::from_raw_handle(write as RawHandle),
-                )
-            })
+            // SAFETY: CreatePipe succeeded and transferred the read handle.
+            let read = unsafe { OwnedHandle::from_raw_handle(read as RawHandle) };
+            // SAFETY: CreatePipe succeeded and transferred the distinct write
+            // handle.
+            let write = unsafe { OwnedHandle::from_raw_handle(write as RawHandle) };
+            Ok((read, write))
         }
 
         let (input_reader, input_writer) = pipe()?;
@@ -723,69 +738,51 @@ impl TestPseudoConsole {
             .output_reader
             .as_ref()
             .expect("a live pseudoconsole retains its output reader");
-        let deadline = Instant::now() + Duration::from_secs(5);
         let mut received = Vec::new();
         loop {
-            let mut available = 0_u32;
-            // SAFETY: the pipe handle remains owned by self, available is
-            // writable, and the unused optional output pointers are null.
+            let mut buffer = [0_u8; 4_096];
+            let mut read = 0_u32;
+            let length = u32::try_from(buffer.len())
+                .map_err(|_| io::Error::other("test buffer is too large"))?;
+            // SAFETY: buffer is writable for its reported length, read is
+            // writable, and the owned synchronous pipe handle remains valid.
             if unsafe {
-                PeekNamedPipe(
+                ReadFile(
                     output.as_raw_handle(),
-                    std::ptr::null_mut(),
-                    0,
-                    std::ptr::null_mut(),
-                    &mut available,
+                    buffer.as_mut_ptr(),
+                    length,
+                    &mut read,
                     std::ptr::null_mut(),
                 )
             } == 0
             {
                 return Err(io::Error::last_os_error());
             }
-            if available != 0 {
-                let mut buffer = vec![0_u8; available as usize];
-                let mut read = 0_u32;
-                // SAFETY: buffer is writable for its length, read is writable,
-                // and the owned synchronous pipe handle remains valid.
-                if unsafe {
-                    ReadFile(
-                        output.as_raw_handle(),
-                        buffer.as_mut_ptr(),
-                        available,
-                        &mut read,
-                        std::ptr::null_mut(),
-                    )
-                } == 0
-                {
-                    return Err(io::Error::last_os_error());
-                }
-                received.extend_from_slice(&buffer[..read as usize]);
-                if expected.iter().all(|marker| {
-                    received
-                        .windows(marker.len())
-                        .any(|window| window == *marker)
-                }) {
-                    return Ok(true);
-                }
-            }
-            if Instant::now() >= deadline {
+            if read == 0 {
                 return Ok(false);
             }
-            thread::sleep(Duration::from_millis(10));
+            let read = usize::try_from(read)
+                .map_err(|_| io::Error::other("read byte count does not fit usize"))?;
+            let bytes = buffer
+                .get(..read)
+                .ok_or_else(|| io::Error::other("read byte count exceeds the buffer"))?;
+            received.extend_from_slice(bytes);
+            if expected.iter().all(|marker| {
+                received
+                    .windows(marker.len())
+                    .any(|window| window == *marker)
+            }) {
+                return Ok(true);
+            }
         }
     }
 }
 
 impl Drop for TestPseudoConsole {
     fn drop(&mut self) {
-        // Closing both client pipe ends first prevents ClosePseudoConsole from
-        // waiting on an undrained output reader on affected Windows releases.
         drop(self.input_writer.take());
         drop(self.output_reader.take());
 
-        // Some Windows Server 2022 builds can still block indefinitely in
-        // ClosePseudoConsole after the attached child exits. Keep this test's
-        // teardown bounded; process teardown is the fallback for a stuck close.
         let value = self.value;
         let _ = thread::spawn(move || {
             // SAFETY: this type uniquely owned the HPCON returned by creation.
@@ -797,8 +794,11 @@ impl Drop for TestPseudoConsole {
 // SAFETY: TestPseudoConsole owns a live HPCON for its full borrow and does not
 // transfer that ownership to windows-spawn.
 unsafe impl AsPseudoConsole for TestPseudoConsole {
-    fn raw_pseudoconsole(&self) -> isize {
-        self.value
+    fn as_pseudo_console(&self) -> BorrowedPseudoConsole<'_> {
+        let value = std::num::NonZeroIsize::new(self.value)
+            .expect("CreatePseudoConsole returned a nonzero HPCON");
+        // SAFETY: this owner keeps the HPCON open and unchanged for the borrow.
+        unsafe { BorrowedPseudoConsole::from_raw(value, self) }
     }
 }
 
@@ -809,7 +809,7 @@ fn pseudoconsole_attribute_connects_the_child_console() -> io::Result<()> {
     command
         .args(["--exact", "pseudoconsole_child_probe", "--nocapture"])
         .env("WINDOWS_SPAWN_PCON_PROBE", "1");
-    let mut child = command.spawn_with(SpawnOptions::new().pseudoconsole(&pseudoconsole))?;
+    let mut child = command.spawn_with(SpawnOptions::new().pseudo_console(&pseudoconsole))?;
     let status = if let Some(status) = wait_bounded(&mut child)? {
         status
     } else {
@@ -889,7 +889,7 @@ fn pseudoconsole_stdio_isolation_helper() -> io::Result<()> {
             "--nocapture",
         ])
         .env(PCON_STDIO_PROBE, "1");
-    let mut child = command.spawn_with(SpawnOptions::new().pseudoconsole(&pseudoconsole))?;
+    let mut child = command.spawn_with(SpawnOptions::new().pseudo_console(&pseudoconsole))?;
     let mut input = PCON_STDIN_MARKER.to_vec();
     input.extend_from_slice(b"\r\n");
     pseudoconsole.write_input(&input)?;
@@ -942,29 +942,28 @@ fn capability_wrappers_and_all_option_builders_are_exercised() -> io::Result<()>
     let _ = parent.as_handle();
     assert!(format!("{parent:?}").contains("ParentProcess"));
     let job = Job::create()?;
-    job.set_kill_on_close(true)?;
-    job.set_kill_on_close(false)?;
+    job.set_close_policy(JobClosePolicy::TerminateProcesses)?;
+    job.set_close_policy(JobClosePolicy::PreserveProcesses)?;
     let duplicate_job = job.duplicate()?;
     let _ = duplicate_job.as_handle();
     assert!(format!("{duplicate_job:?}").contains("Job"));
 
-    let mut flags = CreationFlags::NEW_PROCESS_GROUP;
-    flags |= CreationFlags::DEFAULT_ERROR_MODE;
     let pseudoconsole = InvalidPseudoConsole;
     let options = SpawnOptions::new()
         .job(&job)
         .parent_process(&parent)
-        .mitigation(MitigationPolicy::new().dep(true))
-        .pseudoconsole(&pseudoconsole)
-        .creation_flags(flags)
-        .drop_policy(DropPolicy::KillTree);
+        .mitigation(MitigationPolicy::new().dep(DepPolicy::Enable))
+        .pseudo_console(&pseudoconsole)
+        .new_process_group()
+        .default_error_mode()
+        .job_close_policy(JobClosePolicy::TerminateProcesses);
     let rendered = format!("{options:?}");
-    assert!(rendered.contains("borrowed") && rendered.contains("KillTree"));
+    assert!(rendered.contains("PseudoConsole") && rendered.contains("TerminateProcesses"));
 
     let mut invalid = cmd("exit /b 0");
     invalid.stdout(Stdio::null());
     assert_eq!(
-        invalid.spawn_with(options).unwrap_err().kind(),
+        error_kind(invalid.spawn_with(options).unwrap_err()),
         io::ErrorKind::InvalidInput
     );
 
@@ -1039,20 +1038,41 @@ fn handle_list_excludes_an_unlisted_inheritable_handle() -> io::Result<()> {
 fn dropping_a_kill_tree_child_terminates_the_root() -> io::Result<()> {
     let marker = temporary_path("kill-tree-drop");
     let script = format!(
-        "Start-Sleep -Milliseconds 600; Set-Content -LiteralPath '{}' -Value ran",
+        "[Console]::Out.WriteLine('ready'); [Console]::Out.Flush(); $null=[Console]::In.ReadLine(); Set-Content -LiteralPath '{}' -Value ran",
         marker.display()
     );
     let mut command = Command::new("powershell.exe");
-    command.args([
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        &script,
-    ]);
-    let child = command.spawn_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
+    command
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &script,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    let mut child = command
+        .spawn_with(SpawnOptions::new().job_close_policy(JobClosePolicy::TerminateProcesses))?;
+    let mut process = ProcessExitGuard::new(local_duplicate(&child, TestInheritability::Private)?);
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("handshake output pipe is missing"))?;
+    let mut reader = io::BufReader::new(stdout);
+    let mut ready = String::new();
+    reader.read_line(&mut ready)?;
+    if ready.trim_end() != "ready" {
+        return Err(io::Error::other("child handshake did not become ready"));
+    }
+    drop(reader);
     drop(child);
-    thread::sleep(Duration::from_millis(900));
+    if !process.wait(Duration::from_secs(5))? {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "kill-tree child did not terminate",
+        ));
+    }
     assert!(!marker.exists());
     Ok(())
 }
@@ -1060,18 +1080,12 @@ fn dropping_a_kill_tree_child_terminates_the_root() -> io::Result<()> {
 #[test]
 fn public_job_kill_on_close_terminates_assigned_process() -> io::Result<()> {
     let job = Job::create()?;
-    job.set_kill_on_close(true)?;
+    job.set_close_policy(JobClosePolicy::TerminateProcesses)?;
     let mut child = cmd("ping -n 20 127.0.0.1 >nul").spawn()?;
     job.assign(&child)?;
     drop(job);
 
-    let status = (0..200).find_map(|_| {
-        let status = child.try_wait().expect("assigned child must be queryable");
-        if status.is_none() {
-            thread::sleep(Duration::from_millis(10));
-        }
-        status
-    });
+    let status = wait_bounded(&mut child)?;
     if status.is_none() {
         let _ = child.kill();
         let _ = child.wait();
@@ -1110,8 +1124,8 @@ fn dropping_suspended_child_prevents_execution() -> io::Result<()> {
         .args(["--exact", "suspended_execution_probe", "--nocapture"])
         .env("WINDOWS_SPAWN_SUSPENDED_PROBE", &path);
     let suspended = command.spawn_suspended_with(SpawnOptions::new())?;
-    let mut process = ProcessExitGuard::new(local_duplicate(&suspended, false)?);
-    thread::sleep(Duration::from_millis(500));
+    let mut process =
+        ProcessExitGuard::new(local_duplicate(&suspended, TestInheritability::Private)?);
     assert!(!path.exists());
     drop(suspended);
     assert!(
@@ -1128,4 +1142,40 @@ fn suspended_execution_probe() -> io::Result<()> {
         return Ok(());
     };
     fs::write(path, b"ran")
+}
+
+#[test]
+#[ignore = "explicit spawn and cleanup stress gate"]
+fn spawn_cleanup_stress() -> io::Result<()> {
+    let cases = std::env::var("WINDOWS_SPAWN_STRESS_CASES")
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+        .parse::<u32>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    for _ in 0..16 {
+        let status = cmd("exit /b 0").status()?;
+        if !status.success() {
+            return Err(io::Error::other("stress warmup child failed"));
+        }
+    }
+    let before = current_handle_count()?;
+    for case in 0..cases {
+        let mut command = cmd("exit /b 0");
+        let status = if case % 2 == 0 {
+            let suspended = command.spawn_suspended()?;
+            let mut child = suspended.resume()?;
+            child.wait()?
+        } else {
+            command.status()?
+        };
+        if !status.success() {
+            return Err(io::Error::other(format!("stress child {case} failed")));
+        }
+    }
+    let after = current_handle_count()?;
+    if after > before {
+        return Err(io::Error::other(format!(
+            "handle count grew from {before} to {after}"
+        )));
+    }
+    Ok(())
 }

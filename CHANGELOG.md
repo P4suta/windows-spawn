@@ -5,6 +5,35 @@ Versioning with Cargo's pre-1.0 compatibility rules.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-19
+
+### Changed
+
+- Replaced the spawn transaction with consuming states from validated intent
+  through suspended creation, reclamation, and resume. Ordinary spawns are now
+  created suspended internally and resume only after temporary resources are
+  reclaimed.
+- Replaced `io::Result` at the public boundary with typed validation, Windows,
+  and nonempty cleanup errors. Converting the typed error to `io::Error`
+  preserves it as the source.
+- Replaced boolean mitigation choices, drop policy, terminal flags, and free
+  creation flags with closed policy enums and dedicated setters.
+- Bound pseudoconsole values to their owner lifetime through
+  `BorrowedPseudoConsole` and the unsafe `AsPseudoConsole` contract.
+
+### Added
+
+- Typed resource kinds and handle-table markers, pinned process-attribute
+  backing, explicit process-tree cleanup, and a single-operation unsafe lint.
+- An OComment-backed repository comment policy built from pinned source and a
+  typed invariant registry whose enforcement values are limited to type,
+  const, lint, and Kani.
+
+### Removed
+
+- `DropPolicy`, `CreationFlags`, raw pseudoconsole values, and boolean DEP,
+  ATL-thunk, and SEHOP setters. No compatibility shims are provided.
+
 ## [0.1.0] - 2026-08-03
 
 Initial release.
@@ -51,5 +80,6 @@ Initial release.
   this crate's 1.75 minimum. The release-artifact checksum helper builds
   against both 0.10 and 0.11.
 
-[Unreleased]: https://github.com/P4suta/windows-spawn/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/P4suta/windows-spawn/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/P4suta/windows-spawn/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/P4suta/windows-spawn/releases/tag/v0.1.0

@@ -14,9 +14,9 @@ Repeated `SpawnOptions::job` calls preserve root-to-innermost order.
 `Job::assign` remains an explicit post-creation operation. Job limit updates
 query existing limits and change only the requested flag.
 
-`DropPolicy::KillTree` appends a private, crate-owned innermost Job.
-`DropPolicy::Detach` remains the default. `Child` owns a duplicate of any Job
-handle it must retain.
+`JobClosePolicy::TerminateProcesses` appends a private, crate-owned innermost
+Job. `JobClosePolicy::PreserveProcesses` remains the default. `Child` owns the
+private Job and process together in the owner that enforces their close order.
 
 ## Consequences
 

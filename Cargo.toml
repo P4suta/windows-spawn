@@ -1,6 +1,6 @@
 [package]
 name = "windows-spawn"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Yasunobu Sakashita"]
 edition = "2021"
 rust-version = "1.75"
@@ -17,6 +17,7 @@ include = [
   "/examples/**",
   "/docs/adr/**",
   "/docs/crate.md",
+  "/docs/migration-0.2.md",
   "/README.md",
   "/CHANGELOG.md",
   "/REUSE.toml",
@@ -26,8 +27,13 @@ include = [
 ]
 
 [package.metadata.docs.rs]
+all-features = true
 default-target = "x86_64-pc-windows-msvc"
 targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
+
+[features]
+default = []
+tracing = ["dep:tracing"]
 
 [[test]]
 name = "argv_roundtrip"
@@ -50,8 +56,13 @@ features = [
   "Win32_System_Threading",
 ]
 
+[target.'cfg(windows)'.dependencies.tracing]
+version = "0.1.44"
+optional = true
+
 [workspace]
 members = ["xtask"]
+exclude = ["fuzz"]
 default-members = ["."]
 resolver = "2"
 
@@ -61,20 +72,14 @@ rust_2018_idioms = { level = "deny", priority = -1 }
 unsafe_op_in_unsafe_fn = "deny"
 unreachable_pub = "deny"
 unused_qualifications = "deny"
+unexpected_cfgs = { level = "deny", check-cfg = ['cfg(kani)', 'cfg(coverage_nightly)'] }
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 
-# CONTRIBUTING requires a specific safety justification on every `unsafe` block.
-# This restriction lint is what makes that rule machine-checked rather than a
-# convention, so a missing justification fails the build.
-#
-# `multiple_unsafe_ops_per_block` is deliberately not enabled: several blocks
-# here acquire two OS resources that must be adopted together to stay
-# exception-safe (see `pipe`), and splitting them would widen the window in
-# which one handle can leak.
 undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
 
 [lints]
 workspace = true

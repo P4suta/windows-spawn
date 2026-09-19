@@ -1,18 +1,21 @@
 #![doc = include_str!("../docs/crate.md")]
 #![deny(unsafe_code)]
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
-// The rendered crate documentation comes from `docs/crate.md`, so the README
-// would otherwise ship to crates.io without ever being compiled. Including it
-// under `cfg(doctest)` type-checks and runs its examples without adding a
-// second copy of the front page to the rendered docs.
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
 mod readme_examples {}
 
+mod core_logic;
+
+#[cfg(windows)]
+mod backend;
 #[cfg(windows)]
 mod child;
 #[cfg(windows)]
 mod command;
+#[cfg(windows)]
+mod error;
 #[cfg(windows)]
 mod handles;
 #[cfg(windows)]
@@ -22,8 +25,12 @@ mod options;
 #[cfg(windows)]
 mod plan;
 #[cfg(windows)]
+mod resource;
+#[cfg(windows)]
 #[allow(unsafe_code)]
 mod sys;
+#[cfg(windows)]
+mod trace;
 #[cfg(windows)]
 mod transaction;
 
@@ -32,12 +39,16 @@ pub use crate::child::{Child, ChildStderr, ChildStdin, ChildStdout, SuspendedChi
 #[cfg(windows)]
 pub use crate::command::Command;
 #[cfg(windows)]
-pub use crate::handles::{AsPseudoConsole, Job, ParentProcess, Stdio};
-#[cfg(windows)]
-pub use crate::mitigation::{
-    BlockNonCetBinaries, CetShadowStacks, ControlFlowGuard, DynamicCode, FontDisable,
-    LoaderIntegrity, Mitigation, MitigationPolicy, ModuleTampering, RelocateImages, SignedBinaries,
-    UserCetContextIpValidation,
+pub use crate::error::{
+    CleanupError, Error, InputField, Operation, Phase, Result, ValidationError, WindowsError,
 };
 #[cfg(windows)]
-pub use crate::options::{CreationFlags, DropPolicy, SpawnOptions};
+pub use crate::handles::{AsPseudoConsole, BorrowedPseudoConsole, Job, ParentProcess, Stdio};
+#[cfg(windows)]
+pub use crate::mitigation::{
+    AtlThunkPolicy, BlockNonCetBinaries, CetShadowStacks, ControlFlowGuard, DepPolicy, DynamicCode,
+    FontDisable, LoaderIntegrity, Mitigation, MitigationPolicy, ModuleTampering, RelocateImages,
+    SehopPolicy, SignedBinaries, UserCetContextIpValidation,
+};
+#[cfg(windows)]
+pub use crate::options::{ConsoleMode, JobClosePolicy, SpawnOptions, TerminalMode};
