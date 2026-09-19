@@ -343,6 +343,7 @@ dependencies = [
 name = "xtask"
 version = "0.0.0"
 dependencies = [
+ "proc-macro2",
  "semver",
  "serde",
  "serde_json",
@@ -350,6 +351,7 @@ dependencies = [
  "syn 2.0.119",
  "toml",
  "windows-spawn",
+ "windows-sys",
 ]
 
 [[package]]

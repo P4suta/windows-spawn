@@ -58,7 +58,15 @@ pub(crate) struct ValidatedPlan<'command, 'options, State> {
     pub(crate) command: &'command Command,
     pub(crate) options: SpawnOptions<'options>,
     pub(crate) stdio: StandardIo<'command>,
+    current_dir: Option<Vec<u16>>,
     state: PhantomData<State>,
+}
+
+struct ValidatedParts<'command, 'options> {
+    command: &'command Command,
+    options: SpawnOptions<'options>,
+    stdio: StandardIo<'command>,
+    current_dir: Option<Vec<u16>>,
 }
 
 impl<'command, 'options> ValidatedPlan<'command, 'options, Running> {
@@ -67,7 +75,7 @@ impl<'command, 'options> ValidatedPlan<'command, 'options, Running> {
         options: SpawnOptions<'options>,
         io_mode: IoMode,
     ) -> Result<Self> {
-        Self::build(command, options, io_mode)
+        validate_plan(command, options, io_mode).map(Self::from_parts)
     }
 }
 
@@ -77,76 +85,93 @@ impl<'command, 'options> ValidatedPlan<'command, 'options, Suspended> {
         options: SpawnOptions<'options>,
         io_mode: IoMode,
     ) -> Result<Self> {
-        Self::build(command, options, io_mode)
+        validate_plan(command, options, io_mode).map(Self::from_parts)
     }
 }
 
 impl<'command, 'options, State> ValidatedPlan<'command, 'options, State> {
+    fn from_parts(parts: ValidatedParts<'command, 'options>) -> Self {
+        Self {
+            command: parts.command,
+            options: parts.options,
+            stdio: parts.stdio,
+            current_dir: parts.current_dir,
+            state: PhantomData,
+        }
+    }
+
     pub(crate) fn into_parts(
         self,
     ) -> (
         &'command Command,
         SpawnOptions<'options>,
         StandardIo<'command>,
+        Option<Vec<u16>>,
     ) {
         let Self {
             command,
             options,
             stdio,
+            current_dir,
             state: _,
         } = self;
-        (command, options, stdio)
+        (command, options, stdio, current_dir)
     }
+}
 
-    fn build(
-        command: &'command Command,
-        options: SpawnOptions<'options>,
-        io_mode: IoMode,
-    ) -> Result<Self> {
-        validate_command(command)?;
-        let pseudo_console = matches!(options.terminal, TerminalMode::PseudoConsole(_));
-        let explicit_stdio =
-            command.stdin.is_some() || command.stdout.is_some() || command.stderr.is_some();
-        if pseudo_console && explicit_stdio {
-            return Err(Error::Validation(ValidationError::PseudoConsoleWithStdio));
-        }
-        if pseudo_console && io_mode == IoMode::Output {
-            return Err(Error::Validation(
-                ValidationError::PseudoConsoleWithOutputCapture,
-            ));
-        }
-        if options.parent.is_some()
-            && !pseudo_console
-            && (command.stdin.is_none() || command.stdout.is_none() || command.stderr.is_none())
-        {
-            return Err(Error::Validation(
-                ValidationError::AlternateParentNeedsStdio,
-            ));
-        }
-        let stdio = if pseudo_console {
-            StandardIo::PseudoConsole
-        } else {
-            let handles = match io_mode {
-                IoMode::Spawn => StandardHandles {
-                    stdin: configured_or(command.stdin.as_ref(), StdioSpec::Inherit),
-                    stdout: configured_or(command.stdout.as_ref(), StdioSpec::Inherit),
-                    stderr: configured_or(command.stderr.as_ref(), StdioSpec::Inherit),
-                },
-                IoMode::Output => StandardHandles {
-                    stdin: configured_or(command.stdin.as_ref(), StdioSpec::Null),
-                    stdout: configured_or(command.stdout.as_ref(), StdioSpec::Piped),
-                    stderr: configured_or(command.stderr.as_ref(), StdioSpec::Piped),
-                },
-            };
-            StandardIo::Ordinary(handles)
-        };
-        Ok(Self {
-            command,
-            options,
-            stdio,
-            state: PhantomData,
-        })
+fn validate_plan<'command, 'options>(
+    command: &'command Command,
+    options: SpawnOptions<'options>,
+    io_mode: IoMode,
+) -> Result<ValidatedParts<'command, 'options>> {
+    validate_command(command)?;
+    let current_dir = command.cwd.as_ref().map(|path| {
+        let mut encoded: Vec<u16> = path.as_os_str().encode_wide().collect();
+        encoded.push(0);
+        encoded
+    });
+    let pseudo_console = matches!(options.terminal, TerminalMode::PseudoConsole(_));
+    let explicit_stdio =
+        command.stdin.is_some() || command.stdout.is_some() || command.stderr.is_some();
+    if pseudo_console && explicit_stdio {
+        return Err(Error::Validation(ValidationError::PseudoConsoleWithStdio));
     }
+    if pseudo_console && io_mode == IoMode::Output {
+        return Err(Error::Validation(
+            ValidationError::PseudoConsoleWithOutputCapture,
+        ));
+    }
+    if options.parent.is_some()
+        && !pseudo_console
+        && (command.stdin.is_none() || command.stdout.is_none() || command.stderr.is_none())
+    {
+        return Err(Error::Validation(
+            ValidationError::AlternateParentNeedsStdio,
+        ));
+    }
+    let stdio = if pseudo_console {
+        StandardIo::PseudoConsole
+    } else {
+        let handles = match io_mode {
+            IoMode::Spawn => StandardHandles {
+                stdin: configured_or(command.stdin.as_ref(), StdioSpec::Inherit),
+                stdout: configured_or(command.stdout.as_ref(), StdioSpec::Inherit),
+                stderr: configured_or(command.stderr.as_ref(), StdioSpec::Inherit),
+            },
+            IoMode::Output => StandardHandles {
+                stdin: configured_or(command.stdin.as_ref(), StdioSpec::Null),
+                stdout: configured_or(command.stdout.as_ref(), StdioSpec::Piped),
+                stderr: configured_or(command.stderr.as_ref(), StdioSpec::Piped),
+            },
+        };
+        StandardIo::Ordinary(handles)
+    };
+    Ok(ValidatedParts {
+        command,
+        options,
+        stdio,
+        current_dir,
+    })
 }
 
 fn configured_or<'a>(value: Option<&'a Stdio>, default: StdioSpec<'a>) -> StdioSpec<'a> {
@@ -217,6 +242,7 @@ fn no_nul(value: &OsStr, field: InputField) -> Result<()> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::ffi::{OsStr, OsString};
+    use std::fs::File;
     use std::os::windows::ffi::OsStringExt;
 
     use super::*;
@@ -240,12 +266,20 @@ mod tests {
     }
 
     #[test]
-    fn command_validation_rejects_every_invalid_text_shape() {
+    fn command_validation_rejects_invalid_programs_and_arguments() {
         assert_validation(
             &Command::new(""),
             SpawnOptions::new(),
             IoMode::Spawn,
             ValidationError::EmptyProgram,
+        );
+        assert_validation(
+            &Command::new(nul()),
+            SpawnOptions::new(),
+            IoMode::Spawn,
+            ValidationError::InteriorNul {
+                field: InputField::Program,
+            },
         );
         assert_validation(
             &Command::new("bad\"name.exe"),
@@ -287,6 +321,17 @@ mod tests {
             },
         );
 
+        let valid_without_extension = Command::new("program");
+        assert!(ValidatedPlan::<Running>::running(
+            &valid_without_extension,
+            SpawnOptions::new(),
+            IoMode::Spawn,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn command_validation_rejects_invalid_environment_and_directory_text() {
         let mut empty_name = Command::new("program.exe");
         empty_name.env("", "value");
         assert_validation(
@@ -341,6 +386,15 @@ mod tests {
                 field: InputField::CurrentDirectory,
             },
         );
+        let source = File::open("NUL").unwrap();
+        let mut handle_environment = Command::new("program.exe");
+        handle_environment.env_handle("HANDLE", &source).unwrap();
+        assert!(ValidatedPlan::<Running>::running(
+            &handle_environment,
+            SpawnOptions::new(),
+            IoMode::Spawn,
+        )
+        .is_ok());
     }
 
     #[test]
@@ -361,14 +415,34 @@ mod tests {
             IoMode::Output,
             ValidationError::PseudoConsoleWithOutputCapture,
         );
+        let pseudo_command = Command::new("program.exe");
+        let pseudo = ValidatedPlan::<Running>::running(
+            &pseudo_command,
+            SpawnOptions::new().terminal(terminal),
+            IoMode::Spawn,
+        )?;
+        assert!(matches!(pseudo.stdio, StandardIo::PseudoConsole));
 
         let parent = ParentProcess::open(std::process::id())?;
-        assert_validation(
-            &Command::new("program.exe"),
-            SpawnOptions::new().parent_process(&parent),
-            IoMode::Spawn,
-            ValidationError::AlternateParentNeedsStdio,
-        );
+        let mut missing_stdin = Command::new("program.exe");
+        missing_stdin.stdout(Stdio::null()).stderr(Stdio::null());
+        let mut missing_stdout = Command::new("program.exe");
+        missing_stdout.stdin(Stdio::null()).stderr(Stdio::null());
+        let mut missing_stderr = Command::new("program.exe");
+        missing_stderr.stdin(Stdio::null()).stdout(Stdio::null());
+        for command in [
+            Command::new("program.exe"),
+            missing_stdin,
+            missing_stdout,
+            missing_stderr,
+        ] {
+            assert_validation(
+                &command,
+                SpawnOptions::new().parent_process(&parent),
+                IoMode::Spawn,
+                ValidationError::AlternateParentNeedsStdio,
+            );
+        }
         Ok(())
     }
 }

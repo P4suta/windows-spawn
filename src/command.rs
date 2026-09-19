@@ -4,24 +4,21 @@ use std::os::windows::io::{AsHandle, BorrowedHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output};
 
+use crate::backend::WindowsBackend;
 use crate::child::{Child, SuspendedChild};
 use crate::error::{Error, Operation, Phase, Result};
 use crate::handles::Stdio;
 use crate::options::SpawnOptions;
-use crate::plan::{IoMode, ValidatedPlan};
+use crate::plan::IoMode;
 use crate::sys;
 use crate::trace::{self, ResourceKind};
-use crate::transaction::PreparedSpawn;
-
-fn duplicate_command_handle<T: AsHandle>(handle: &T) -> Result<OwnedHandle> {
-    duplicate_command_handle_with(handle.as_handle(), |source| {
-        sys::duplicate_local(source, sys::Inheritability::Private)
-    })
-}
+use crate::transaction::{
+    output_with_backend, spawn_running_with_backend, spawn_suspended_with_backend,
+};
 
 fn duplicate_command_handle_with(
     source: BorrowedHandle<'_>,
-    duplicate: impl FnOnce(BorrowedHandle<'_>) -> io::Result<OwnedHandle>,
+    duplicate: fn(BorrowedHandle<'_>) -> io::Result<OwnedHandle>,
 ) -> Result<OwnedHandle> {
     trace::io(
         Phase::Preparation,
@@ -146,9 +143,20 @@ impl Command {
     ///
     /// Returns an error if the source handle cannot be duplicated.
     pub fn arg_handle<T: AsHandle>(&mut self, handle: &T) -> Result<&mut Self> {
-        self.args
-            .push(Arg::Handle(duplicate_command_handle(handle)?));
-        Ok(self)
+        self.arg_handle_with(handle, |source| {
+            sys::duplicate_local(source, sys::Inheritability::Private)
+        })
+    }
+
+    fn arg_handle_with<T: AsHandle>(
+        &mut self,
+        handle: &T,
+        duplicate: fn(BorrowedHandle<'_>) -> io::Result<OwnedHandle>,
+    ) -> Result<&mut Self> {
+        duplicate_command_handle_with(handle.as_handle(), duplicate).map(|handle| {
+            self.args.push(Arg::Handle(handle));
+            self
+        })
     }
 
     /// Sets one environment variable.
@@ -187,11 +195,24 @@ impl Command {
         key: K,
         handle: &T,
     ) -> Result<&mut Self> {
-        self.env_ops.push(EnvOp::Set(
-            key.as_ref().to_os_string(),
-            EnvValue::Handle(duplicate_command_handle(handle)?),
-        ));
-        Ok(self)
+        self.env_handle_with(key, handle, |source| {
+            sys::duplicate_local(source, sys::Inheritability::Private)
+        })
+    }
+
+    fn env_handle_with<K: AsRef<OsStr>, T: AsHandle>(
+        &mut self,
+        key: K,
+        handle: &T,
+        duplicate: fn(BorrowedHandle<'_>) -> io::Result<OwnedHandle>,
+    ) -> Result<&mut Self> {
+        duplicate_command_handle_with(handle.as_handle(), duplicate).map(|handle| {
+            self.env_ops.push(EnvOp::Set(
+                key.as_ref().to_os_string(),
+                EnvValue::Handle(handle),
+            ));
+            self
+        })
     }
 
     /// Removes an environment variable case-insensitively.
@@ -259,11 +280,7 @@ impl Command {
     ///
     /// Returns validation, resource-acquisition, or process-creation errors.
     pub fn spawn_with(&mut self, options: SpawnOptions<'_>) -> Result<Child> {
-        let plan = ValidatedPlan::running(self, options, IoMode::Spawn)?;
-        PreparedSpawn::prepare(plan)?
-            .create_suspended()?
-            .reclaim()?
-            .resume()
+        spawn_running_with_backend::<WindowsBackend>(self, options, IoMode::Spawn)
     }
 
     /// Spawns in the suspended type state with default options.
@@ -281,11 +298,7 @@ impl Command {
     ///
     /// Returns validation, resource-acquisition, or process-creation errors.
     pub fn spawn_suspended_with(&mut self, options: SpawnOptions<'_>) -> Result<SuspendedChild> {
-        let plan = ValidatedPlan::suspended(self, options, IoMode::Spawn)?;
-        Ok(PreparedSpawn::prepare(plan)?
-            .create_suspended()?
-            .reclaim()?
-            .into_suspended())
+        spawn_suspended_with_backend::<WindowsBackend>(self, options)
     }
 
     /// Runs the process and waits for its status using default options.
@@ -303,7 +316,7 @@ impl Command {
     ///
     /// Returns an error from spawning, waiting, or retrieving the exit code.
     pub fn status_with(&mut self, options: SpawnOptions<'_>) -> Result<ExitStatus> {
-        self.spawn_with(options)?.wait()
+        self.spawn_with(options).and_then(|mut child| child.wait())
     }
 
     /// Runs the process and captures output using default options.
@@ -321,12 +334,7 @@ impl Command {
     ///
     /// Returns an error from spawning, waiting, reading, or Job termination.
     pub fn output_with(&mut self, options: SpawnOptions<'_>) -> Result<Output> {
-        let plan = ValidatedPlan::running(self, options, IoMode::Output)?;
-        PreparedSpawn::prepare(plan)?
-            .create_suspended()?
-            .reclaim()?
-            .resume()?
-            .wait_with_output()
+        output_with_backend::<WindowsBackend>(self, options)
     }
 }
 
@@ -355,5 +363,29 @@ mod tests {
             panic!("Windows error expected");
         };
         assert_eq!(error.operation(), Operation::DuplicateLocalHandle);
+
+        let mut command = Command::new("program.exe");
+        assert!(command
+            .arg_handle_with(&file, |_| Err(io::Error::from_raw_os_error(5)))
+            .is_err());
+        assert!(command
+            .env_handle_with("HANDLE", &file, |_| Err(io::Error::from_raw_os_error(5)))
+            .is_err());
+        command
+            .arg_handle_with(&file, |source| {
+                sys::duplicate_local(source, sys::Inheritability::Private)
+            })
+            .unwrap();
+        command
+            .env_handle_with("HANDLE", &file, |source| {
+                sys::duplicate_local(source, sys::Inheritability::Private)
+            })
+            .unwrap();
+
+        let mut invalid = Command::new("");
+        assert!(invalid.status_with(SpawnOptions::new()).is_err());
+        let mut valid = Command::new("cmd.exe");
+        valid.args(["/D", "/C", "exit /b 0"]);
+        assert!(valid.status_with(SpawnOptions::new()).unwrap().success());
     }
 }

@@ -16,8 +16,8 @@ use windows_spawn::{
     MitigationPolicy, ParentProcess, SpawnOptions, Stdio,
 };
 use windows_sys::Win32::Foundation::{
-    DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    DuplicateHandle, DUPLICATE_SAME_ACCESS, ERROR_BROKEN_PIPE, ERROR_HANDLE_EOF, HANDLE,
+    INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileInformationByHandle, GetFileType, ReadFile, WriteFile, BY_HANDLE_FILE_INFORMATION,
@@ -59,6 +59,70 @@ fn temporary_path(label: &str) -> PathBuf {
         "windows-spawn-{label}-{}-{nonce}",
         std::process::id()
     ))
+}
+
+struct AlternateParentHost {
+    child: Option<std::process::Child>,
+}
+
+impl AlternateParentHost {
+    fn start() -> io::Result<Self> {
+        let mut child = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::Out.WriteLine('ready'); [Console]::Out.Flush(); $null=[Console]::In.ReadLine()",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("alternate parent handshake pipe is missing"))?;
+        let mut reader = io::BufReader::new(stdout);
+        let mut ready = String::new();
+        reader.read_line(&mut ready)?;
+        if ready.trim_end() != "ready" {
+            return Err(io::Error::other(
+                "alternate parent handshake did not become ready",
+            ));
+        }
+        Ok(Self { child: Some(child) })
+    }
+
+    fn id(&self) -> io::Result<u32> {
+        self.child
+            .as_ref()
+            .map(std::process::Child::id)
+            .ok_or_else(|| io::Error::other("alternate parent already completed"))
+    }
+
+    fn finish(mut self) -> io::Result<()> {
+        let mut child = self
+            .child
+            .take()
+            .ok_or_else(|| io::Error::other("alternate parent already completed"))?;
+        drop(child.stdin.take());
+        let status = child.wait()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other("alternate parent exited unsuccessfully"))
+        }
+    }
+}
+
+impl Drop for AlternateParentHost {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            drop(child.stdin.take());
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -373,6 +437,13 @@ fn explicit_job_attachment_and_kill_tree_output_complete() -> io::Result<()> {
     let options = SpawnOptions::new().job(&outer_job).job(&inner_job);
     assert!(ordinary.status_with(options)?.success());
 
+    let terminating_job = Job::create()?;
+    terminating_job.set_close_policy(JobClosePolicy::TerminateProcesses)?;
+    let mut assigned =
+        cmd("ping -n 20 127.0.0.1 >nul").spawn_with(SpawnOptions::new().job(&terminating_job))?;
+    drop(terminating_job);
+    assert!(wait_bounded(&mut assigned)?.is_some());
+
     let mut tree = cmd("start \"\" /b cmd.exe /D /C \"ping -n 20 127.0.0.1 >nul\" & echo root");
     let output =
         tree.output_with(SpawnOptions::new().job_close_policy(JobClosePolicy::TerminateProcesses))?;
@@ -470,6 +541,28 @@ fn validation_happens_before_process_creation() {
         error_kind(batch.spawn().unwrap_err()),
         io::ErrorKind::InvalidInput
     );
+
+    let pseudoconsole = InvalidPseudoConsole;
+    let mut captured = Command::new("cmd.exe");
+    assert_eq!(
+        error_kind(
+            captured
+                .output_with(SpawnOptions::new().pseudo_console(&pseudoconsole))
+                .unwrap_err()
+        ),
+        io::ErrorKind::InvalidInput
+    );
+
+    let parent = ParentProcess::open(std::process::id()).unwrap();
+    let mut incomplete = Command::new("cmd.exe");
+    assert_eq!(
+        error_kind(
+            incomplete
+                .spawn_with(SpawnOptions::new().parent_process(&parent))
+                .unwrap_err()
+        ),
+        io::ErrorKind::InvalidInput
+    );
 }
 
 #[test]
@@ -522,10 +615,8 @@ fn argument_and_environment_handles_are_lowered_after_duplication() -> io::Resul
 
 #[test]
 fn alternate_parent_receives_remote_stdio_duplicates() -> io::Result<()> {
-    let mut host = std::process::Command::new("cmd.exe")
-        .args(["/D", "/C", "ping -n 10 127.0.0.1 >nul"])
-        .spawn()?;
-    let parent = ParentProcess::open(host.id())?;
+    let host = AlternateParentHost::start()?;
+    let parent = ParentProcess::open(host.id()?)?;
 
     let mut command = cmd("echo alternate-parent");
     command
@@ -533,10 +624,10 @@ fn alternate_parent_receives_remote_stdio_duplicates() -> io::Result<()> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let result = command.output_with(SpawnOptions::new().parent_process(&parent));
-    let _ = host.kill();
-    let _ = host.wait();
+    let host_result = host.finish();
 
     let output = result?;
+    host_result?;
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("alternate-parent"));
     Ok(())
@@ -548,10 +639,8 @@ fn alternate_parent_receives_remote_argument_and_environment_handles() -> io::Re
     let environment_path = temporary_path("remote-environment-handle");
     let argument_file = File::create(&argument_path)?;
     let environment_file = File::create(&environment_path)?;
-    let mut host = std::process::Command::new("cmd.exe")
-        .args(["/D", "/C", "ping -n 10 127.0.0.1 >nul"])
-        .spawn()?;
-    let parent = ParentProcess::open(host.id())?;
+    let host = AlternateParentHost::start()?;
+    let parent = ParentProcess::open(host.id()?)?;
 
     let script = concat!(
         "& { param($argumentHandle)",
@@ -582,10 +671,10 @@ fn alternate_parent_receives_remote_argument_and_environment_handles() -> io::Re
     drop((argument_file, environment_file));
 
     let result = command.status_with(SpawnOptions::new().parent_process(&parent));
-    let _ = host.kill();
-    let _ = host.wait();
+    let host_result = host.finish();
 
     assert!(result?.success());
+    host_result?;
     assert_eq!(fs::read_to_string(&argument_path)?, "argument");
     assert_eq!(fs::read_to_string(&environment_path)?, "environment");
     fs::remove_file(argument_path)?;
@@ -733,48 +822,62 @@ impl TestPseudoConsole {
         Ok(())
     }
 
-    fn wait_for_output_markers(&self, expected: &[&[u8]]) -> io::Result<bool> {
+    fn wait_for_output_markers(mut self, expected: &[&[u8]]) -> io::Result<bool> {
+        drop(self.input_writer.take());
         let output = self
             .output_reader
-            .as_ref()
+            .take()
             .expect("a live pseudoconsole retains its output reader");
-        let mut received = Vec::new();
-        loop {
-            let mut buffer = [0_u8; 4_096];
-            let mut read = 0_u32;
-            let length = u32::try_from(buffer.len())
-                .map_err(|_| io::Error::other("test buffer is too large"))?;
-            // SAFETY: buffer is writable for its reported length, read is
-            // writable, and the owned synchronous pipe handle remains valid.
-            if unsafe {
-                ReadFile(
-                    output.as_raw_handle(),
-                    buffer.as_mut_ptr(),
-                    length,
-                    &mut read,
-                    std::ptr::null_mut(),
-                )
-            } == 0
-            {
-                return Err(io::Error::last_os_error());
+        let reader = thread::spawn(move || {
+            let mut received = Vec::new();
+            loop {
+                let mut buffer = [0_u8; 4_096];
+                let mut read = 0_u32;
+                let length = u32::try_from(buffer.len())
+                    .map_err(|_| io::Error::other("test buffer is too large"))?;
+                // SAFETY: buffer is writable for its reported length, read is
+                // writable, and the owned synchronous pipe handle remains valid.
+                if unsafe {
+                    ReadFile(
+                        output.as_raw_handle(),
+                        buffer.as_mut_ptr(),
+                        length,
+                        &mut read,
+                        std::ptr::null_mut(),
+                    )
+                } == 0
+                {
+                    let error = io::Error::last_os_error();
+                    let broken_pipe = i32::try_from(ERROR_BROKEN_PIPE).unwrap_or_default();
+                    let handle_eof = i32::try_from(ERROR_HANDLE_EOF).unwrap_or_default();
+                    if matches!(error.raw_os_error(), Some(code) if code == broken_pipe || code == handle_eof)
+                    {
+                        return Ok(received);
+                    }
+                    return Err(error);
+                }
+                if read == 0 {
+                    return Ok(received);
+                }
+                let read = usize::try_from(read)
+                    .map_err(|_| io::Error::other("read byte count does not fit usize"))?;
+                let bytes = buffer
+                    .get(..read)
+                    .ok_or_else(|| io::Error::other("read byte count exceeds the buffer"))?;
+                received.extend_from_slice(bytes);
             }
-            if read == 0 {
-                return Ok(false);
-            }
-            let read = usize::try_from(read)
-                .map_err(|_| io::Error::other("read byte count does not fit usize"))?;
-            let bytes = buffer
-                .get(..read)
-                .ok_or_else(|| io::Error::other("read byte count exceeds the buffer"))?;
-            received.extend_from_slice(bytes);
-            if expected.iter().all(|marker| {
-                received
-                    .windows(marker.len())
-                    .any(|window| window == *marker)
-            }) {
-                return Ok(true);
-            }
-        }
+        });
+        let value = std::mem::replace(&mut self.value, 0);
+        // SAFETY: this type uniquely owns the live HPCON and closes it once.
+        unsafe { ClosePseudoConsole(value) };
+        let received = reader
+            .join()
+            .map_err(|_| io::Error::other("pseudoconsole reader thread panicked"))??;
+        Ok(expected.iter().all(|marker| {
+            received
+                .windows(marker.len())
+                .any(|window| window == *marker)
+        }))
     }
 }
 
@@ -783,11 +886,13 @@ impl Drop for TestPseudoConsole {
         drop(self.input_writer.take());
         drop(self.output_reader.take());
 
-        let value = self.value;
-        let _ = thread::spawn(move || {
-            // SAFETY: this type uniquely owned the HPCON returned by creation.
-            unsafe { ClosePseudoConsole(value) };
-        });
+        if self.value != 0 {
+            let value = self.value;
+            let _ = thread::spawn(move || {
+                // SAFETY: this type uniquely owned the HPCON returned by creation.
+                unsafe { ClosePseudoConsole(value) };
+            });
+        }
     }
 }
 
@@ -941,12 +1046,21 @@ fn capability_wrappers_and_all_option_builders_are_exercised() -> io::Result<()>
     let parent = ParentProcess::open(std::process::id())?;
     let _ = parent.as_handle();
     assert!(format!("{parent:?}").contains("ParentProcess"));
+    let adopted_parent =
+        ParentProcess::from_handle(local_duplicate(&parent, TestInheritability::Private)?)?;
+    let _ = adopted_parent.as_handle();
     let job = Job::create()?;
     job.set_close_policy(JobClosePolicy::TerminateProcesses)?;
     job.set_close_policy(JobClosePolicy::PreserveProcesses)?;
     let duplicate_job = job.duplicate()?;
     let _ = duplicate_job.as_handle();
     assert!(format!("{duplicate_job:?}").contains("Job"));
+    let adopted_job = Job::from_handle(local_duplicate(&job, TestInheritability::Private)?)?;
+    let _ = adopted_job.as_handle();
+    assert!(
+        ParentProcess::from_handle(local_duplicate(&file, TestInheritability::Private,)?).is_err()
+    );
+    assert!(Job::from_handle(local_duplicate(&file, TestInheritability::Private)?).is_err());
 
     let pseudoconsole = InvalidPseudoConsole;
     let options = SpawnOptions::new()

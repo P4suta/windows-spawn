@@ -72,6 +72,25 @@ impl core::marker::Unpin for windows_spawn::CetShadowStacks
 impl core::marker::UnsafeUnpin for windows_spawn::CetShadowStacks
 impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::CetShadowStacks
 impl core::panic::unwind_safe::UnwindSafe for windows_spawn::CetShadowStacks
+pub enum windows_spawn::CleanupOutcome
+pub windows_spawn::CleanupOutcome::Preserved
+pub windows_spawn::CleanupOutcome::Terminated
+impl core::clone::Clone for windows_spawn::CleanupOutcome
+pub fn windows_spawn::CleanupOutcome::clone(&self) -> windows_spawn::CleanupOutcome
+impl core::cmp::Eq for windows_spawn::CleanupOutcome
+impl core::cmp::PartialEq for windows_spawn::CleanupOutcome
+pub fn windows_spawn::CleanupOutcome::eq(&self, &windows_spawn::CleanupOutcome) -> bool
+impl core::fmt::Debug for windows_spawn::CleanupOutcome
+pub fn windows_spawn::CleanupOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for windows_spawn::CleanupOutcome
+impl core::marker::StructuralPartialEq for windows_spawn::CleanupOutcome
+impl core::marker::Freeze for windows_spawn::CleanupOutcome
+impl core::marker::Send for windows_spawn::CleanupOutcome
+impl core::marker::Sync for windows_spawn::CleanupOutcome
+impl core::marker::Unpin for windows_spawn::CleanupOutcome
+impl core::marker::UnsafeUnpin for windows_spawn::CleanupOutcome
+impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::CleanupOutcome
+impl core::panic::unwind_safe::UnwindSafe for windows_spawn::CleanupOutcome
 pub enum windows_spawn::ConsoleMode
 pub windows_spawn::ConsoleMode::Detached
 pub windows_spawn::ConsoleMode::Inherit
@@ -588,7 +607,7 @@ pub windows_spawn::Child::stderr: core::option::Option<windows_spawn::ChildStder
 pub windows_spawn::Child::stdin: core::option::Option<windows_spawn::ChildStdin>
 pub windows_spawn::Child::stdout: core::option::Option<windows_spawn::ChildStdout>
 impl windows_spawn::Child
-pub fn windows_spawn::Child::cleanup(self) -> windows_spawn::Result<()>
+pub fn windows_spawn::Child::cleanup(self) -> windows_spawn::Result<windows_spawn::CleanupOutcome>
 pub fn windows_spawn::Child::id(&self) -> u32
 pub fn windows_spawn::Child::kill(&mut self) -> windows_spawn::Result<()>
 pub fn windows_spawn::Child::try_wait(&mut self) -> windows_spawn::Result<core::option::Option<std::process::ExitStatus>>

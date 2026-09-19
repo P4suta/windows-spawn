@@ -1,4 +1,3 @@
-use std::error;
 use std::fmt;
 use std::io;
 
@@ -43,8 +42,8 @@ impl fmt::Display for Error {
     }
 }
 
-impl error::Error for Error {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Validation(error) => Some(error),
             Self::Windows(error) => Some(error),
@@ -204,7 +203,7 @@ impl fmt::Display for ValidationError {
     }
 }
 
-impl error::Error for ValidationError {}
+impl std::error::Error for ValidationError {}
 
 /// A field accepted as Windows text.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -287,8 +286,8 @@ impl fmt::Display for WindowsError {
     }
 }
 
-impl error::Error for WindowsError {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+impl std::error::Error for WindowsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.source)
     }
 }
@@ -350,8 +349,8 @@ impl fmt::Display for CleanupError {
     }
 }
 
-impl error::Error for CleanupError {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+impl std::error::Error for CleanupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.first)
     }
 }

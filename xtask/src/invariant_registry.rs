@@ -2,12 +2,15 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path};
 
 use serde::Deserialize;
+use syn::visit::{self, Visit};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Registry {
     version: u32,
     invariant: Vec<Invariant>,
+    #[serde(default)]
+    mutation_exemption: Vec<MutationExemption>,
 }
 
 #[derive(Deserialize)]
@@ -18,6 +21,22 @@ struct Invariant {
     enforcement: Vec<Enforcement>,
     artifacts: Vec<String>,
     trust_boundaries: Vec<TrustBoundary>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MutationExemption {
+    matcher: String,
+    source: String,
+    expression: String,
+    proof: String,
+    invariant: String,
+}
+
+#[derive(Deserialize)]
+struct MutantsConfig {
+    #[serde(default)]
+    exclude_re: Vec<String>,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -44,7 +63,98 @@ pub(crate) fn check(root: &Path) -> Result<(), String> {
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
     let registry: Registry =
         toml::from_str(&source).map_err(|error| format!("invalid invariant registry: {error}"))?;
-    validate(root, &registry)
+    validate(root, &registry)?;
+    validate_mutation_exemptions(root, &registry)
+}
+
+fn validate_mutation_exemptions(root: &Path, registry: &Registry) -> Result<(), String> {
+    let config_path = root.join(".cargo").join("mutants.toml");
+    let config_source = std::fs::read_to_string(&config_path)
+        .map_err(|error| format!("failed to read {}: {error}", config_path.display()))?;
+    let config: MutantsConfig = toml::from_str(&config_source)
+        .map_err(|error| format!("invalid cargo-mutants config: {error}"))?;
+    let configured: BTreeSet<&str> = config.exclude_re.iter().map(String::as_str).collect();
+    let registered: BTreeSet<&str> = registry
+        .mutation_exemption
+        .iter()
+        .map(|entry| entry.matcher.as_str())
+        .collect();
+    if configured != registered {
+        return Err("cargo-mutants exclusions must exactly match the proof registry".to_owned());
+    }
+    let kani_invariants: BTreeSet<&str> = registry
+        .invariant
+        .iter()
+        .filter(|entry| {
+            entry
+                .enforcement
+                .iter()
+                .any(|value| matches!(value, Enforcement::Kani))
+        })
+        .map(|entry| entry.id.as_str())
+        .collect();
+    let mut matchers = BTreeSet::new();
+    for exemption in &registry.mutation_exemption {
+        if !matchers.insert(exemption.matcher.as_str()) {
+            return Err(format!(
+                "duplicate mutation exemption: {}",
+                exemption.matcher
+            ));
+        }
+        if !exemption.matcher.starts_with('^') || !exemption.matcher.ends_with('$') {
+            return Err(format!(
+                "mutation exemption is not anchored: {}",
+                exemption.matcher
+            ));
+        }
+        if !kani_invariants.contains(exemption.invariant.as_str()) {
+            return Err(format!(
+                "mutation exemption does not name a Kani invariant: {}",
+                exemption.invariant
+            ));
+        }
+        validate_artifact(root, &exemption.invariant, &exemption.source)?;
+        let source_path = root.join(&exemption.source);
+        let source = std::fs::read_to_string(&source_path)
+            .map_err(|error| format!("failed to read {}: {error}", source_path.display()))?;
+        if !source.contains(&exemption.expression) {
+            return Err(format!(
+                "mutation exemption expression is absent from {}: {}",
+                exemption.source, exemption.expression
+            ));
+        }
+        let syntax = syn::parse_file(&source)
+            .map_err(|error| format!("failed to parse {}: {error}", exemption.source))?;
+        let mut proofs = KaniProofs::default();
+        proofs.visit_file(&syntax);
+        if !proofs.names.contains(exemption.proof.as_str()) {
+            return Err(format!(
+                "mutation exemption proof is not a Kani harness: {}",
+                exemption.proof
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct KaniProofs {
+    names: BTreeSet<String>,
+}
+
+impl<'ast> Visit<'ast> for KaniProofs {
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        let is_proof = item.attrs.iter().any(|attribute| {
+            let mut segments = attribute.path().segments.iter();
+            matches!(segments.next(), Some(segment) if segment.ident == "kani")
+                && matches!(segments.next(), Some(segment) if segment.ident == "proof")
+                && segments.next().is_none()
+        });
+        if is_proof {
+            self.names.insert(item.sig.ident.to_string());
+        }
+        visit::visit_item_fn(self, item);
+    }
 }
 
 fn validate(root: &Path, registry: &Registry) -> Result<(), String> {

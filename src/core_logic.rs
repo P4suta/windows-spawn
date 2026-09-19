@@ -21,10 +21,7 @@ pub(crate) struct CommandLine {
 impl CommandLine {
     pub(crate) fn new(program: &[u16]) -> Result<Self, CommandLineError> {
         let mut value = Self { units: Vec::new() };
-        let additional = program
-            .len()
-            .checked_add(2)
-            .ok_or(CommandLineError::TooLong)?;
+        let additional = program.len().saturating_add(2);
         value.reserve(additional)?;
         value.units.push(QUOTE);
         value.units.extend_from_slice(program);
@@ -33,8 +30,8 @@ impl CommandLine {
     }
 
     pub(crate) fn push_regular(&mut self, argument: &[u16]) -> Result<(), CommandLineError> {
-        let encoded = quoted_argument_len(argument).ok_or(CommandLineError::TooLong)?;
-        let additional = encoded.checked_add(1).ok_or(CommandLineError::TooLong)?;
+        let encoded = quoted_argument_len(argument);
+        let additional = encoded.saturating_add(1);
         self.reserve(additional)?;
         self.units.push(SPACE);
         append_regular(&mut self.units, argument);
@@ -42,62 +39,58 @@ impl CommandLine {
     }
 
     pub(crate) fn push_raw(&mut self, argument: &[u16]) -> Result<(), CommandLineError> {
-        let additional = argument
-            .len()
-            .checked_add(1)
-            .ok_or(CommandLineError::TooLong)?;
+        let additional = argument.len().saturating_add(1);
         self.reserve(additional)?;
         self.units.push(SPACE);
         self.units.extend_from_slice(argument);
         Ok(())
     }
 
-    pub(crate) fn finish(mut self) -> Result<Vec<u16>, CommandLineError> {
-        self.reserve(0)?;
+    pub(crate) fn finish(mut self) -> Vec<u16> {
         self.units.push(0);
-        Ok(self.units)
+        self.units
     }
 
     fn reserve(&mut self, additional: usize) -> Result<(), CommandLineError> {
-        let with_content = self
-            .units
-            .len()
-            .checked_add(additional)
-            .ok_or(CommandLineError::TooLong)?;
-        let with_terminator = with_content
-            .checked_add(1)
-            .ok_or(CommandLineError::TooLong)?;
+        self.reserve_with(additional, Vec::try_reserve)
+    }
+
+    fn reserve_with(
+        &mut self,
+        additional: usize,
+        reserve: impl FnOnce(&mut Vec<u16>, usize) -> Result<(), TryReserveError>,
+    ) -> Result<(), CommandLineError> {
+        let with_content = self.units.len().saturating_add(additional);
+        let with_terminator = with_content.saturating_add(1);
         if with_terminator > MAX_COMMAND_LINE_UNITS {
             return Err(CommandLineError::TooLong);
         }
-        let reservation = additional.checked_add(1).ok_or(CommandLineError::TooLong)?;
-        self.units
-            .try_reserve(reservation)
-            .map_err(CommandLineError::Allocation)
+        let reservation = additional.saturating_add(1);
+        reserve(&mut self.units, reservation).map_err(CommandLineError::Allocation)
     }
 }
 
-pub(crate) fn quoted_argument_len(argument: &[u16]) -> Option<usize> {
+pub(crate) fn quoted_argument_len(argument: &[u16]) -> usize {
     let quoted = needs_quotes(argument);
     let mut length = argument.len();
     if quoted {
-        length = length.checked_add(2)?;
+        length = length.saturating_add(2);
     }
     let mut backslashes = 0_usize;
     for unit in argument {
         if *unit == BACKSLASH {
-            backslashes = backslashes.checked_add(1)?;
+            backslashes = backslashes.saturating_add(1);
         } else {
             if *unit == QUOTE {
-                length = length.checked_add(backslashes.checked_add(1)?)?;
+                length = length.saturating_add(backslashes.saturating_add(1));
             }
             backslashes = 0;
         }
     }
     if quoted {
-        length = length.checked_add(backslashes)?;
+        length = length.saturating_add(backslashes);
     }
-    Some(length)
+    length
 }
 
 fn append_regular(command: &mut Vec<u16>, argument: &[u16]) {
@@ -135,7 +128,7 @@ pub(crate) const fn replace_two_bit_field(word: u64, shift: u32, value: u64) -> 
         return word;
     };
     let encoded = value << shift;
-    (word & !mask) | (encoded & mask)
+    (word & !mask).wrapping_add(encoded & mask)
 }
 
 pub(crate) const fn replace_one_bit_field(word: u64, shift: u32, value: u64) -> u64 {
@@ -143,7 +136,7 @@ pub(crate) const fn replace_one_bit_field(word: u64, shift: u32, value: u64) -> 
         return word;
     };
     let encoded = value << shift;
-    (word & !mask) | (encoded & mask)
+    (word & !mask).wrapping_add(encoded & mask)
 }
 
 #[cfg(test)]
@@ -162,7 +155,7 @@ mod tests {
         ] {
             let mut emitted = Vec::new();
             append_regular(&mut emitted, argument);
-            assert_eq!(Some(emitted.len()), quoted_argument_len(argument));
+            assert_eq!(emitted.len(), quoted_argument_len(argument));
         }
     }
 
@@ -171,22 +164,44 @@ mod tests {
         let mut line = CommandLine::new(&[u16::from(b'p')]).unwrap();
         line.push_regular(&[SPACE]).unwrap();
         line.push_raw(&[u16::from(b'r')]).unwrap();
-        let line = line.finish().unwrap();
+        let line = line.finish();
         assert_eq!(line.last(), Some(&0));
         assert!(line.len() <= MAX_COMMAND_LINE_UNITS);
     }
 
     #[test]
     fn builder_rejects_the_windows_limit_and_invalid_bit_shifts_are_noops() {
+        let largest_program = vec![u16::from(b'x'); MAX_COMMAND_LINE_UNITS - 3];
+        let largest_line = CommandLine::new(&largest_program).unwrap().finish();
+        assert_eq!(largest_line.len(), MAX_COMMAND_LINE_UNITS);
         let oversized = vec![u16::from(b'x'); MAX_COMMAND_LINE_UNITS];
         assert!(matches!(
             CommandLine::new(&oversized),
+            Err(CommandLineError::TooLong)
+        ));
+        let mut regular = CommandLine::new(&[u16::from(b'p')]).unwrap();
+        assert!(matches!(
+            regular.push_regular(&oversized),
+            Err(CommandLineError::TooLong)
+        ));
+        let mut raw = CommandLine::new(&[u16::from(b'p')]).unwrap();
+        assert!(matches!(
+            raw.push_raw(&oversized),
             Err(CommandLineError::TooLong)
         ));
         assert_eq!(replace_two_bit_field(7, 64, 0), 7);
         assert_eq!(replace_two_bit_field(7, 65, 0), 7);
         assert_eq!(replace_one_bit_field(7, 64, 0), 7);
         assert_eq!(replace_one_bit_field(7, 65, 0), 7);
+
+        let allocation = Vec::<u8>::new().try_reserve(usize::MAX).unwrap_err();
+        let mut line = CommandLine::new(&[u16::from(b'p')]).unwrap();
+        match line.reserve_with(0, |_, _| Err(allocation)) {
+            Err(CommandLineError::Allocation(source)) => {
+                assert!(!source.to_string().is_empty());
+            }
+            _ => panic!("allocation failure expected"),
+        }
     }
 
     #[test]
@@ -212,11 +227,7 @@ mod tests {
             }
             let mut emitted = Vec::new();
             append_regular(&mut emitted, &argument);
-            assert_eq!(
-                Some(emitted.len()),
-                quoted_argument_len(&argument),
-                "{case}"
-            );
+            assert_eq!(emitted.len(), quoted_argument_len(&argument), "{case}");
 
             let word = next(&mut state);
             let value = next(&mut state);
@@ -238,14 +249,12 @@ mod tests {
 
 #[cfg(kani)]
 mod proofs {
-    use super::*;
+    use super::{quoted_argument_len, replace_one_bit_field, replace_two_bit_field};
 
     #[kani::proof]
     fn quoting_length_is_bounded() {
         let argument: [u16; 16] = kani::any();
-        let Some(length) = quoted_argument_len(&argument) else {
-            return;
-        };
+        let length = quoted_argument_len(&argument);
         assert!(length >= argument.len());
         assert!(length <= argument.len() * 2 + 2);
     }

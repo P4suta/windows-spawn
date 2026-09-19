@@ -6,7 +6,7 @@ use std::process::Command;
 
 use serde_json::Value;
 
-const OCOMMENT_REVISION: &str = "d7528bf0f9c8f50bc5cafcb330a77a3aeb3d72d4";
+const OCOMMENT_REVISION: &str = "897c441e50a800817bfc16746bfe5c289b955ce5";
 const OCOMMENT_VERSION: &str = "ocomment 0.1.0";
 const OCOMMENT_REPOSITORY: &str = "https://github.com/P4suta/OComment.git";
 const OCOMMENT_TOOLCHAIN: &str = "1.98.0";

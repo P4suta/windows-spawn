@@ -3,7 +3,6 @@ use semver::Version;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::env;
-use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -38,8 +37,8 @@ impl fmt::Display for TaskError {
     }
 }
 
-impl Error for TaskError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
+impl std::error::Error for TaskError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
             Self::Json(error) => Some(error),
@@ -414,7 +413,7 @@ fn check_packaged_reuse(root: &Path) -> Result<()> {
 }
 
 fn run_reuse(root: &Path, arguments: &[&str]) -> Result<()> {
-    let mut command = Command::new("uvx");
+    let mut command = Command::new(uvx_program()?);
     command
         .current_dir(root)
         .args(["--from", REUSE_PACKAGE, "reuse"])
@@ -504,7 +503,7 @@ fn generate_sboms(
             fs::remove_file(&generated)?;
         }
 
-        let mut reuse = Command::new("uvx");
+        let mut reuse = Command::new(uvx_program()?);
         reuse
             .current_dir(root)
             .args(["--from", REUSE_PACKAGE, "reuse", "spdx", "-o"])
@@ -853,6 +852,7 @@ fn append_github_output(path: &Path, key: &str, value: &str) -> Result<()> {
 fn run_mutants(root: &Path, output: Option<PathBuf>, forwarded: &[String]) -> Result<i32> {
     use windows_spawn::{Command as SpawnCommand, JobClosePolicy, SpawnOptions};
 
+    let _fault_dialog_guard = crate::windows::FaultDialogGuard::suppress();
     let output = mutation_output(root, output)?;
     println!("cargo-mutants output: {}", output.display());
     let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo.exe"));
@@ -976,6 +976,24 @@ fn repository_root() -> Result<PathBuf> {
     Ok(normalize_path(root))
 }
 
+fn uvx_program() -> Result<PathBuf> {
+    if let Some(program) = env::var_os("UVX").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(program));
+    }
+    let executable = if cfg!(windows) { "uvx.exe" } else { "uvx" };
+    let local = repository_root()?
+        .join("target")
+        .join("tools")
+        .join("uv")
+        .join("bin")
+        .join(executable);
+    if local.is_file() {
+        Ok(local)
+    } else {
+        Ok(PathBuf::from(executable))
+    }
+}
+
 fn cargo(root: &Path) -> Command {
     let executable = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = Command::new(executable);
@@ -1044,6 +1062,7 @@ fn fail<T>(message: impl Into<String>) -> Result<T> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::error::Error as _;
     use std::time::Duration;
 
     #[test]

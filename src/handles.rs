@@ -77,12 +77,22 @@ impl Stdio {
     ///
     /// Returns the operating-system error if duplication fails.
     pub fn from_borrowed<T: AsHandle>(source: &T) -> crate::Result<Self> {
-        Ok(Self::from(typed_io(
+        Self::from_borrowed_with(source, |handle| {
+            sys::duplicate_local(handle, sys::Inheritability::Private)
+        })
+    }
+
+    fn from_borrowed_with<T: AsHandle>(
+        source: &T,
+        duplicate: impl FnOnce(BorrowedHandle<'_>) -> io::Result<SystemOwnedHandle>,
+    ) -> crate::Result<Self> {
+        typed_io(
             crate::Phase::Preparation,
             crate::Operation::DuplicateLocalHandle,
             ResourceKind::Handle,
-            || sys::duplicate_local(source.as_handle(), sys::Inheritability::Private),
-        )?))
+            || duplicate(source.as_handle()),
+        )
+        .map(Self::from)
     }
 }
 
@@ -113,13 +123,21 @@ impl ParentProcess {
     ///
     /// Returns an error if the PID cannot be opened with the required rights.
     pub fn open(pid: u32) -> crate::Result<Self> {
-        Ok(Self {
-            handle: OwnedHandle::from_system(typed_io(
-                crate::Phase::Preparation,
-                crate::Operation::OpenProcess,
-                ResourceKind::Process,
-                || sys::open_parent_process(pid),
-            )?),
+        Self::open_with(pid, sys::open_parent_process)
+    }
+
+    fn open_with(
+        pid: u32,
+        open: impl FnOnce(u32) -> io::Result<SystemOwnedHandle>,
+    ) -> crate::Result<Self> {
+        typed_io(
+            crate::Phase::Preparation,
+            crate::Operation::OpenProcess,
+            ResourceKind::Process,
+            || open(pid),
+        )
+        .map(|handle| Self {
+            handle: OwnedHandle::from_system(handle),
         })
     }
 
@@ -166,12 +184,17 @@ impl Job {
     ///
     /// Returns the operating-system error if Job creation fails.
     pub fn create() -> crate::Result<Self> {
-        Ok(Self::from_system(typed_io(
+        Self::create_with(sys::create_job)
+    }
+
+    fn create_with(create: impl FnOnce() -> io::Result<SystemOwnedHandle>) -> crate::Result<Self> {
+        typed_io(
             crate::Phase::Preparation,
             crate::Operation::CreateJob,
             ResourceKind::Job,
-            sys::create_job,
-        )?))
+            create,
+        )
+        .map(Self::from_system)
     }
 
     /// Adopts an existing handle after verifying it is a Job handle.
@@ -197,13 +220,21 @@ impl Job {
     ///
     /// Returns the operating-system error if duplication fails.
     pub fn duplicate(&self) -> crate::Result<Self> {
-        Ok(Self {
-            handle: OwnedHandle::from_system(typed_io(
-                crate::Phase::Preparation,
-                crate::Operation::DuplicateLocalHandle,
-                ResourceKind::Handle,
-                || sys::duplicate_local(self.handle.as_handle(), sys::Inheritability::Private),
-            )?),
+        self.duplicate_with(|handle| sys::duplicate_local(handle, sys::Inheritability::Private))
+    }
+
+    fn duplicate_with(
+        &self,
+        duplicate: impl FnOnce(BorrowedHandle<'_>) -> io::Result<SystemOwnedHandle>,
+    ) -> crate::Result<Self> {
+        typed_io(
+            crate::Phase::Preparation,
+            crate::Operation::DuplicateLocalHandle,
+            ResourceKind::Handle,
+            || duplicate(self.handle.as_handle()),
+        )
+        .map(|handle| Self {
+            handle: OwnedHandle::from_system(handle),
         })
     }
 
@@ -351,6 +382,17 @@ mod tests {
             .unwrap();
 
         let file = File::open("NUL").unwrap();
+        assert!(
+            Stdio::from_borrowed_with(&file, |_| { Err(io::Error::from_raw_os_error(5)) }).is_err()
+        );
+        assert!(
+            ParentProcess::open_with(u32::MAX, |_| { Err(io::Error::from_raw_os_error(5)) })
+                .is_err()
+        );
+        assert!(Job::create_with(|| Err(io::Error::from_raw_os_error(5))).is_err());
+        assert!(job
+            .duplicate_with(|_| Err(io::Error::from_raw_os_error(5)))
+            .is_err());
         let not_process =
             sys::duplicate_local(file.as_handle(), sys::Inheritability::Private).unwrap();
         assert!(ParentProcess::from_handle(not_process).is_err());

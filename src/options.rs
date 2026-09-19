@@ -72,6 +72,54 @@ impl CreationPolicy {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CreationFlags(u32);
+
+impl CreationFlags {
+    pub(crate) const fn new(policy: CreationPolicy, console: ConsoleMode) -> Self {
+        Self(policy.bits().wrapping_add(console.creation_bits()))
+    }
+
+    pub(crate) const fn bits(self) -> u32 {
+        self.0
+    }
+}
+
+const _: () = {
+    let empty = CreationPolicy(0);
+    assert!(empty.bits() == 0);
+    assert!(empty.with(CREATE_NEW_PROCESS_GROUP).bits() == CREATE_NEW_PROCESS_GROUP);
+    assert!(empty.with(INHERIT_PARENT_AFFINITY).bits() == INHERIT_PARENT_AFFINITY);
+    assert!(empty.with(CREATE_BREAKAWAY_FROM_JOB).bits() == CREATE_BREAKAWAY_FROM_JOB);
+    assert!(
+        empty.with(CREATE_PRESERVE_CODE_AUTHZ_LEVEL).bits() == CREATE_PRESERVE_CODE_AUTHZ_LEVEL
+    );
+    assert!(empty.with(CREATE_DEFAULT_ERROR_MODE).bits() == CREATE_DEFAULT_ERROR_MODE);
+    assert!(ConsoleMode::Inherit.creation_bits() == 0);
+    assert!(ConsoleMode::Detached.creation_bits() == DETACHED_PROCESS);
+    assert!(ConsoleMode::NewConsole.creation_bits() == CREATE_NEW_CONSOLE);
+    assert!(ConsoleMode::NoWindow.creation_bits() == CREATE_NO_WINDOW);
+    assert!(CreationFlags::new(empty, ConsoleMode::Inherit).bits() == 0);
+    assert!(CreationFlags::new(empty, ConsoleMode::Detached).bits() == DETACHED_PROCESS);
+    assert!(CreationFlags::new(empty, ConsoleMode::NewConsole).bits() == CREATE_NEW_CONSOLE);
+    assert!(CreationFlags::new(empty, ConsoleMode::NoWindow).bits() == CREATE_NO_WINDOW);
+};
+const _: () = assert!(CREATE_NEW_PROCESS_GROUP & DETACHED_PROCESS == 0);
+const _: () = assert!(CREATE_NEW_PROCESS_GROUP & CREATE_NEW_CONSOLE == 0);
+const _: () = assert!(CREATE_NEW_PROCESS_GROUP & CREATE_NO_WINDOW == 0);
+const _: () = assert!(INHERIT_PARENT_AFFINITY & DETACHED_PROCESS == 0);
+const _: () = assert!(INHERIT_PARENT_AFFINITY & CREATE_NEW_CONSOLE == 0);
+const _: () = assert!(INHERIT_PARENT_AFFINITY & CREATE_NO_WINDOW == 0);
+const _: () = assert!(CREATE_BREAKAWAY_FROM_JOB & DETACHED_PROCESS == 0);
+const _: () = assert!(CREATE_BREAKAWAY_FROM_JOB & CREATE_NEW_CONSOLE == 0);
+const _: () = assert!(CREATE_BREAKAWAY_FROM_JOB & CREATE_NO_WINDOW == 0);
+const _: () = assert!(CREATE_PRESERVE_CODE_AUTHZ_LEVEL & DETACHED_PROCESS == 0);
+const _: () = assert!(CREATE_PRESERVE_CODE_AUTHZ_LEVEL & CREATE_NEW_CONSOLE == 0);
+const _: () = assert!(CREATE_PRESERVE_CODE_AUTHZ_LEVEL & CREATE_NO_WINDOW == 0);
+const _: () = assert!(CREATE_DEFAULT_ERROR_MODE & DETACHED_PROCESS == 0);
+const _: () = assert!(CREATE_DEFAULT_ERROR_MODE & CREATE_NEW_CONSOLE == 0);
+const _: () = assert!(CREATE_DEFAULT_ERROR_MODE & CREATE_NO_WINDOW == 0);
+
 /// Capabilities and closed creation policies used by one spawn operation.
 pub struct SpawnOptions<'a> {
     pub(crate) jobs: Vec<&'a Job>,
@@ -199,6 +247,16 @@ impl<'a> SpawnOptions<'a> {
 mod tests {
     use super::*;
 
+    struct PseudoConsoleOwner(());
+
+    // SAFETY: the test-only typed value is never submitted to a Win32 call.
+    #[allow(unsafe_code)]
+    unsafe impl AsPseudoConsole for PseudoConsoleOwner {
+        fn as_pseudo_console(&self) -> BorrowedPseudoConsole<'_> {
+            crate::handles::borrowed_pseudoconsole_for_test(&self.0)
+        }
+    }
+
     #[test]
     fn console_and_creation_policies_encode_every_closed_choice() {
         assert_eq!(ConsoleMode::Inherit.creation_bits(), 0);
@@ -226,5 +284,21 @@ mod tests {
             TerminalMode::Console(ConsoleMode::NewConsole)
         ));
         assert!(!format!("{options:?}").is_empty());
+
+        let job = Job::create().unwrap();
+        let owner = PseudoConsoleOwner(());
+        let repeated = SpawnOptions::new()
+            .job(&job)
+            .pseudo_console(&owner)
+            .new_process_group()
+            .new_process_group();
+        assert_eq!(repeated.jobs.len(), 1);
+        assert!(std::ptr::eq(repeated.jobs[0], &job));
+        assert!(matches!(repeated.terminal, TerminalMode::PseudoConsole(_)));
+        assert_eq!(
+            repeated.creation.bits(),
+            CREATE_NEW_PROCESS_GROUP,
+            "closed flags are idempotent"
+        );
     }
 }

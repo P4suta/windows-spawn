@@ -6,6 +6,7 @@
 #[doc = include_str!("../README.md")]
 mod readme_examples {}
 
+#[cfg(any(windows, test, kani))]
 mod core_logic;
 
 #[cfg(windows)]
@@ -35,7 +36,9 @@ mod trace;
 mod transaction;
 
 #[cfg(windows)]
-pub use crate::child::{Child, ChildStderr, ChildStdin, ChildStdout, SuspendedChild};
+pub use crate::child::{
+    Child, ChildStderr, ChildStdin, ChildStdout, CleanupOutcome, SuspendedChild,
+};
 #[cfg(windows)]
 pub use crate::command::Command;
 #[cfg(windows)]

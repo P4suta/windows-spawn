@@ -23,6 +23,8 @@ pub(crate) struct ChildHandleValue<Table> {
 }
 
 impl<Table> ChildHandleValue<Table> {
+    pub(crate) const INVALID: Self = Self::from_raw(-1);
+
     pub(crate) const fn from_raw(raw: isize) -> Self {
         Self {
             raw,
@@ -34,6 +36,8 @@ impl<Table> ChildHandleValue<Table> {
         self.raw
     }
 }
+
+const _: () = assert!(ChildHandleValue::<CurrentTable>::INVALID.as_raw() == -1);
 
 impl<Table> Clone for ChildHandleValue<Table> {
     fn clone(&self) -> Self {
@@ -97,6 +101,8 @@ impl<Kind, Table> fmt::Debug for OwnedHandle<Kind, Table> {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::fs::File;
+
     use super::*;
 
     #[test]
@@ -105,5 +111,11 @@ mod tests {
         assert_eq!(value.to_string(), "42");
         assert_eq!(format!("{value:?}"), "ChildHandleValue");
         assert_eq!(value.clone(), value);
+        assert_ne!(value, ChildHandleValue::<CurrentTable>::from_raw(43));
+
+        let file = File::open("NUL").unwrap();
+        let owned = OwnedHandle::<PipeKind, CurrentTable>::from_system(file.into());
+        let formatted = format!("{owned:?}");
+        assert!(formatted.starts_with("OwnedHandle("));
     }
 }

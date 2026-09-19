@@ -5,7 +5,7 @@ status-level = "pass"
 final-status-level = "slow"
 
 [profile.ci-default.junit]
-path = "target/nextest/ci-default.xml"
+path = "junit.xml"
 
 [profile.ci-all]
 fail-fast = false
@@ -14,4 +14,4 @@ status-level = "pass"
 final-status-level = "slow"
 
 [profile.ci-all.junit]
-path = "target/nextest/ci-all.xml"
+path = "junit.xml"
