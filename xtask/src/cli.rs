@@ -2,6 +2,11 @@ use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SimpleTask {
+    BuildOComment,
+    CommentPolicy,
+    InvariantRegistry,
+    SourcePolicy,
+    Kani,
     Fmt,
     Clippy,
     Test,
@@ -57,6 +62,11 @@ pub(crate) fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Task,
     let rest: Vec<String> = arguments.collect();
 
     match command.as_str() {
+        "build-ocomment" => no_arguments(&rest, Task::Simple(SimpleTask::BuildOComment)),
+        "comment-policy" => no_arguments(&rest, Task::Simple(SimpleTask::CommentPolicy)),
+        "invariant-registry" => no_arguments(&rest, Task::Simple(SimpleTask::InvariantRegistry)),
+        "source-policy" => no_arguments(&rest, Task::Simple(SimpleTask::SourcePolicy)),
+        "kani" => no_arguments(&rest, Task::Simple(SimpleTask::Kani)),
         "fmt" => no_arguments(&rest, Task::Simple(SimpleTask::Fmt)),
         "clippy" => no_arguments(&rest, Task::Simple(SimpleTask::Clippy)),
         "test" => no_arguments(&rest, Task::Simple(SimpleTask::Test)),

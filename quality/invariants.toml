@@ -1,0 +1,148 @@
+version = 1
+
+[[invariant]]
+id = "INV-001"
+target = "spawn stages advance only by consuming the preceding stage"
+enforcement = ["type"]
+artifacts = ["src/plan.rs", "src/transaction.rs"]
+trust_boundaries = ["rust-compiler", "standard-library"]
+
+[[invariant]]
+id = "INV-002"
+target = "resource kinds and handle tables cannot be mixed"
+enforcement = ["type"]
+artifacts = ["src/resource.rs"]
+trust_boundaries = ["rust-compiler", "windows-api"]
+
+[[invariant]]
+id = "INV-003"
+target = "process attribute backing remains pinned through process creation"
+enforcement = ["type"]
+artifacts = ["src/transaction.rs"]
+trust_boundaries = ["rust-compiler", "standard-library", "windows-api"]
+
+[[invariant]]
+id = "INV-004"
+target = "a pseudoconsole capability cannot outlive its owner"
+enforcement = ["type"]
+artifacts = ["src/handles.rs"]
+trust_boundaries = ["rust-compiler", "unsafe-pseudoconsole-implementor", "windows-api"]
+
+[[invariant]]
+id = "INV-005"
+target = "cleanup errors always contain at least one failure"
+enforcement = ["type"]
+artifacts = ["src/error.rs"]
+trust_boundaries = ["rust-compiler", "standard-library"]
+
+[[invariant]]
+id = "INV-006"
+target = "semantic process policy choices are closed enums"
+enforcement = ["type"]
+artifacts = ["src/options.rs", "src/mitigation.rs"]
+trust_boundaries = ["rust-compiler", "windows-api"]
+
+[[invariant]]
+id = "INV-007"
+target = "FFI sizes fit their Windows integer representations"
+enforcement = ["const"]
+artifacts = ["src/sys.rs"]
+trust_boundaries = ["rust-compiler", "windows-api"]
+
+[[invariant]]
+id = "INV-008"
+target = "unsafe operations are confined to declared raw boundaries"
+enforcement = ["lint"]
+artifacts = ["Cargo.toml", "src/lib.rs", "src/sys.rs", "src/handles.rs"]
+trust_boundaries = ["rust-compiler", "windows-api", "unsafe-pseudoconsole-implementor"]
+
+[[invariant]]
+id = "INV-009"
+target = "job and process cleanup executes in an explicit ownership order"
+enforcement = ["type"]
+artifacts = ["src/child.rs"]
+trust_boundaries = ["rust-compiler", "standard-library", "windows-api"]
+
+[[invariant]]
+id = "INV-010"
+target = "remote handle reclamation precedes primary thread resume"
+enforcement = ["type"]
+artifacts = ["src/transaction.rs", "src/child.rs"]
+trust_boundaries = ["rust-compiler", "windows-api"]
+
+[[invariant]]
+id = "INV-011"
+target = "diagnostic events cannot receive command lines environments or handle values"
+enforcement = ["type"]
+artifacts = ["src/trace.rs"]
+trust_boundaries = ["rust-compiler", "standard-library"]
+
+[[invariant]]
+id = "INV-012"
+target = "production source rejects semantic booleans panic paths unchecked indexing casts raw handles and custom synchronization"
+enforcement = ["lint"]
+artifacts = ["xtask/src/source_policy.rs", "src"]
+trust_boundaries = ["rust-compiler", "standard-library"]
+
+[[invariant]]
+id = "INV-013"
+target = "command line quoting length and mitigation field replacement are panic free and bounded"
+enforcement = ["kani"]
+artifacts = ["src/core_logic.rs", ".cargo/mutants.toml", ".github/workflows/ci.yml"]
+trust_boundaries = ["rust-compiler", "standard-library"]
+
+[[mutation_exemption]]
+matcher = '^src/core_logic\.rs:[0-9]+:[0-9]+: replace proofs::quoting_length_is_bounded with \(\)$'
+source = "src/core_logic.rs"
+expression = "fn quoting_length_is_bounded()"
+proof = "quoting_length_is_bounded"
+invariant = "INV-013"
+
+[[mutation_exemption]]
+matcher = '^src/core_logic\.rs:[0-9]+:[0-9]+: replace proofs::two_bit_replacement_changes_only_its_field with \(\)$'
+source = "src/core_logic.rs"
+expression = "fn two_bit_replacement_changes_only_its_field()"
+proof = "two_bit_replacement_changes_only_its_field"
+invariant = "INV-013"
+
+[[mutation_exemption]]
+matcher = '^src/core_logic\.rs:[0-9]+:[0-9]+: replace << with >> in proofs::two_bit_replacement_changes_only_its_field$'
+source = "src/core_logic.rs"
+expression = "3_u64 << 36"
+proof = "two_bit_replacement_changes_only_its_field"
+invariant = "INV-013"
+
+[[mutation_exemption]]
+matcher = '^src/core_logic\.rs:[0-9]+:[0-9]+: replace proofs::one_bit_replacement_changes_only_its_field with \(\)$'
+source = "src/core_logic.rs"
+expression = "fn one_bit_replacement_changes_only_its_field()"
+proof = "one_bit_replacement_changes_only_its_field"
+invariant = "INV-013"
+
+[[mutation_exemption]]
+matcher = '^src/core_logic\.rs:[0-9]+:[0-9]+: replace << with >> in proofs::one_bit_replacement_changes_only_its_field$'
+source = "src/core_logic.rs"
+expression = "1_u64 << 2"
+proof = "one_bit_replacement_changes_only_its_field"
+invariant = "INV-013"
+
+[[invariant]]
+id = "INV-014"
+target = "dependency changes preserve license advisory and audit requirements"
+enforcement = ["lint"]
+artifacts = ["deny.toml", "supply-chain/config.toml", "supply-chain/audits.toml", "xtask/src/tasks.rs"]
+trust_boundaries = ["rust-compiler", "standard-library"]
+
+[[invariant]]
+id = "INV-015"
+target = "production and deterministic fault execution share the typed spawn backend boundary"
+enforcement = ["type", "lint"]
+artifacts = ["src/backend.rs", "src/transaction.rs"]
+trust_boundaries = ["rust-compiler", "standard-library", "windows-api"]
+
+[[invariant]]
+id = "INV-016"
+target = "handwritten Rust uses static dispatch and rejects owned trait objects runtime reflection nondeterministic maps and shared interior mutability"
+enforcement = ["type", "lint"]
+artifacts = ["xtask/src/source_policy.rs", "Cargo.toml", "xtask/Cargo.toml", "src", "docs/adr/0009-static-dispatch-and-explicit-state.md"]
+trust_boundaries = ["rust-compiler", "standard-library"]

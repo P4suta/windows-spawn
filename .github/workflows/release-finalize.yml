@@ -1,9 +1,5 @@
 name: Finalize release
 
-# Called by release-plz.yml once release-plz has published the crate and created
-# the tag. `git_release_enable = false` leaves the GitHub release to this
-# workflow, because the crate, SBOM, checksums, and attestations have to be
-# attached before it is published.
 "on":
   workflow_call:
     inputs:
@@ -36,28 +32,23 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag }}
       RELEASE_VERSION: ${{ inputs.version }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
-      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf
         with:
-          tool: cargo-cyclonedx@0.5.9
-      - run: python -m pip install "reuse[charset-normalizer]==6.2.0"
+          tool: cargo-cyclonedx@0.5.9,uv@0.12.0
       - name: Verify tag, commit, and Cargo version
         run: cargo xtask verify-release-tag "$env:RELEASE_TAG"
       - name: Build and verify release candidate
         id: candidate
         run: cargo xtask release-candidate --github-output
 
-      # The attestations below cover the archive built here, so it has to be
-      # the archive crates.io actually serves. `cargo package` is deterministic
-      # for a given source tree, and release-plz published from this same tag,
-      # so a mismatch means something diverged and the release must not proceed.
       - name: Require the built archive to match the published crate
         shell: pwsh
         run: |
@@ -76,7 +67,7 @@ jobs:
           "built and published archives match: $built" | Write-Output
 
       - name: Attest SLSA v1 provenance
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d  # v4
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
         with:
           subject-path: |
             target/release-candidate/*.crate
@@ -85,7 +76,7 @@ jobs:
             target/release-candidate/SHA256SUMS
 
       - name: Attest CycloneDX SBOM
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d  # v4
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
         with:
           subject-path: target/release-candidate/*.crate
           sbom-path: ${{ steps.candidate.outputs.sbom }}

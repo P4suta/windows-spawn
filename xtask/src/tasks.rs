@@ -3,7 +3,6 @@ use semver::Version;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::env;
-use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -38,8 +37,8 @@ impl fmt::Display for TaskError {
     }
 }
 
-impl Error for TaskError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
+impl std::error::Error for TaskError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
             Self::Json(error) => Some(error),
@@ -89,6 +88,9 @@ impl From<String> for TaskError {
 
 const PACKAGE_NAME: &str = "windows-spawn";
 const PUBLIC_API_TOOLCHAIN: &str = "nightly-2026-07-02";
+const KANI_VERSION: &str = "0.68.0";
+const CARGO_VET_VERSION: &str = "0.10.2";
+const REUSE_PACKAGE: &str = "reuse[charset-normalizer]==6.2.0";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PackageInfo {
@@ -126,6 +128,7 @@ fn print_help() {
         "\
 Repository tasks:
   cargo xtask fmt|clippy|test|doc|msrv|cross-targets|linux-empty
+  cargo xtask build-ocomment|comment-policy|invariant-registry|source-policy|kani
   cargo xtask supply-chain|reuse|typos|coverage|ci
   cargo xtask public-api [--update]
   cargo xtask package-check [--allow-dirty]
@@ -140,6 +143,17 @@ Repository tasks:
 
 fn run_simple(root: &Path, task: SimpleTask) -> Result<()> {
     match task {
+        SimpleTask::BuildOComment => {
+            crate::comment_policy::build_from_source(root).map_err(TaskError::from)
+        }
+        SimpleTask::CommentPolicy => {
+            crate::comment_policy::check_repository(root).map_err(TaskError::from)
+        }
+        SimpleTask::InvariantRegistry => {
+            crate::invariant_registry::check(root).map_err(TaskError::from)
+        }
+        SimpleTask::SourcePolicy => crate::source_policy::check(root).map_err(TaskError::from),
+        SimpleTask::Kani => kani(root),
         SimpleTask::Fmt => run_cargo(root, &["fmt", "--all", "--", "--check"]),
         SimpleTask::Clippy => run_cargo(
             root,
@@ -147,37 +161,37 @@ fn run_simple(root: &Path, task: SimpleTask) -> Result<()> {
                 "clippy",
                 "--workspace",
                 "--all-targets",
+                "--all-features",
                 "--locked",
                 "--",
                 "-D",
                 "warnings",
             ],
         ),
-        SimpleTask::Test => {
-            run_cargo(
-                root,
-                &[
-                    "test",
-                    "--workspace",
-                    "--all-targets",
-                    "--locked",
-                    "--",
-                    "--test-threads=1",
-                ],
-            )?;
-            run_cargo(root, &["test", "--workspace", "--doc", "--locked"])
-        }
+        SimpleTask::Test => run_tests(root),
         SimpleTask::Doc => {
             let mut command = cargo(root);
             command
-                .args(["doc", "--workspace", "--no-deps", "--locked"])
+                .args([
+                    "doc",
+                    "--workspace",
+                    "--all-features",
+                    "--no-deps",
+                    "--locked",
+                ])
                 .env("RUSTDOCFLAGS", "-D warnings");
             run(&mut command)
         }
         SimpleTask::Msrv => run_cargo_with_toolchain(
             root,
             "1.75",
-            &["check", "--workspace", "--all-targets", "--locked"],
+            &[
+                "check",
+                "--workspace",
+                "--all-targets",
+                "--all-features",
+                "--locked",
+            ],
         ),
         SimpleTask::CrossTargets => {
             for target in [
@@ -191,6 +205,7 @@ fn run_simple(root: &Path, task: SimpleTask) -> Result<()> {
                         "check",
                         "--package",
                         PACKAGE_NAME,
+                        "--all-features",
                         "--locked",
                         "--target",
                         target,
@@ -211,18 +226,79 @@ fn run_simple(root: &Path, task: SimpleTask) -> Result<()> {
                 "x86_64-unknown-linux-gnu",
             ],
         ),
-        SimpleTask::SupplyChain => {
-            run_cargo(root, &["deny", "--all-features", "--locked", "check"])
-        }
-        SimpleTask::Reuse => run_program(root, "python", &["-m", "reuse", "lint"]),
+        SimpleTask::SupplyChain => supply_chain(root),
+        SimpleTask::Reuse => run_reuse(root, &["lint"]),
         SimpleTask::Typos => run_program(root, "typos", &[]),
         SimpleTask::Coverage => coverage(root),
         SimpleTask::Ci => run_ci(root),
     }
 }
 
+fn run_tests(root: &Path) -> Result<()> {
+    run_cargo(
+        root,
+        &[
+            "nextest",
+            "run",
+            "--workspace",
+            "--all-targets",
+            "--locked",
+            "--profile",
+            "ci-default",
+        ],
+    )?;
+    run_cargo(
+        root,
+        &[
+            "nextest",
+            "run",
+            "--workspace",
+            "--all-targets",
+            "--all-features",
+            "--locked",
+            "--profile",
+            "ci-all",
+        ],
+    )?;
+    run_cargo(root, &["test", "--workspace", "--doc", "--locked"])?;
+    run_cargo(
+        root,
+        &["test", "--workspace", "--doc", "--all-features", "--locked"],
+    )
+}
+
+fn kani(root: &Path) -> Result<()> {
+    let mut version_command = cargo(root);
+    version_command.args(["kani", "--version"]);
+    let version = capture(&mut version_command)?;
+    if !version.contains(KANI_VERSION) {
+        return fail(format!(
+            "Kani version mismatch: expected {KANI_VERSION}, got {}",
+            version.trim()
+        ));
+    }
+    run_cargo(root, &["kani", "--package", PACKAGE_NAME])
+}
+
+fn supply_chain(root: &Path) -> Result<()> {
+    run_cargo(root, &["deny", "--all-features", "--locked", "check"])?;
+    let mut version_command = cargo(root);
+    version_command.args(["vet", "--version"]);
+    let version = capture(&mut version_command)?;
+    if !version.contains(CARGO_VET_VERSION) {
+        return fail(format!(
+            "cargo-vet version mismatch: expected {CARGO_VET_VERSION}, got {}",
+            version.trim()
+        ));
+    }
+    run_cargo(root, &["vet", "--locked"])
+}
+
 fn run_ci(root: &Path) -> Result<()> {
     for check in [
+        SimpleTask::CommentPolicy,
+        SimpleTask::InvariantRegistry,
+        SimpleTask::SourcePolicy,
         SimpleTask::Fmt,
         SimpleTask::Clippy,
         SimpleTask::Test,
@@ -241,30 +317,37 @@ fn run_ci(root: &Path) -> Result<()> {
 }
 
 fn coverage(root: &Path) -> Result<()> {
-    run_cargo(root, &["llvm-cov", "clean", "--workspace"])?;
-    run_cargo(
+    run_cargo_with_toolchain(
         root,
+        PUBLIC_API_TOOLCHAIN,
+        &["llvm-cov", "clean", "--workspace"],
+    )?;
+    run_cargo_with_toolchain(
+        root,
+        PUBLIC_API_TOOLCHAIN,
         &[
             "llvm-cov",
             "--package",
             PACKAGE_NAME,
             "--all-targets",
+            "--all-features",
             "--locked",
             "--",
             "--test-threads=1",
         ],
     )?;
-    run_cargo(
+    run_cargo_with_toolchain(
         root,
+        PUBLIC_API_TOOLCHAIN,
         &[
             "llvm-cov",
             "report",
             "--fail-under-lines",
-            "92",
+            "100",
             "--fail-under-regions",
-            "92",
+            "100",
             "--fail-under-functions",
-            "92",
+            "100",
         ],
     )
 }
@@ -326,7 +409,16 @@ fn check_packaged_reuse(root: &Path) -> Result<()> {
             expanded.display()
         ));
     }
-    run_program(&expanded, "python", &["-m", "reuse", "lint"])
+    run_reuse(&expanded, &["lint"])
+}
+
+fn run_reuse(root: &Path, arguments: &[&str]) -> Result<()> {
+    let mut command = Command::new(uvx_program()?);
+    command
+        .current_dir(root)
+        .args(["--from", REUSE_PACKAGE, "reuse"])
+        .args(arguments);
+    run(&mut command)
 }
 
 fn prepare_sbom_package(root: &Path) -> Result<()> {
@@ -411,10 +503,10 @@ fn generate_sboms(
             fs::remove_file(&generated)?;
         }
 
-        let mut reuse = Command::new("python");
+        let mut reuse = Command::new(uvx_program()?);
         reuse
             .current_dir(root)
-            .args(["-m", "reuse", "spdx", "-o"])
+            .args(["--from", REUSE_PACKAGE, "reuse", "spdx", "-o"])
             .arg(&reuse_spdx);
         run(&mut reuse)?;
 
@@ -651,15 +743,12 @@ fn sha256(path: &Path) -> Result<String> {
     Ok(lower_hex(&digest.finalize()))
 }
 
-// `sha2` 0.11 returns `hybrid_array::Array` instead of `GenericArray`, and that
-// type no longer implements `LowerHex`. Formatting the bytes ourselves keeps the
-// checksum output identical across both generations of the crate.
 fn lower_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        write!(&mut output, "{byte:02x}").expect("writing to a String cannot fail");
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     output
 }
@@ -761,8 +850,9 @@ fn append_github_output(path: &Path, key: &str, value: &str) -> Result<()> {
 
 #[cfg(windows)]
 fn run_mutants(root: &Path, output: Option<PathBuf>, forwarded: &[String]) -> Result<i32> {
-    use windows_spawn::{Command as SpawnCommand, DropPolicy, SpawnOptions};
+    use windows_spawn::{Command as SpawnCommand, JobClosePolicy, SpawnOptions};
 
+    let _fault_dialog_guard = crate::windows::FaultDialogGuard::suppress();
     let output = mutation_output(root, output)?;
     println!("cargo-mutants output: {}", output.display());
     let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo.exe"));
@@ -772,7 +862,9 @@ fn run_mutants(root: &Path, output: Option<PathBuf>, forwarded: &[String]) -> Re
         .args(forwarded)
         .env("CARGO_MUTANTS_OUTPUT", &output)
         .current_dir(root);
-    let status = command.status_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
+    let status = command
+        .status_with(SpawnOptions::new().job_close_policy(JobClosePolicy::TerminateProcesses))
+        .map_err(io::Error::from)?;
     Ok(status.code().unwrap_or(1))
 }
 
@@ -884,6 +976,24 @@ fn repository_root() -> Result<PathBuf> {
     Ok(normalize_path(root))
 }
 
+fn uvx_program() -> Result<PathBuf> {
+    if let Some(program) = env::var_os("UVX").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(program));
+    }
+    let executable = if cfg!(windows) { "uvx.exe" } else { "uvx" };
+    let local = repository_root()?
+        .join("target")
+        .join("tools")
+        .join("uv")
+        .join("bin")
+        .join(executable);
+    if local.is_file() {
+        Ok(local)
+    } else {
+        Ok(PathBuf::from(executable))
+    }
+}
+
 fn cargo(root: &Path) -> Command {
     let executable = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = Command::new(executable);
@@ -952,6 +1062,7 @@ fn fail<T>(message: impl Into<String>) -> Result<T> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::error::Error as _;
     use std::time::Duration;
 
     #[test]

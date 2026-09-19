@@ -17,9 +17,10 @@ explain the safety invariant they preserve.
 
 Development and integration tests require Windows 10 version 1809 or later.
 The crate supports Rust 1.75 and later. Install the tool versions used by CI,
-then run:
+then run. The first command builds the pinned OComment revision from source:
 
 ```powershell
+just ocomment
 just ci
 just coverage
 ```
@@ -36,16 +37,11 @@ gitleaks dir . --redact --no-banner
 `just release-candidate` validates packaging and reproducibility locally; it
 does not publish anything.
 
-## Code and documentation expectations
+## Machine-enforced change contract
 
-- Preserve the documented ownership and cleanup behavior, including on errors.
-- Give every `unsafe` block a specific safety justification.
-- Add deterministic tests for behavior changes and avoid timing-only assertions.
-- Keep the public API snapshot unchanged unless the pull request changes the
-  public API and explains the compatibility impact.
-- Update the crate documentation, ADRs, or security boundary when contracts
-  change.
-- Keep dependencies minimal and compatible with the MSRV.
-
-Required checks and review conversations must be complete before merge. Pull
-requests are squash-merged into `main`.
+`cargo xtask ci` begins with the OComment-backed comment policy and the typed
+invariant registry. It then checks formatting, lints, tests, documentation,
+MSRV, targets, supply chain, spelling, public API, and packaging. A pull request
+links the resulting evidence artifact; it does not carry a manual correctness
+checklist. Pull requests are squash-merged into `main` only after required
+checks succeed.

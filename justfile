@@ -6,6 +6,21 @@ default:
 fmt:
     cargo xtask fmt
 
+ocomment:
+    cargo +1.98.0 xtask build-ocomment
+
+comment-policy:
+    cargo xtask comment-policy
+
+invariants:
+    cargo xtask invariant-registry
+
+source-policy:
+    cargo xtask source-policy
+
+kani:
+    cargo xtask kani
+
 clippy:
     cargo xtask clippy
 
@@ -60,5 +75,5 @@ release-candidate:
 release-verify tag:
     cargo xtask verify-release-tag "{{ tag }}"
 
-ci:
+ci: ocomment
     cargo xtask ci

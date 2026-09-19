@@ -25,13 +25,13 @@ cargo add windows-spawn
 ## Minimal example
 
 ```rust
-use windows_spawn::{Command, DropPolicy, SpawnOptions};
+use windows_spawn::{Command, JobClosePolicy, SpawnOptions};
 
 let mut command = Command::new(r"C:\Windows\System32\cmd.exe");
 command.args(["/D", "/S", "/C"]).raw_arg("echo hello");
 
 let output = command.output_with(
-    SpawnOptions::new().drop_policy(DropPolicy::KillTree),
+    SpawnOptions::new().job_close_policy(JobClosePolicy::TerminateProcesses),
 )?;
 assert!(output.status.success());
 # Ok::<(), std::io::Error>(())
@@ -43,6 +43,13 @@ assert!(output.status.success());
 - [Examples](https://github.com/P4suta/windows-spawn/tree/main/examples)
 - [Architecture decisions](https://github.com/P4suta/windows-spawn/tree/main/docs/adr)
 - [Security policy](https://github.com/P4suta/windows-spawn/security/policy)
+
+## Diagnostics
+
+The optional `tracing` feature emits typed phase, operation, resource, outcome,
+Win32-code, and duration fields at `TRACE` level. Events never accept command
+lines, environment contents, or numeric handle values, so those values cannot
+be recorded by this instrumentation path.
 
 ## License
 

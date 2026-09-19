@@ -16,7 +16,7 @@ yanked = "deny"
 
 [licenses]
 version = 2
-allow = ["Apache-2.0", "MIT"]
+allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
 confidence-threshold = 1.0
 exceptions = []
 include-build = true

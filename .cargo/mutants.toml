@@ -1,14 +1,14 @@
-additional_cargo_args = ["--locked"]
+additional_cargo_args = ["--locked", "--all-features"]
+additional_cargo_test_args = ["--", "--test-threads=1"]
 timeout_multiplier = 5.0
 minimum_test_timeout = 60.0
 gitignore = true
 cap_lints = false
-
-# Each exclusion is an audited equivalent transformation documented in
-# docs/adr/0008-mutation-testing.md. No file or mutation class is excluded.
+test_tool = "cargo"
 exclude_re = [
-  'src/mitigation\.rs:.*replace \| with \^ in replace',
-  'src/sys\.rs:.*replace \| with \^ in <impl Drop for RemoteHandle',
-  'src/sys\.rs:.*replace \| with \^ in open_parent_process',
-  'src/sys\.rs:.*replace \| with \^ in create_process',
+  '^src/core_logic\.rs:[0-9]+:[0-9]+: replace proofs::quoting_length_is_bounded with \(\)$',
+  '^src/core_logic\.rs:[0-9]+:[0-9]+: replace proofs::two_bit_replacement_changes_only_its_field with \(\)$',
+  '^src/core_logic\.rs:[0-9]+:[0-9]+: replace << with >> in proofs::two_bit_replacement_changes_only_its_field$',
+  '^src/core_logic\.rs:[0-9]+:[0-9]+: replace proofs::one_bit_replacement_changes_only_its_field with \(\)$',
+  '^src/core_logic\.rs:[0-9]+:[0-9]+: replace << with >> in proofs::one_bit_replacement_changes_only_its_field$',
 ]

@@ -1,7 +1,15 @@
 //! Repository automation for windows-spawn.
 
+#![deny(unsafe_code)]
+
 mod cli;
+mod comment_policy;
+mod invariant_registry;
+mod source_policy;
 mod tasks;
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows;
 
 use std::env;
 use std::process;
