@@ -20,7 +20,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - run: 'cargo test --lib core_logic::tests::generated_quoting_and_fields_preserve_properties -- --exact'
 
   stress-x64:
@@ -34,7 +34,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - run: cargo test --test windows_spawn spawn_cleanup_stress -- --ignored --exact --test-threads=1
 
   stress-i686:
@@ -49,5 +49,5 @@ jobs:
         with:
           toolchain: stable
           targets: i686-pc-windows-msvc
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - run: cargo test --target i686-pc-windows-msvc --test windows_spawn spawn_cleanup_stress -- --ignored --exact --test-threads=1
