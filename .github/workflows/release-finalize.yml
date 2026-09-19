@@ -43,7 +43,9 @@ jobs:
       - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf
         with:
           tool: cargo-cyclonedx@0.5.9
-      - run: python -m pip install "reuse[charset-normalizer]==6.2.0"
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9
+        with:
+          version: 0.12.16
       - name: Verify tag, commit, and Cargo version
         run: cargo xtask verify-release-tag "$env:RELEASE_TAG"
       - name: Build and verify release candidate

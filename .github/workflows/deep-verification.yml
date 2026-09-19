@@ -21,7 +21,7 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
-      - run: cargo test --lib core_logic::tests::generated_quoting_and_fields_preserve_properties -- --exact
+      - run: 'cargo test --lib core_logic::tests::generated_quoting_and_fields_preserve_properties -- --exact'
 
   stress-x64:
     name: Windows x64 nightly stress

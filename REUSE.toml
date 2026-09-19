@@ -4,6 +4,7 @@ version = 1
 path = [
   ".github/**",
   ".cargo/**",
+  ".config/**",
   ".gitattributes",
   ".gitignore",
   "_typos.toml",
@@ -16,9 +17,15 @@ path = [
   "deny.toml",
   "docs/**",
   "examples/**",
+  "fuzz/Cargo.toml",
+  "fuzz/fuzz_targets/**",
   "justfile",
   "public-api/**",
+  "quality/**",
+  "release-plz.toml",
   "src/**",
+  "supply-chain/audits.toml",
+  "supply-chain/config.toml",
   "tests/**",
   "xtask/**",
 ]
@@ -27,7 +34,11 @@ SPDX-FileCopyrightText = "2026 Yasunobu Sakashita"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
 [[annotations]]
-path = "Cargo.lock"
+path = [
+  "Cargo.lock",
+  "fuzz/Cargo.lock",
+  "supply-chain/imports.lock",
+]
 precedence = "override"
 SPDX-FileCopyrightText = "NONE"
 SPDX-License-Identifier = "CC0-1.0"

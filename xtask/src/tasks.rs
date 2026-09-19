@@ -91,6 +91,7 @@ const PACKAGE_NAME: &str = "windows-spawn";
 const PUBLIC_API_TOOLCHAIN: &str = "nightly-2026-07-02";
 const KANI_VERSION: &str = "0.68.0";
 const CARGO_VET_VERSION: &str = "0.10.2";
+const REUSE_PACKAGE: &str = "reuse[charset-normalizer]==6.2.0";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PackageInfo {
@@ -227,7 +228,7 @@ fn run_simple(root: &Path, task: SimpleTask) -> Result<()> {
             ],
         ),
         SimpleTask::SupplyChain => supply_chain(root),
-        SimpleTask::Reuse => run_program(root, "python", &["-m", "reuse", "lint"]),
+        SimpleTask::Reuse => run_reuse(root, &["lint"]),
         SimpleTask::Typos => run_program(root, "typos", &[]),
         SimpleTask::Coverage => coverage(root),
         SimpleTask::Ci => run_ci(root),
@@ -409,7 +410,16 @@ fn check_packaged_reuse(root: &Path) -> Result<()> {
             expanded.display()
         ));
     }
-    run_program(&expanded, "python", &["-m", "reuse", "lint"])
+    run_reuse(&expanded, &["lint"])
+}
+
+fn run_reuse(root: &Path, arguments: &[&str]) -> Result<()> {
+    let mut command = Command::new("uvx");
+    command
+        .current_dir(root)
+        .args(["--from", REUSE_PACKAGE, "reuse"])
+        .args(arguments);
+    run(&mut command)
 }
 
 fn prepare_sbom_package(root: &Path) -> Result<()> {
@@ -494,10 +504,10 @@ fn generate_sboms(
             fs::remove_file(&generated)?;
         }
 
-        let mut reuse = Command::new("python");
+        let mut reuse = Command::new("uvx");
         reuse
             .current_dir(root)
-            .args(["-m", "reuse", "spdx", "-o"])
+            .args(["--from", REUSE_PACKAGE, "reuse", "spdx", "-o"])
             .arg(&reuse_spdx);
         run(&mut reuse)?;
 
