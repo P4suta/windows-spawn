@@ -12,6 +12,8 @@ jobs:
     name: Mutants ${{ matrix.shard }}/4
     runs-on: windows-latest
     timeout-minutes: 240
+    env:
+      RUST_TEST_THREADS: "1"
     strategy:
       fail-fast: false
       matrix:
