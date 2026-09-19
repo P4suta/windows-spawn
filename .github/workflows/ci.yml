@@ -36,10 +36,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
       - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf
         with:
-          tool: just@1.57.0,cargo-public-api@0.52.0,cargo-deny@0.19.4,cargo-vet@0.10.2,typos-cli@1.48.0
-      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9
-        with:
-          version: 0.12.16
+          tool: just@1.57.0,cargo-public-api@0.52.0,cargo-deny@0.19.4,cargo-vet@0.10.2,typos-cli@1.48.0,uv@0.12.0
       - run: just ocomment
       - run: just comment-policy
       - run: just invariants
@@ -229,10 +226,7 @@ jobs:
           toolchain: stable
       - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf
         with:
-          tool: just@1.57.0,cargo-cyclonedx@0.5.9
-      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9
-        with:
-          version: 0.12.16
+          tool: just@1.57.0,cargo-cyclonedx@0.5.9,uv@0.12.0
       - run: just release-candidate
 
   release-dry-run:
