@@ -112,7 +112,7 @@ impl<M: SpawnState> SpawnTransaction<M> {
         let job_values = job_values.into_boxed_slice();
         let pseudoconsole = plan.options.pseudoconsole_raw();
 
-        let attribute_count = [
+        let attribute_count: u32 = [
             !inherited_values.is_empty(),
             parent_value.is_some(),
             mitigation_value.is_some(),
@@ -120,14 +120,12 @@ impl<M: SpawnState> SpawnTransaction<M> {
             pseudoconsole.is_some(),
         ]
         .into_iter()
-        .filter(|present| *present)
-        .count();
+        .map(u32::from)
+        .sum();
         let mut attributes = if attribute_count == 0 {
             None
         } else {
-            Some(sys::AttributeList::new(
-                u32::try_from(attribute_count).map_err(io::Error::other)?,
-            )?)
+            Some(sys::AttributeList::new(attribute_count)?)
         };
         if let Some(list) = &mut attributes {
             if !inherited_values.is_empty() {
@@ -323,9 +321,7 @@ impl<'a> HandleTransfer<'a> {
             self.local.push(handle);
             value
         };
-        if !self.inherited.contains(&value) {
-            self.inherited.push(value);
-        }
+        self.inherited.push(value);
         Ok(value)
     }
 

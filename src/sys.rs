@@ -41,10 +41,18 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_DUP_HANDLE, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
     PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
     PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
 };
 
 pub(crate) const INVALID_RAW_HANDLE: isize = -1;
+
+const JOB_LIMITS_SIZE: u32 = dword_const(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>());
+const STARTUPINFO_SIZE: u32 = dword_const(size_of::<STARTUPINFOW>());
+const STARTUPINFOEX_SIZE: u32 = dword_const(size_of::<STARTUPINFOEXW>());
+
+/// The longest Windows path in UTF-16 units, including the terminator.
+const MAXIMUM_PATH: usize = 32_768;
+const MAXIMUM_PATH_CAPACITY: u32 = dword_const(MAXIMUM_PATH);
 
 struct EnvironmentBlock(*mut u16);
 
@@ -305,7 +313,7 @@ pub(crate) fn set_job_kill_on_close(handle: BorrowedHandle<'_>, enable: bool) ->
             raw(handle),
             JobObjectExtendedLimitInformation,
             ptr::addr_of!(limits).cast(),
-            dword(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())?,
+            JOB_LIMITS_SIZE,
         )
     } == 0
     {
@@ -327,7 +335,7 @@ fn query_job_limits(
             raw(handle),
             JobObjectExtendedLimitInformation,
             ptr::addr_of_mut!(limits).cast(),
-            dword(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())?,
+            JOB_LIMITS_SIZE,
             ptr::null_mut(),
         )
     } == 0
@@ -368,9 +376,7 @@ impl AttributeList {
         let words = storage_words(bytes);
         let mut storage = vec![0_usize; words].into_boxed_slice();
         let pointer = storage.as_mut_ptr().cast();
-        let mut actual = words
-            .checked_mul(size_of::<usize>())
-            .ok_or_else(|| io::Error::other("attribute list is too large"))?;
+        let mut actual = size_of_val(&*storage);
         // SAFETY: the `Box<[usize]>` is word-aligned, stable, at least `bytes` long, and owned by the returned `AttributeList`.
         if unsafe { InitializeProcThreadAttributeList(pointer, count, 0, &mut actual) } == 0 {
             return Err(io::Error::last_os_error());
@@ -422,7 +428,7 @@ impl AttributeList {
     fn update(&mut self, attribute: u32, value: *const c_void, bytes: usize) -> io::Result<()> {
         #[cfg(test)]
         fault::check(fault::Call::UpdateAttribute)?;
-        let attribute = usize::try_from(attribute).map_err(io::Error::other)?;
+        let attribute = widen(attribute);
         // SAFETY: the list is initialized, `value` points to `bytes` readable bytes or is the `HPCON` value, and the transaction keeps every backing allocation stable until CreateProcessW returns.
         if unsafe {
             UpdateProcThreadAttribute(
@@ -509,22 +515,17 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
     #[cfg(test)]
     fault::check(fault::Call::CreateProcess)?;
     let mut startup = STARTUPINFOEXW::default();
-    startup.StartupInfo.cb = if request.attributes.is_some() {
-        dword(size_of::<STARTUPINFOEXW>())?
-    } else {
-        dword(size_of::<windows_sys::Win32::System::Threading::STARTUPINFOW>())?
-    };
-    set_standard_handles(&mut startup, request.stdio);
-    startup.lpAttributeList = request
-        .attributes
-        .map_or(ptr::null_mut(), AttributeList::pointer);
-
     let mut flags = request.creation_flags | CREATE_UNICODE_ENVIRONMENT;
+    if let Some(attributes) = request.attributes {
+        startup.StartupInfo.cb = STARTUPINFOEX_SIZE;
+        startup.lpAttributeList = attributes.pointer();
+        flags |= EXTENDED_STARTUPINFO_PRESENT;
+    } else {
+        startup.StartupInfo.cb = STARTUPINFO_SIZE;
+    }
+    set_standard_handles(&mut startup, request.stdio);
     if request.suspended {
         flags |= CREATE_SUSPENDED;
-    }
-    if request.attributes.is_some() {
-        flags |= EXTENDED_STARTUPINFO_PRESENT;
     }
     let environment = request
         .environment
@@ -958,7 +959,7 @@ pub(crate) fn read_handle(handle: BorrowedHandle<'_>, buffer: &mut [u8]) -> io::
             Err(error)
         }
     } else {
-        usize::try_from(read).map_err(io::Error::other)
+        Ok(widen(read))
     }
 }
 
@@ -983,7 +984,7 @@ pub(crate) fn write_handle(handle: BorrowedHandle<'_>, buffer: &[u8]) -> io::Res
     {
         Err(io::Error::last_os_error())
     } else {
-        usize::try_from(written).map_err(io::Error::other)
+        Ok(widen(written))
     }
 }
 
@@ -1006,18 +1007,14 @@ pub(crate) fn environment_strings() -> io::Result<Vec<(OsString, OsString)>> {
         let mut length = 0_usize;
         // SAFETY: the current entry is NUL-terminated.
         while unsafe { *cursor.add(length) } != 0 {
-            length = length
-                .checked_add(1)
-                .ok_or_else(|| io::Error::other("environment entry is too large"))?;
+            length = length.saturating_add(1);
         }
         // SAFETY: the range was just measured inside the current entry.
         let entry = unsafe { std::slice::from_raw_parts(cursor, length) };
         if let Some((key, value)) = split_entry(entry) {
             entries.push((OsString::from_wide(key), OsString::from_wide(value)));
         }
-        let advance = length
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("environment block is too large"))?;
+        let advance = length.saturating_add(1);
         // SAFETY: `advance` moves just past this entry's terminator, still inside the block.
         cursor = unsafe { cursor.add(advance) };
     }
@@ -1026,15 +1023,13 @@ pub(crate) fn environment_strings() -> io::Result<Vec<(OsString, OsString)>> {
 
 /// Splits `KEY=value` at the first `=` after the first unit, so hidden `=C:` entries keep their key.
 fn split_entry(entry: &[u16]) -> Option<(&[u16], &[u16])> {
-    let equals = u16::from(b'=');
-    let separator = entry
+    let (separator, _) = entry
         .iter()
+        .enumerate()
         .skip(1)
-        .position(|unit| *unit == equals)?
-        .checked_add(1)?;
-    let key = entry.get(..separator)?;
-    let value = entry.get(separator.checked_add(1)?..)?;
-    Some((key, value))
+        .find(|(_, unit)| **unit == u16::from(b'='))?;
+    let (key, rest) = entry.split_at(separator);
+    rest.split_first().map(|(_, value)| (key, value))
 }
 
 pub(crate) fn compare_ordinal(left: &[u16], right: &[u16]) -> Ordering {
@@ -1096,9 +1091,8 @@ pub(crate) fn full_path(path: &[u16]) -> io::Result<Vec<u16>> {
 fn maximum_path(fill: impl FnOnce(*mut u16, u32) -> u32) -> io::Result<Vec<u16>> {
     #[cfg(test)]
     fault::check(fault::Call::MaximumPath)?;
-    let mut buffer = vec![0_u16; 32_768];
-    let capacity = dword(buffer.len())?;
-    let length = usize::try_from(fill(buffer.as_mut_ptr(), capacity)).map_err(io::Error::other)?;
+    let mut buffer = vec![0_u16; MAXIMUM_PATH];
+    let length = widen(fill(buffer.as_mut_ptr(), MAXIMUM_PATH_CAPACITY));
     if length == 0 {
         return Err(io::Error::last_os_error());
     }
@@ -1140,9 +1134,18 @@ pub(crate) const fn handle_from_value(value: isize) -> HANDLE {
     value as HANDLE
 }
 
-/// Converts a size to a Win32 `DWORD`.
-fn dword(value: usize) -> io::Result<u32> {
-    u32::try_from(value).map_err(io::Error::other)
+/// Converts a compile-time size to a Win32 `DWORD`; a size that does not fit fails constant evaluation.
+#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+const fn dword_const(value: usize) -> u32 {
+    let wide = value as u64;
+    assert!(wide <= 0xFFFF_FFFF, "size does not fit a DWORD");
+    wide as u32
+}
+
+/// Widens a `DWORD`; `usize` has at least 32 bits on every Windows target.
+#[allow(clippy::as_conversions)]
+const fn widen(value: u32) -> usize {
+    value as usize
 }
 
 /// Returns true if `error` carries the Win32 error `code`.

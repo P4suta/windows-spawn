@@ -147,7 +147,7 @@ impl Default for SpawnOptions<'_> {
             mitigation: MitigationPolicy::new(),
             pseudoconsole: None,
             creation_flags: CreationFlags::new(),
-            drop_policy: DropPolicy::Detach,
+            drop_policy: DropPolicy::default(),
         }
     }
 }
@@ -244,6 +244,16 @@ mod tests {
         assert_eq!(options.jobs.len(), 2);
         assert!(std::ptr::eq(options.jobs[0], &outer));
         assert!(std::ptr::eq(options.jobs[1], &inner));
+    }
+
+    #[test]
+    fn defaults_detach_and_request_nothing() {
+        assert_eq!(DropPolicy::default(), DropPolicy::Detach);
+        let options = SpawnOptions::default();
+        assert_eq!(options.drop_policy, DropPolicy::Detach);
+        assert_eq!(options.creation_flags, CreationFlags::new());
+        assert!(options.jobs.is_empty() && options.parent.is_none());
+        assert_eq!(options.pseudoconsole_raw(), None);
     }
 
     #[test]

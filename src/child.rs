@@ -207,10 +207,7 @@ fn drain_output(handle: BorrowedHandle<'_>) -> io::Result<Vec<u8>> {
         let Some(read) = std::num::NonZeroUsize::new(sys::read_handle(handle, &mut buffer)?) else {
             return Ok(bytes);
         };
-        let chunk = buffer.get(..read.get()).ok_or_else(|| {
-            io::Error::other("ReadFile reported more bytes than the buffer holds")
-        })?;
-        bytes.extend_from_slice(chunk);
+        bytes.extend(buffer.iter().take(read.get()));
     }
 }
 

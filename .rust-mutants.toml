@@ -36,15 +36,6 @@ outcome = "survived"
 
 [[mutation.expect]]
 path = "src/sys.rs"
-item = "create_process"
-rule = "condition-to-true"
-original = "request.attributes.is_some()"
-count = 2
-reason = "Equivalence: CreateProcessW accepts the STARTUPINFOEXW size and EXTENDED_STARTUPINFO_PRESENT with a null attribute list; every spawn test holds creation."
-outcome = "survived"
-
-[[mutation.expect]]
-path = "src/sys.rs"
 item = "read_handle"
 rule = "condition-to-false"
 original = "buffer.is_empty()"
@@ -65,15 +56,6 @@ item = "environment_strings"
 rule = "condition-to-false"
 original = "base.is_null()"
 reason = "Fail-open: GetEnvironmentStringsW returns null only when out of memory."
-outcome = "survived"
-
-[[mutation.expect]]
-path = "src/sys.rs"
-item = "environment_strings"
-rule = "question-to-unwrap"
-original = "?"
-count = 2
-reason = "Fail-open: an environment entry or block cannot approach usize::MAX units."
 outcome = "survived"
 
 [[mutation.expect]]
@@ -120,17 +102,17 @@ outcome = "survived"
 
 [[mutation.skip]]
 path = "src/sys.rs"
-lines = "996-996"
+lines = "997-997"
 reason = "Unreachable: GetEnvironmentStringsW returns null only when out of memory."
 
 [[mutation.skip]]
 path = "src/sys.rs"
-lines = "1004-1004"
+lines = "1005-1005"
 reason = "Hang-only: continuing past the block terminator loops forever."
 
 [[mutation.skip]]
 path = "src/transaction.rs"
-lines = "498-501"
+lines = "494-497"
 reason = "Unreachable: GetFullPathNameW cannot return a double quote."
 
 [[mutation.skip]]

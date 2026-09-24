@@ -19,7 +19,8 @@ const EXCEPTIONS: &[Exception] = &[
         file: "src/lib.rs",
         lint: "unsafe_code",
         count: 2,
-        reason: "sys is the only Win32 FFI boundary; failure_tests creates pseudoconsoles for tests",
+        reason:
+            "sys is the only Win32 FFI boundary; failure_tests creates pseudoconsoles for tests",
     },
     Exception {
         file: "src/handles.rs",
@@ -42,8 +43,14 @@ const EXCEPTIONS: &[Exception] = &[
     Exception {
         file: "src/sys.rs",
         lint: "clippy::as_conversions",
-        count: 2,
-        reason: "handle values convert between pointers and integers, which has no From form before Rust 1.84",
+        count: 4,
+        reason: "handle values and Win32 widths convert where Rust 1.75 has no From form",
+    },
+    Exception {
+        file: "src/sys.rs",
+        lint: "clippy::cast_possible_truncation",
+        count: 1,
+        reason: "dword_const is evaluated in constants, where an oversized value fails the build",
     },
     Exception {
         file: "src/child.rs",
@@ -61,7 +68,8 @@ const EXCEPTIONS: &[Exception] = &[
         file: "src/transaction.rs",
         lint: "clippy::too_many_lines",
         count: 1,
-        reason: "one function acquires every creation resource, so rollback has one owner (ADR 0007)",
+        reason:
+            "one function acquires every creation resource, so rollback has one owner (ADR 0007)",
     },
     Exception {
         file: "src/mitigation.rs",
@@ -150,13 +158,16 @@ const DELAY_COMMANDS: [&str; 3] = [
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Finding {
     pub(crate) file: String,
-    pub(crate) line: usize,
+    pub(crate) line: Option<usize>,
     pub(crate) rule: String,
 }
 
 impl fmt::Display for Finding {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}:{}: {}", self.file, self.line, self.rule)
+        match self.line {
+            Some(line) => write!(formatter, "{}:{line}: {}", self.file, self.rule),
+            None => write!(formatter, "{}: {}", self.file, self.rule),
+        }
     }
 }
 
@@ -213,7 +224,7 @@ fn check_exceptions(allows: &[Allow], exceptions: &[Exception]) -> Vec<Finding> 
         if !registered {
             findings.push(Finding {
                 file: allow.file.clone(),
-                line: allow.line,
+                line: Some(allow.line),
                 rule: format!(
                     "#[allow({})] is not registered in xtask/src/gates.rs",
                     allow.lint
@@ -229,7 +240,7 @@ fn check_exceptions(allows: &[Allow], exceptions: &[Exception]) -> Vec<Finding> 
         if count != exception.count {
             findings.push(Finding {
                 file: exception.file.to_owned(),
-                line: 0,
+                line: None,
                 rule: format!(
                     "{} is registered {} time(s) ({}) but allowed {count} time(s)",
                     exception.lint, exception.count, exception.reason
@@ -271,7 +282,7 @@ fn scan(file: &str, source: &str) -> Scan {
     let mut finding = |line: usize, rule: String| {
         findings.push(Finding {
             file: file.to_owned(),
-            line,
+            line: Some(line),
             rule,
         });
     };

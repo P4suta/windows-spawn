@@ -35,5 +35,5 @@ Rustc lints are limited to those Rust 1.75 recognizes.
 ## Consequences
 
 - Changing a law changes the lint table, `clippy.toml`, or the gate, with its tests.
-- Pointer-integer conversions keep `as` behind registered exceptions; there is no alternative before Rust 1.84.
+- Pointer-integer and `DWORD` width conversions keep `as` behind registered exceptions in `sys`, because Rust 1.75 has no `From` form for them.
 - When the MSRV reaches Rust 1.81, `#[expect(…, reason = …)]` replaces the registry.
