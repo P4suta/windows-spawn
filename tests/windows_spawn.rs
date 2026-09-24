@@ -3,22 +3,26 @@
 
 //! End-to-end Windows process creation tests.
 
+mod support;
+
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::mem::size_of_val;
 use std::os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
-use std::path::PathBuf;
+use std::path::Path;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
+
+use support::{
+    local_duplicate, suspend_count, tempt_resume, ProbeCommand, ProcessExitGuard, Role, TempDir,
+    EXIT_RELEASED, GRANDCHILD_MARKER, SELF_EXIT_CODES,
+};
 
 use windows_spawn::{
     AsPseudoConsole, Command, CreationFlags, DropPolicy, Job, Mitigation, MitigationPolicy,
     ParentProcess, SpawnOptions, Stdio,
 };
-use windows_sys::Win32::Foundation::{
-    DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
-};
+use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileInformationByHandle, GetFileType, ReadFile, WriteFile, BY_HANDLE_FILE_INFORMATION,
     FILE_TYPE_UNKNOWN,
@@ -30,8 +34,7 @@ use windows_sys::Win32::System::Console::{
 use windows_sys::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetProcessHandleCount, GetProcessId, GetProcessMitigationPolicy,
-    GetThreadId, ProcessExtensionPointDisablePolicy, SuspendThread, TerminateProcess,
-    WaitForSingleObject,
+    GetThreadId, ProcessExtensionPointDisablePolicy, SuspendThread,
 };
 
 const PCON_ISOLATION_HELPER: &str = "WINDOWS_SPAWN_PCON_ISOLATION_HELPER";
@@ -44,39 +47,6 @@ fn cmd(script: &str) -> Command {
     let mut command = Command::new("cmd.exe");
     command.args(["/D", "/S", "/C"]).raw_arg(script);
     command
-}
-
-fn temporary_path(label: &str) -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time must be after the epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "windows-spawn-{label}-{}-{nonce}",
-        std::process::id()
-    ))
-}
-
-fn local_duplicate<T: AsHandle>(source: &T, inheritable: bool) -> io::Result<OwnedHandle> {
-    let mut duplicate = std::ptr::null_mut();
-    // SAFETY: both pseudo-handles are valid, the source is borrowed for the call, and `duplicate` is writable.
-    let success = unsafe {
-        DuplicateHandle(
-            GetCurrentProcess(),
-            source.as_handle().as_raw_handle(),
-            GetCurrentProcess(),
-            &mut duplicate,
-            0,
-            i32::from(inheritable),
-            DUPLICATE_SAME_ACCESS,
-        )
-    };
-    if success == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        // SAFETY: DuplicateHandle returned a new, uniquely owned handle.
-        Ok(unsafe { OwnedHandle::from_raw_handle(duplicate as RawHandle) })
-    }
 }
 
 fn inheritable_duplicate<T: AsHandle>(source: &T) -> io::Result<OwnedHandle> {
@@ -96,45 +66,6 @@ fn file_identity(handle: HANDLE) -> io::Result<(u32, u64)> {
     }
 }
 
-struct ProcessExitGuard {
-    process: OwnedHandle,
-    armed: bool,
-}
-
-impl ProcessExitGuard {
-    fn new(process: OwnedHandle) -> Self {
-        Self {
-            process,
-            armed: true,
-        }
-    }
-
-    fn wait(&mut self, timeout: Duration) -> io::Result<bool> {
-        let timeout = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
-        // SAFETY: the duplicated process handle is valid for the wait.
-        match unsafe { WaitForSingleObject(self.process.as_raw_handle(), timeout) } {
-            WAIT_OBJECT_0 => {
-                self.armed = false;
-                Ok(true)
-            }
-            WAIT_TIMEOUT => Ok(false),
-            _ => Err(io::Error::last_os_error()),
-        }
-    }
-}
-
-/// Terminates through Win32 directly so mutants of the crate cannot disable cleanup.
-impl Drop for ProcessExitGuard {
-    fn drop(&mut self) {
-        if self.armed {
-            // SAFETY: the duplicate has the source process handle's access.
-            let _ = unsafe { TerminateProcess(self.process.as_raw_handle(), 1) };
-            // SAFETY: the same handle is valid for the wait.
-            let _ = unsafe { WaitForSingleObject(self.process.as_raw_handle(), 5_000) };
-        }
-    }
-}
-
 fn wait_bounded(child: &mut windows_spawn::Child) -> io::Result<Option<std::process::ExitStatus>> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -149,14 +80,18 @@ fn wait_bounded(child: &mut windows_spawn::Child) -> io::Result<Option<std::proc
 }
 
 #[test]
+fn probe() {
+    support::run_probe_if_requested();
+}
+
+#[test]
 fn args_environment_cwd_and_wait_cache_work() -> io::Result<()> {
-    let directory = temporary_path("cwd");
-    fs::create_dir(&directory)?;
+    let directory = TempDir::new("cwd")?;
 
     let mut command = cmd("echo [%WINDOWS_SPAWN_VALUE%]&cd&exit /b 37");
     command
         .env("WINDOWS_SPAWN_VALUE", "hello world")
-        .current_dir(&directory)
+        .current_dir(directory.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command.spawn()?;
@@ -164,8 +99,6 @@ fn args_environment_cwd_and_wait_cache_work() -> io::Result<()> {
     let second = child.wait()?;
     assert_eq!(first, second);
     assert_eq!(first.code(), Some(37));
-
-    fs::remove_dir(directory)?;
     Ok(())
 }
 
@@ -188,7 +121,8 @@ fn output_drains_stdout_and_stderr_beyond_pipe_capacity() -> io::Result<()> {
 
 #[test]
 fn null_and_owned_file_stdio_work() -> io::Result<()> {
-    let path = temporary_path("stdout");
+    let directory = TempDir::new("stdout")?;
+    let path = directory.join("stdout");
     let file = File::create(&path)?;
     let mut command = cmd("echo file-output");
     command
@@ -198,14 +132,15 @@ fn null_and_owned_file_stdio_work() -> io::Result<()> {
     assert!(command.status()?.success());
     let contents = fs::read_to_string(&path)?;
     assert!(contents.contains("file-output"));
-    fs::remove_file(path)?;
     Ok(())
 }
 
 #[test]
 fn suspended_child_resumes_once_into_normal_state() -> io::Result<()> {
-    let mut command = cmd("exit /b 19");
-    let suspended = command.spawn_suspended()?;
+    let (probe, mut gate, mut report) = ProbeCommand::new(Role::Gate)?;
+    let suspended = probe.spawn_suspended()?;
+    let mut process = ProcessExitGuard::watch(&suspended)?;
+    let thread = local_duplicate(&suspended.primary_thread_handle(), false)?;
     let pid = suspended.id();
     let process_handle = suspended.as_handle().as_raw_handle();
     let thread_handle = suspended.primary_thread_handle().as_raw_handle();
@@ -215,38 +150,37 @@ fn suspended_child_resumes_once_into_normal_state() -> io::Result<()> {
     assert_ne!(unsafe { GetThreadId(thread_handle) }, 0);
 
     let mut child = suspended.resume()?;
+    assert_eq!(suspend_count(thread.as_handle())?, 0);
     assert_eq!(child.id(), pid);
     assert_eq!(child.as_handle().as_raw_handle(), process_handle);
-    let status = (0..200).find_map(|_| {
-        let status = child.try_wait().expect("resumed child must be queryable");
-        if status.is_none() {
-            thread::sleep(Duration::from_millis(10));
-        }
-        status
-    });
-    if status.is_none() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    assert_eq!(status.and_then(|status| status.code()), Some(19));
+    report.expect(b"r")?;
+    assert!(child.try_wait()?.is_none());
+    gate.open_with(19)?;
+    assert_eq!(process.exit_code()?, 19);
+    assert_eq!(child.try_wait()?.and_then(|status| status.code()), Some(19));
     Ok(())
 }
 
 #[test]
 fn resume_rejects_an_externally_changed_suspend_count() -> io::Result<()> {
-    let mut command = cmd("ping -n 10 127.0.0.1 >nul");
-    let suspended = command.spawn_suspended()?;
-    let mut process = ProcessExitGuard::new(local_duplicate(&suspended, false)?);
-    // SAFETY: SuspendedChild owns the primary thread handle, which has THREAD_SUSPEND_RESUME access.
-    let previous_suspend_count =
-        unsafe { SuspendThread(suspended.primary_thread_handle().as_raw_handle()) };
-    assert_eq!(previous_suspend_count, 1);
+    let (probe, _gate, report) = ProbeCommand::new(Role::Ran)?;
+    let suspended = probe.spawn_suspended()?;
+    let mut process = ProcessExitGuard::watch(&suspended)?;
+    let thread = local_duplicate(&suspended.primary_thread_handle(), false)?;
+    // SAFETY: the duplicate has THREAD_SUSPEND_RESUME access.
+    assert_eq!(unsafe { SuspendThread(thread.as_raw_handle()) }, 1);
 
     assert_eq!(
         suspended.resume().unwrap_err().kind(),
         io::ErrorKind::InvalidData
     );
-    assert!(process.wait(Duration::from_secs(5))?);
+    tempt_resume(thread.as_handle());
+    assert_eq!(
+        process.exit_code()?,
+        1,
+        "the rejected resume did not roll back"
+    );
+    assert!(report.rest()?.is_empty(), "the rolled-back process ran");
     Ok(())
 }
 
@@ -334,31 +268,40 @@ fn direct_child_pipe_reads_reach_eof() -> io::Result<()> {
 }
 
 #[test]
-fn explicit_job_attachment_and_kill_tree_output_complete() -> io::Result<()> {
+fn explicit_job_attachment_runs_the_child() -> io::Result<()> {
     let outer_job = Job::create()?;
     let inner_job = Job::create()?;
     let mut ordinary = cmd("exit /b 0");
     let options = SpawnOptions::new().job(&outer_job).job(&inner_job);
     assert!(ordinary.status_with(options)?.success());
+    Ok(())
+}
 
-    let mut tree = cmd("start \"\" /b cmd.exe /D /C \"ping -n 20 127.0.0.1 >nul\" & echo root");
-    let started = Instant::now();
-    let output = tree.output_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
-    let elapsed = started.elapsed();
+/// The grandchild holds the stdout writer and blocks on a gate the test opens only afterwards, so returning at all proves it was terminated.
+#[test]
+fn kill_tree_output_terminates_a_descendant_holding_stdout() -> io::Result<()> {
+    let (mut probe, mut gate, _report) = ProbeCommand::new(Role::TreeExit)?;
+    probe
+        .command_mut()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = probe.output_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
+    gate.release();
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("root"));
-    assert!(
-        elapsed < Duration::from_secs(10),
-        "root-bounded output waited {elapsed:?} for the background grandchild"
-    );
+    assert!(output
+        .stdout
+        .windows(GRANDCHILD_MARKER.len())
+        .any(|window| window == GRANDCHILD_MARKER));
     Ok(())
 }
 
 #[test]
 fn requested_mitigation_is_visible_on_the_real_process() -> io::Result<()> {
-    let mut command = cmd("ping -n 4 127.0.0.1 >nul");
+    let (probe, mut gate, mut report) = ProbeCommand::new(Role::Gate)?;
     let mitigation = MitigationPolicy::new().disable_extension_points(Mitigation::AlwaysOn);
-    let mut child = command.spawn_with(SpawnOptions::new().mitigation(mitigation))?;
+    let mut child = probe.spawn_with(SpawnOptions::new().mitigation(mitigation))?;
+    let mut process = ProcessExitGuard::watch(&child)?;
+    report.expect(b"r")?;
     let mut flags = 0_u32;
     // SAFETY: the child's process handle is valid, and `flags` is writable DWORD storage as this query requires.
     let queried = unsafe {
@@ -369,10 +312,13 @@ fn requested_mitigation_is_visible_on_the_real_process() -> io::Result<()> {
             size_of_val(&flags),
         )
     };
+    let query_error = io::Error::last_os_error();
     child.kill()?;
-    assert!(!child.wait()?.success());
+    gate.release();
+    assert_eq!(process.exit_code()?, 1);
+    assert_eq!(child.wait()?.code(), Some(1));
     if queried == 0 {
-        return Err(io::Error::last_os_error());
+        return Err(query_error);
     }
     assert_eq!(flags & 1, 1);
     Ok(())
@@ -391,7 +337,7 @@ fn failed_transactions_do_not_leak_handles() -> io::Result<()> {
             Ok(count)
         }
     }
-    fn fail_after_acquisition(missing_directory: &PathBuf) {
+    fn fail_after_acquisition(missing_directory: &Path) {
         let mut command = cmd("exit /b 0");
         command
             .current_dir(missing_directory)
@@ -405,7 +351,7 @@ fn failed_transactions_do_not_leak_handles() -> io::Result<()> {
     }
 
     if std::env::var_os(PROBE).is_none() {
-        let status = std::process::Command::new(std::env::current_exe()?)
+        let status = Command::new(std::env::current_exe()?)
             .args([
                 "--exact",
                 "failed_transactions_do_not_leak_handles",
@@ -417,7 +363,8 @@ fn failed_transactions_do_not_leak_handles() -> io::Result<()> {
         return Ok(());
     }
 
-    let missing_directory = temporary_path("missing-cwd");
+    let directory = TempDir::new("missing-cwd")?;
+    let missing_directory = directory.join("missing");
     fail_after_acquisition(&missing_directory);
     let before = handle_count()?;
     for _ in 0..64 {
@@ -442,8 +389,9 @@ fn validation_happens_before_process_creation() {
 
 #[test]
 fn argument_and_environment_handles_are_lowered_after_duplication() -> io::Result<()> {
-    let argument_path = temporary_path("argument-handle");
-    let environment_path = temporary_path("environment-handle");
+    let directory = TempDir::new("handles")?;
+    let argument_path = directory.join("argument");
+    let environment_path = directory.join("environment");
     let argument_file = File::create(&argument_path)?;
     let environment_file = File::create(&environment_path)?;
 
@@ -483,16 +431,15 @@ fn argument_and_environment_handles_are_lowered_after_duplication() -> io::Resul
         "environmentenvironment",
         "the reusable Command must re-transfer its private handle"
     );
-    fs::remove_file(argument_path)?;
-    fs::remove_file(environment_path)?;
     Ok(())
 }
 
 #[test]
 fn alternate_parent_receives_remote_stdio_duplicates() -> io::Result<()> {
-    let mut host = std::process::Command::new("cmd.exe")
-        .args(["/D", "/C", "ping -n 10 127.0.0.1 >nul"])
-        .spawn()?;
+    let (host_probe, mut host_gate, mut host_report) = ProbeCommand::new(Role::Gate)?;
+    let host = host_probe.spawn_with(SpawnOptions::new())?;
+    let mut host_process = ProcessExitGuard::watch(&host)?;
+    host_report.expect(b"r")?;
     let parent = ParentProcess::open(host.id())?;
 
     let mut command = cmd("echo alternate-parent");
@@ -501,8 +448,8 @@ fn alternate_parent_receives_remote_stdio_duplicates() -> io::Result<()> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let result = command.output_with(SpawnOptions::new().parent_process(&parent));
-    let _ = host.kill();
-    let _ = host.wait();
+    host_gate.release();
+    assert_eq!(host_process.exit_code()?, EXIT_RELEASED);
 
     let output = result?;
     assert!(output.status.success());
@@ -512,13 +459,15 @@ fn alternate_parent_receives_remote_stdio_duplicates() -> io::Result<()> {
 
 #[test]
 fn alternate_parent_receives_remote_argument_and_environment_handles() -> io::Result<()> {
-    let argument_path = temporary_path("remote-argument-handle");
-    let environment_path = temporary_path("remote-environment-handle");
+    let directory = TempDir::new("remote-handles")?;
+    let argument_path = directory.join("argument");
+    let environment_path = directory.join("environment");
     let argument_file = File::create(&argument_path)?;
     let environment_file = File::create(&environment_path)?;
-    let mut host = std::process::Command::new("cmd.exe")
-        .args(["/D", "/C", "ping -n 10 127.0.0.1 >nul"])
-        .spawn()?;
+    let (host_probe, mut host_gate, mut host_report) = ProbeCommand::new(Role::Gate)?;
+    let host = host_probe.spawn_with(SpawnOptions::new())?;
+    let mut host_process = ProcessExitGuard::watch(&host)?;
+    host_report.expect(b"r")?;
     let parent = ParentProcess::open(host.id())?;
 
     let script = concat!(
@@ -550,14 +499,12 @@ fn alternate_parent_receives_remote_argument_and_environment_handles() -> io::Re
     drop((argument_file, environment_file));
 
     let result = command.status_with(SpawnOptions::new().parent_process(&parent));
-    let _ = host.kill();
-    let _ = host.wait();
+    host_gate.release();
+    assert_eq!(host_process.exit_code()?, EXIT_RELEASED);
 
     assert!(result?.success());
     assert_eq!(fs::read_to_string(&argument_path)?, "argument");
     assert_eq!(fs::read_to_string(&environment_path)?, "environment");
-    fs::remove_file(argument_path)?;
-    fs::remove_file(environment_path)?;
     Ok(())
 }
 
@@ -596,15 +543,17 @@ fn child_pipes_try_wait_and_cached_lifecycle_work() -> io::Result<()> {
     assert!(exited.try_wait()?.expect("cached exit").success());
     exited.kill()?;
 
-    let mut polled = cmd("exit /b 42").spawn()?;
-    let status = (0..100).find_map(|_| {
-        let status = polled.try_wait().expect("try_wait must query the child");
-        if status.is_none() {
-            thread::sleep(Duration::from_millis(10));
-        }
-        status
-    });
-    assert_eq!(status.and_then(|status| status.code()), Some(42));
+    let (probe, mut gate, mut report) = ProbeCommand::new(Role::Gate)?;
+    let mut polled = probe.spawn_with(SpawnOptions::new())?;
+    let mut process = ProcessExitGuard::watch(&polled)?;
+    report.expect(b"r")?;
+    assert!(polled.try_wait()?.is_none());
+    gate.open_with(42)?;
+    assert_eq!(process.exit_code()?, 42);
+    assert_eq!(
+        polled.try_wait()?.and_then(|status| status.code()),
+        Some(42)
+    );
 
     let mut silent = cmd("exit /b 0");
     silent.stdout(Stdio::null()).stderr(Stdio::null());
@@ -906,9 +855,7 @@ fn pseudoconsole_regular_stdio_probe() -> io::Result<()> {
 
 #[test]
 fn capability_wrappers_and_all_option_builders_are_exercised() -> io::Result<()> {
-    let path = temporary_path("capability");
-    let file = File::create(&path)?;
-    let borrowed_stdio = Stdio::from_borrowed(&file)?;
+    let borrowed_stdio = Stdio::from_borrowed(&File::open("NUL")?)?;
     assert!(format!("{borrowed_stdio:?}").contains("Owned"));
     assert!(format!("{:?}", Stdio::inherit()).contains("Inherit"));
     assert!(format!("{:?}", Stdio::null()).contains("Null"));
@@ -945,11 +892,15 @@ fn capability_wrappers_and_all_option_builders_are_exercised() -> io::Result<()>
     );
 
     let assigned_job = Job::create()?;
-    let mut child = cmd("ping -n 5 127.0.0.1 >nul").spawn()?;
+    let (probe, mut gate, mut report) = ProbeCommand::new(Role::Gate)?;
+    let mut child = probe.spawn_with(SpawnOptions::new())?;
+    let mut process = ProcessExitGuard::watch(&child)?;
+    report.expect(b"r")?;
     assigned_job.assign(&child)?;
     assigned_job.terminate(31)?;
+    gate.release();
+    assert_eq!(process.exit_code()?, 31);
     assert_eq!(child.wait()?.code(), Some(31));
-    fs::remove_file(path)?;
     Ok(())
 }
 
@@ -985,7 +936,8 @@ fn handle_list_excludes_an_unlisted_inheritable_handle() -> io::Result<()> {
         return Ok(());
     }
 
-    let excluded_path = temporary_path("excluded-handle");
+    let directory = TempDir::new("excluded-handle")?;
+    let excluded_path = directory.join("excluded");
     let listed_file = File::open("NUL")?;
     let excluded_file = File::create(&excluded_path)?;
     let excluded = inheritable_duplicate(&excluded_file)?;
@@ -1007,29 +959,34 @@ fn handle_list_excludes_an_unlisted_inheritable_handle() -> io::Result<()> {
     assert!(status.success());
 
     drop((excluded_file, excluded));
-    fs::remove_file(excluded_path)?;
     Ok(())
 }
 
 #[test]
-fn dropping_a_kill_tree_child_terminates_the_root() -> io::Result<()> {
-    let marker = temporary_path("kill-tree-drop");
-    let script = format!(
-        "Start-Sleep -Milliseconds 600; Set-Content -LiteralPath '{}' -Value ran",
-        marker.display()
-    );
-    let mut command = Command::new("powershell.exe");
-    command.args([
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        &script,
-    ]);
-    let child = command.spawn_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
+fn dropping_a_kill_tree_child_terminates_the_tree() -> io::Result<()> {
+    let (probe, mut gate, mut report) = ProbeCommand::new(Role::TreeHold)?;
+    let child = probe.spawn_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
+    let mut root = ProcessExitGuard::watch(&child)?;
+    report.expect(b"rr")?;
     drop(child);
-    thread::sleep(Duration::from_millis(900));
-    assert!(!marker.exists());
+    gate.release();
+    assert!(
+        report.rest()?.is_empty(),
+        "a process in the tree outlived the drop"
+    );
+    assert!(!SELF_EXIT_CODES.contains(&root.exit_code()?));
+    Ok(())
+}
+
+#[test]
+fn dropping_a_detached_child_leaves_it_running() -> io::Result<()> {
+    let (probe, mut gate, mut report) = ProbeCommand::new(Role::Gate)?;
+    let child = probe.spawn_with(SpawnOptions::new())?;
+    let mut process = ProcessExitGuard::watch(&child)?;
+    report.expect(b"r")?;
+    drop(child);
+    gate.release();
+    assert_eq!(process.exit_code()?, EXIT_RELEASED);
     Ok(())
 }
 
@@ -1037,71 +994,54 @@ fn dropping_a_kill_tree_child_terminates_the_root() -> io::Result<()> {
 fn public_job_kill_on_close_terminates_assigned_process() -> io::Result<()> {
     let job = Job::create()?;
     job.set_kill_on_close(true)?;
-    let mut child = cmd("ping -n 20 127.0.0.1 >nul").spawn()?;
+    let (probe, mut gate, mut report) = ProbeCommand::new(Role::Gate)?;
+    let child = probe.spawn_with(SpawnOptions::new())?;
+    let mut process = ProcessExitGuard::watch(&child)?;
+    report.expect(b"r")?;
     job.assign(&child)?;
     drop(job);
-
-    let status = (0..200).find_map(|_| {
-        let status = child.try_wait().expect("assigned child must be queryable");
-        if status.is_none() {
-            thread::sleep(Duration::from_millis(10));
-        }
-        status
-    });
-    if status.is_none() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    assert!(status.is_some());
+    gate.release();
+    assert!(
+        report.rest()?.is_empty(),
+        "the assigned process outlived the Job"
+    );
+    assert!(!SELF_EXIT_CODES.contains(&process.exit_code()?));
     Ok(())
 }
 
 #[test]
 fn reusable_command_environment_and_accessors_work() -> io::Result<()> {
-    let directory = temporary_path("builder-cwd");
-    fs::create_dir(&directory)?;
+    let directory = TempDir::new("builder-cwd")?;
     let mut command = cmd("echo %WINDOWS_SPAWN_ONE%-%WINDOWS_SPAWN_TWO%");
     command
         .envs([("WINDOWS_SPAWN_ONE", "one"), ("WINDOWS_SPAWN_TWO", "old")])
         .env_remove("windows_spawn_two")
         .env("WINDOWS_SPAWN_TWO", "two")
-        .current_dir(&directory);
+        .current_dir(directory.path());
     assert_eq!(command.get_program(), "cmd.exe");
-    assert_eq!(command.get_current_dir(), Some(directory.as_path()));
+    assert_eq!(command.get_current_dir(), Some(directory.path()));
     let output = command.output()?;
     assert!(String::from_utf8_lossy(&output.stdout).contains("one-two"));
 
     command.env_clear().env("WINDOWS_SPAWN_ONE", "clear");
     let output = command.output()?;
     assert!(String::from_utf8_lossy(&output.stdout).contains("clear-"));
-    fs::remove_dir(directory)?;
     Ok(())
 }
 
 #[test]
 fn dropping_suspended_child_prevents_execution() -> io::Result<()> {
-    let path = temporary_path("suspended-drop");
-    let mut command = Command::new(std::env::current_exe()?);
-    command
-        .args(["--exact", "suspended_execution_probe", "--nocapture"])
-        .env("WINDOWS_SPAWN_SUSPENDED_PROBE", &path);
-    let suspended = command.spawn_suspended_with(SpawnOptions::new())?;
-    let mut process = ProcessExitGuard::new(local_duplicate(&suspended, false)?);
-    thread::sleep(Duration::from_millis(500));
-    assert!(!path.exists());
+    let (probe, _gate, report) = ProbeCommand::new(Role::Ran)?;
+    let suspended = probe.spawn_suspended()?;
+    let mut process = ProcessExitGuard::watch(&suspended)?;
+    let thread = local_duplicate(&suspended.primary_thread_handle(), false)?;
     drop(suspended);
-    assert!(
-        process.wait(Duration::from_secs(5))?,
+    tempt_resume(thread.as_handle());
+    assert_eq!(
+        process.exit_code()?,
+        1,
         "dropping SuspendedChild must terminate the process"
     );
-    assert!(!path.exists());
+    assert!(report.rest()?.is_empty(), "the suspended process ran");
     Ok(())
-}
-
-#[test]
-fn suspended_execution_probe() -> io::Result<()> {
-    let Some(path) = std::env::var_os("WINDOWS_SPAWN_SUSPENDED_PROBE") else {
-        return Ok(());
-    };
-    fs::write(path, b"ran")
 }

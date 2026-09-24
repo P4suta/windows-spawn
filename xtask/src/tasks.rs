@@ -11,7 +11,6 @@ use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 use std::string::FromUtf8Error;
-use std::time::{SystemTime, SystemTimeError, UNIX_EPOCH};
 
 pub(crate) type Result<T> = std::result::Result<T, TaskError>;
 
@@ -21,7 +20,6 @@ pub(crate) enum TaskError {
     Json(serde_json::Error),
     Utf8(FromUtf8Error),
     Semver(semver::Error),
-    SystemTime(SystemTimeError),
     Message(String),
 }
 
@@ -32,7 +30,6 @@ impl fmt::Display for TaskError {
             Self::Json(error) => error.fmt(formatter),
             Self::Utf8(error) => error.fmt(formatter),
             Self::Semver(error) => error.fmt(formatter),
-            Self::SystemTime(error) => error.fmt(formatter),
             Self::Message(message) => formatter.write_str(message),
         }
     }
@@ -45,7 +42,6 @@ impl Error for TaskError {
             Self::Json(error) => Some(error),
             Self::Utf8(error) => Some(error),
             Self::Semver(error) => Some(error),
-            Self::SystemTime(error) => Some(error),
             Self::Message(_) => None,
         }
     }
@@ -72,12 +68,6 @@ impl From<FromUtf8Error> for TaskError {
 impl From<semver::Error> for TaskError {
     fn from(error: semver::Error) -> Self {
         Self::Semver(error)
-    }
-}
-
-impl From<SystemTimeError> for TaskError {
-    fn from(error: SystemTimeError) -> Self {
-        Self::SystemTime(error)
     }
 }
 
@@ -779,6 +769,7 @@ fn run_mutants(_root: &Path, _output: Option<PathBuf>, _forwarded: &[String]) ->
     fail("mutation containment requires Windows")
 }
 
+#[cfg(windows)]
 fn mutation_output(root: &Path, requested: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(output) = requested {
         return Ok(output);
@@ -786,12 +777,28 @@ fn mutation_output(root: &Path, requested: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(output) = env::var_os("CARGO_MUTANTS_OUTPUT").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(output));
     }
-    let millis = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
-    let output = root
-        .join("target/mutants/runs")
-        .join(format!("{millis}-{}", std::process::id()));
-    fs::create_dir_all(&output)?;
-    Ok(output)
+    Ok(create_unique_directory(
+        &root.join("target/mutants/runs"),
+        "run",
+    )?)
+}
+
+/// Creates `parent/stem-N` for the first free `N`; `create_dir` fails atomically on a taken name.
+#[cfg(any(windows, test))]
+fn create_unique_directory(parent: &Path, stem: &str) -> io::Result<PathBuf> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    fs::create_dir_all(parent)?;
+    loop {
+        let index = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!("{stem}-{index}"));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn resolve_directory(root: &Path, requested: &Path) -> Result<PathBuf> {
@@ -950,7 +957,6 @@ fn fail<T>(message: impl Into<String>) -> Result<T> {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::time::Duration;
 
     #[test]
     fn selects_only_the_root_manifest_package() {
@@ -1011,13 +1017,6 @@ mod tests {
 
         let semver_error = TaskError::from(Version::parse("not-semver").unwrap_err());
         assert!(semver_error.source().is_some());
-
-        let time_error = TaskError::from(
-            UNIX_EPOCH
-                .duration_since(UNIX_EPOCH + Duration::from_secs(1))
-                .unwrap_err(),
-        );
-        assert!(time_error.source().is_some());
 
         let message = TaskError::from("plain failure".to_owned());
         assert_eq!(message.to_string(), "plain failure");
@@ -1111,15 +1110,10 @@ mod tests {
     }
 
     fn temporary_directory(label: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = env::temp_dir().join(format!(
-            "windows-spawn-xtask-{label}-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).unwrap();
-        path
+        create_unique_directory(
+            &env::temp_dir(),
+            &format!("windows-spawn-xtask-{label}-{}", std::process::id()),
+        )
+        .unwrap()
     }
 }

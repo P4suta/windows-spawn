@@ -214,10 +214,14 @@ mod tests {
 
     #[test]
     fn owned_handle_adoption_validates_resource_kind() {
-        let mut host = std::process::Command::new("cmd.exe")
-            .args(["/D", "/C", "ping -n 5 127.0.0.1 >nul"])
-            .spawn()
-            .unwrap();
+        let mut host_command = crate::Command::new("cmd.exe");
+        host_command
+            .args(["/D", "/C", "exit /b 0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let host = host_command.spawn_suspended().unwrap();
+        let _host_guard = sys::test_support::ProcessExitGuard::watch(host.as_handle());
         let parent = ParentProcess::open(host.id()).unwrap();
         assert!(format!("{parent:?}").contains("ParentProcess"));
         let adopted_parent =
@@ -239,7 +243,6 @@ mod tests {
         assert!(ParentProcess::from_handle(not_process).is_err());
         let not_job = sys::duplicate_local(file.as_handle(), false).unwrap();
         assert!(Job::from_handle(not_job).is_err());
-        let _ = host.kill();
-        let _ = host.wait();
+        drop(host);
     }
 }
