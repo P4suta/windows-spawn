@@ -14,13 +14,19 @@ use crate::handles::{AsPseudoConsole, Job, ParentProcess};
 use crate::mitigation::MitigationPolicy;
 
 /// What dropping a live [`crate::Child`] does to its process tree.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DropPolicy {
     /// Close windows-spawn's process handle without terminating the process.
-    #[default]
     Detach,
     /// Terminate the child and all descendants in windows-spawn's private Job.
     KillTree,
+}
+
+impl Default for DropPolicy {
+    /// Detaches, as dropping a [`std::process::Child`] does.
+    fn default() -> Self {
+        Self::Detach
+    }
 }
 
 /// Safe, named `CreateProcessW` creation flags.
@@ -141,7 +147,7 @@ impl Default for SpawnOptions<'_> {
             mitigation: MitigationPolicy::new(),
             pseudoconsole: None,
             creation_flags: CreationFlags::new(),
-            drop_policy: DropPolicy::Detach,
+            drop_policy: DropPolicy::default(),
         }
     }
 }
@@ -164,7 +170,7 @@ impl<'a> SpawnOptions<'a> {
 
     /// Chooses another process as the logical parent.
     #[must_use]
-    pub fn parent_process(mut self, parent: &'a ParentProcess) -> Self {
+    pub const fn parent_process(mut self, parent: &'a ParentProcess) -> Self {
         self.parent = Some(parent);
         self
     }
@@ -238,6 +244,16 @@ mod tests {
         assert_eq!(options.jobs.len(), 2);
         assert!(std::ptr::eq(options.jobs[0], &outer));
         assert!(std::ptr::eq(options.jobs[1], &inner));
+    }
+
+    #[test]
+    fn defaults_detach_and_request_nothing() {
+        assert_eq!(DropPolicy::default(), DropPolicy::Detach);
+        let options = SpawnOptions::default();
+        assert_eq!(options.drop_policy, DropPolicy::Detach);
+        assert_eq!(options.creation_flags, CreationFlags::new());
+        assert!(options.jobs.is_empty() && options.parent.is_none());
+        assert_eq!(options.pseudoconsole_raw(), None);
     }
 
     #[test]

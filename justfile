@@ -9,6 +9,9 @@ fmt:
 clippy:
     cargo xtask clippy
 
+gates:
+    cargo xtask gates
+
 test:
     cargo xtask test
 

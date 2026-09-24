@@ -37,6 +37,7 @@ jobs:
       - run: python -m pip install "reuse[charset-normalizer]==6.2.0"
       - run: just fmt
       - run: just clippy
+      - run: just gates
       - run: just doc
       - run: just public-api
       - run: just msrv

@@ -1,4 +1,5 @@
 use crate::cli::{SimpleTask, Task};
+use crate::gates;
 use semver::Version;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -115,7 +116,7 @@ fn print_help() {
     println!(
         "\
 Repository tasks:
-  cargo xtask fmt|clippy|test|doc|msrv|cross-targets|linux-empty
+  cargo xtask fmt|clippy|gates|test|doc|msrv|cross-targets|linux-empty
   cargo xtask supply-chain|reuse|typos|coverage|ci
   cargo xtask public-api [--update]
   cargo xtask package-check [--allow-dirty]
@@ -207,7 +208,23 @@ fn run_simple(root: &Path, task: SimpleTask) -> Result<()> {
         SimpleTask::Reuse => run_program(root, "python", &["-m", "reuse", "lint"]),
         SimpleTask::Typos => run_program(root, "typos", &[]),
         SimpleTask::Coverage => coverage(root),
+        SimpleTask::Gates => run_gates(root),
         SimpleTask::Ci => run_ci(root),
+    }
+}
+
+fn run_gates(root: &Path) -> Result<()> {
+    let findings = gates::check(root)?;
+    for finding in &findings {
+        eprintln!("{finding}");
+    }
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(TaskError::Message(format!(
+            "{} repository law violation(s); see ADR 0013",
+            findings.len()
+        )))
     }
 }
 
@@ -215,6 +232,7 @@ fn run_ci(root: &Path) -> Result<()> {
     for check in [
         SimpleTask::Fmt,
         SimpleTask::Clippy,
+        SimpleTask::Gates,
         SimpleTask::Test,
         SimpleTask::Doc,
         SimpleTask::Msrv,
@@ -288,7 +306,7 @@ fn compare_snapshot(expected: &str, actual: &str) -> std::result::Result<(), Str
         .unwrap_or_else(|| expected.len().min(actual.len()));
     Err(format!(
         "public API differs at line {}\nexpected: {}\n  actual: {}\nrun `cargo xtask public-api --update` for an intentional change",
-        first + 1,
+        first.saturating_add(1),
         expected.get(first).copied().unwrap_or("<end of file>"),
         actual.get(first).copied().unwrap_or("<end of file>")
     ))
@@ -636,20 +654,25 @@ fn sha256(path: &Path) -> Result<String> {
         if read == 0 {
             break;
         }
-        digest.update(&buffer[..read]);
+        digest.update(buffer.get(..read).ok_or_else(|| {
+            TaskError::from("read reported more bytes than the buffer holds".to_owned())
+        })?);
     }
     Ok(lower_hex(&digest.finalize()))
 }
 
 /// Formats a digest as lowercase hex; `sha2` 0.11 digests do not implement `LowerHex`.
 fn lower_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(&mut output, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    output
+    bytes
+        .iter()
+        .flat_map(|byte| {
+            [
+                char::from_digit(u32::from(*byte) / 16, 16),
+                char::from_digit(u32::from(*byte) % 16, 16),
+            ]
+        })
+        .flatten()
+        .collect()
 }
 
 fn verify_release_tag(root: &Path, tag: &str) -> Result<()> {
@@ -690,8 +713,9 @@ fn parse_release_tag(tag: &str) -> std::result::Result<Version, String> {
     let version = tag
         .strip_prefix('v')
         .ok_or_else(|| "release tag must be v-prefixed SemVer, for example v1.2.3".to_owned())?;
-    Version::parse(version)
-        .map_err(|_| "release tag must be v-prefixed SemVer, for example v1.2.3".to_owned())
+    Version::parse(version).map_err(|error| {
+        format!("release tag must be v-prefixed SemVer, for example v1.2.3: {error}")
+    })
 }
 
 fn draft_release(root: &Path, tag: &str, github_output: bool) -> Result<()> {
@@ -843,7 +867,9 @@ fn normalize_path(path: &Path) -> PathBuf {
             Component::ParentDir => {
                 normalized.pop();
             }
-            _ => normalized.push(component.as_os_str()),
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
         }
     }
     normalized

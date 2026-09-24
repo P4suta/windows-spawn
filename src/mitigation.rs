@@ -1,11 +1,10 @@
 //! Typed process-creation mitigation policy encoding.
 
 /// The ordinary two-bit mitigation states used by the Windows SDK.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u64)]
 pub enum Mitigation {
     /// Let the child executable and operating system choose.
-    #[default]
     Defer = 0,
     /// Force the mitigation on.
     AlwaysOn = 1,
@@ -14,11 +13,10 @@ pub enum Mitigation {
 }
 
 /// Mandatory-ASLR modes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u64)]
 pub enum RelocateImages {
     /// Defer to the child.
-    #[default]
     Defer = 0,
     /// Relocate images even when they are not dynamic-base compatible.
     AlwaysOn = 1,
@@ -29,11 +27,10 @@ pub enum RelocateImages {
 }
 
 /// Dynamic-code policy modes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u64)]
 pub enum DynamicCode {
     /// Defer to the child.
-    #[default]
     Defer = 0,
     /// Prohibit dynamic code.
     Prohibit = 1,
@@ -44,11 +41,10 @@ pub enum DynamicCode {
 }
 
 /// Control Flow Guard modes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u64)]
 pub enum ControlFlowGuard {
     /// Defer to the child.
-    #[default]
     Defer = 0,
     /// Enable Control Flow Guard.
     AlwaysOn = 1,
@@ -59,11 +55,10 @@ pub enum ControlFlowGuard {
 }
 
 /// Microsoft-signed binary policy modes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u64)]
 pub enum SignedBinaries {
     /// Defer to the child.
-    #[default]
     Defer = 0,
     /// Permit only Microsoft-signed binaries.
     MicrosoftOnly = 1,
@@ -74,11 +69,10 @@ pub enum SignedBinaries {
 }
 
 /// Non-system-font policy modes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u64)]
 pub enum FontDisable {
     /// Defer to the child.
-    #[default]
     Defer = 0,
     /// Block non-system fonts.
     Block = 1,
@@ -89,11 +83,10 @@ pub enum FontDisable {
 }
 
 /// Loader integrity continuity modes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u64)]
 pub enum LoaderIntegrity {
     /// Defer to the child.
-    #[default]
     Defer = 0,
     /// Enforce loader integrity continuity.
     AlwaysOn = 1,
@@ -104,11 +97,10 @@ pub enum LoaderIntegrity {
 }
 
 /// Module-tampering protection modes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u64)]
 pub enum ModuleTampering {
     /// Defer to the child.
-    #[default]
     Defer = 0,
     /// Enable module-tampering protection.
     AlwaysOn = 1,
@@ -122,11 +114,10 @@ pub enum ModuleTampering {
 ///
 /// Support depends on the Windows release, architecture, hardware, and child executable.
 /// A representable value may still be rejected by the host.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u64)]
 pub enum CetShadowStacks {
     /// Defer to the child.
-    #[default]
     Defer = 0,
     /// Enable user shadow stacks.
     AlwaysOn = 1,
@@ -139,11 +130,10 @@ pub enum CetShadowStacks {
 /// CET set-context instruction-pointer validation modes.
 ///
 /// Support depends on the Windows release, architecture, hardware, and child executable.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u64)]
 pub enum UserCetContextIpValidation {
     /// Defer to the child.
-    #[default]
     Defer = 0,
     /// Enable validation.
     AlwaysOn = 1,
@@ -156,11 +146,10 @@ pub enum UserCetContextIpValidation {
 /// Modes for blocking binaries without CET or EH continuation metadata.
 ///
 /// Support depends on the Windows release, architecture, and executable metadata.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u64)]
 pub enum BlockNonCetBinaries {
     /// Defer to the child.
-    #[default]
     Defer = 0,
     /// Block binaries without CET metadata.
     AlwaysOn = 1,
@@ -169,6 +158,38 @@ pub enum BlockNonCetBinaries {
     /// Block binaries without EH continuation metadata.
     NonEhContinuation = 3,
 }
+
+/// Gives a two-bit policy field its encoding and its `Defer` default.
+macro_rules! policy_field {
+    ($name:ident { $($variant:ident => $bits:literal),+ $(,)? }) => {
+        impl $name {
+            const fn bits(self) -> u64 {
+                match self {
+                    $(Self::$variant => $bits,)+
+                }
+            }
+        }
+
+        impl Default for $name {
+            /// Defers to the child.
+            fn default() -> Self {
+                Self::Defer
+            }
+        }
+    };
+}
+
+policy_field!(Mitigation { Defer => 0, AlwaysOn => 1, AlwaysOff => 2 });
+policy_field!(RelocateImages { Defer => 0, AlwaysOn => 1, AlwaysOff => 2, RequireRelocations => 3 });
+policy_field!(DynamicCode { Defer => 0, Prohibit => 1, Allow => 2, ProhibitWithOptOut => 3 });
+policy_field!(ControlFlowGuard { Defer => 0, AlwaysOn => 1, AlwaysOff => 2, ExportSuppression => 3 });
+policy_field!(SignedBinaries { Defer => 0, MicrosoftOnly => 1, AlwaysOff => 2, MicrosoftAndStore => 3 });
+policy_field!(FontDisable { Defer => 0, Block => 1, Allow => 2, Audit => 3 });
+policy_field!(LoaderIntegrity { Defer => 0, AlwaysOn => 1, AlwaysOff => 2, Audit => 3 });
+policy_field!(ModuleTampering { Defer => 0, AlwaysOn => 1, AlwaysOff => 2, NoInherit => 3 });
+policy_field!(CetShadowStacks { Defer => 0, AlwaysOn => 1, AlwaysOff => 2, Strict => 3 });
+policy_field!(UserCetContextIpValidation { Defer => 0, AlwaysOn => 1, AlwaysOff => 2, Relaxed => 3 });
+policy_field!(BlockNonCetBinaries { Defer => 0, AlwaysOn => 1, AlwaysOff => 2, NonEhContinuation => 3 });
 
 /// A complete SDK 10.0.22621 process-creation mitigation policy.
 ///
@@ -222,147 +243,147 @@ impl MitigationPolicy {
     /// Sets mandatory image relocation.
     #[must_use]
     pub const fn relocate_images(mut self, value: RelocateImages) -> Self {
-        self.words[0] = replace(self.words[0], 8, value as u64);
+        self.words[0] = replace(self.words[0], 8, value.bits());
         self
     }
 
     /// Sets heap termination on corruption.
     #[must_use]
     pub const fn heap_terminate(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 12, value as u64);
+        self.words[0] = replace(self.words[0], 12, value.bits());
         self
     }
 
     /// Sets bottom-up ASLR.
     #[must_use]
     pub const fn bottom_up_aslr(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 16, value as u64);
+        self.words[0] = replace(self.words[0], 16, value.bits());
         self
     }
 
     /// Sets high-entropy ASLR.
     #[must_use]
     pub const fn high_entropy_aslr(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 20, value as u64);
+        self.words[0] = replace(self.words[0], 20, value.bits());
         self
     }
 
     /// Sets strict invalid-handle checking.
     #[must_use]
     pub const fn strict_handle_checks(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 24, value as u64);
+        self.words[0] = replace(self.words[0], 24, value.bits());
         self
     }
 
     /// Sets the Win32k system-call-disable mitigation.
     #[must_use]
     pub const fn disable_win32k_system_calls(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 28, value as u64);
+        self.words[0] = replace(self.words[0], 28, value.bits());
         self
     }
 
     /// Sets extension-point disabling.
     #[must_use]
     pub const fn disable_extension_points(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 32, value as u64);
+        self.words[0] = replace(self.words[0], 32, value.bits());
         self
     }
 
     /// Sets dynamic-code policy.
     #[must_use]
     pub const fn dynamic_code(mut self, value: DynamicCode) -> Self {
-        self.words[0] = replace(self.words[0], 36, value as u64);
+        self.words[0] = replace(self.words[0], 36, value.bits());
         self
     }
 
     /// Sets Control Flow Guard policy.
     #[must_use]
     pub const fn control_flow_guard(mut self, value: ControlFlowGuard) -> Self {
-        self.words[0] = replace(self.words[0], 40, value as u64);
+        self.words[0] = replace(self.words[0], 40, value.bits());
         self
     }
 
     /// Sets signed-binary loading policy.
     #[must_use]
     pub const fn signed_binaries(mut self, value: SignedBinaries) -> Self {
-        self.words[0] = replace(self.words[0], 44, value as u64);
+        self.words[0] = replace(self.words[0], 44, value.bits());
         self
     }
 
     /// Sets non-system-font policy.
     #[must_use]
     pub const fn font_disable(mut self, value: FontDisable) -> Self {
-        self.words[0] = replace(self.words[0], 48, value as u64);
+        self.words[0] = replace(self.words[0], 48, value.bits());
         self
     }
 
     /// Sets remote-image blocking.
     #[must_use]
     pub const fn block_remote_images(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 52, value as u64);
+        self.words[0] = replace(self.words[0], 52, value.bits());
         self
     }
 
     /// Sets low-integrity-label image blocking.
     #[must_use]
     pub const fn block_low_label_images(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 56, value as u64);
+        self.words[0] = replace(self.words[0], 56, value.bits());
         self
     }
 
     /// Sets System32 image preference.
     #[must_use]
     pub const fn prefer_system32_images(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 60, value as u64);
+        self.words[0] = replace(self.words[0], 60, value.bits());
         self
     }
 
     /// Sets loader integrity continuity.
     #[must_use]
     pub const fn loader_integrity(mut self, value: LoaderIntegrity) -> Self {
-        self.words[1] = replace(self.words[1], 4, value as u64);
+        self.words[1] = replace(self.words[1], 4, value.bits());
         self
     }
 
     /// Sets strict Control Flow Guard.
     #[must_use]
     pub const fn strict_control_flow_guard(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 8, value as u64);
+        self.words[1] = replace(self.words[1], 8, value.bits());
         self
     }
 
     /// Sets module-tampering protection.
     #[must_use]
     pub const fn module_tampering(mut self, value: ModuleTampering) -> Self {
-        self.words[1] = replace(self.words[1], 12, value as u64);
+        self.words[1] = replace(self.words[1], 12, value.bits());
         self
     }
 
     /// Sets restricted indirect branch prediction.
     #[must_use]
     pub const fn restrict_indirect_branch_prediction(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 16, value as u64);
+        self.words[1] = replace(self.words[1], 16, value.bits());
         self
     }
 
     /// Sets permission for a broker to downgrade dynamic-code policy.
     #[must_use]
     pub const fn allow_downgrade_dynamic_code(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 20, value as u64);
+        self.words[1] = replace(self.words[1], 20, value.bits());
         self
     }
 
     /// Sets speculative-store-bypass disabling.
     #[must_use]
     pub const fn disable_speculative_store_bypass(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 24, value as u64);
+        self.words[1] = replace(self.words[1], 24, value.bits());
         self
     }
 
     /// Sets CET user shadow stacks.
     #[must_use]
     pub const fn cet_user_shadow_stacks(mut self, value: CetShadowStacks) -> Self {
-        self.words[1] = replace(self.words[1], 28, value as u64);
+        self.words[1] = replace(self.words[1], 28, value.bits());
         self
     }
 
@@ -372,49 +393,49 @@ impl MitigationPolicy {
         mut self,
         value: UserCetContextIpValidation,
     ) -> Self {
-        self.words[1] = replace(self.words[1], 32, value as u64);
+        self.words[1] = replace(self.words[1], 32, value.bits());
         self
     }
 
     /// Sets blocking of binaries without CET metadata.
     #[must_use]
     pub const fn block_non_cet_binaries(mut self, value: BlockNonCetBinaries) -> Self {
-        self.words[1] = replace(self.words[1], 36, value as u64);
+        self.words[1] = replace(self.words[1], 36, value.bits());
         self
     }
 
     /// Sets extended Control Flow Guard.
     #[must_use]
     pub const fn extended_control_flow_guard(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 40, value as u64);
+        self.words[1] = replace(self.words[1], 40, value.bits());
         self
     }
 
     /// Sets ARM64 user-mode instruction-pointer authentication.
     #[must_use]
     pub const fn pointer_authentication(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 44, value as u64);
+        self.words[1] = replace(self.words[1], 44, value.bits());
         self
     }
 
     /// Sets CET dynamic APIs to out-of-process-only mode.
     #[must_use]
     pub const fn cet_dynamic_apis_out_of_process(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 48, value as u64);
+        self.words[1] = replace(self.words[1], 48, value.bits());
         self
     }
 
     /// Sets restricted CPU-core sharing.
     #[must_use]
     pub const fn restrict_core_sharing(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 52, value as u64);
+        self.words[1] = replace(self.words[1], 52, value.bits());
         self
     }
 
     /// Sets FSCTL system-call disabling.
     #[must_use]
     pub const fn disable_fsctl_system_calls(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 56, value as u64);
+        self.words[1] = replace(self.words[1], 56, value.bits());
         self
     }
 }
@@ -468,8 +489,9 @@ mod tests {
     fn every_sdk_22621_field_has_the_expected_encoding() {
         macro_rules! field {
             ($policy:expr, $word:expr, $shift:expr, $value:expr) => {{
+                let value: u64 = $value;
                 let mut expected = [0_u64; 2];
-                expected[$word] = ($value as u64) << $shift;
+                expected[$word] = value << $shift;
                 assert_eq!($policy.words(), expected);
             }};
         }

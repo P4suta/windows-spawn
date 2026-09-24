@@ -5,7 +5,7 @@ use std::ffi::{c_void, OsString};
 use std::io;
 use std::mem::{size_of, size_of_val};
 use std::os::windows::ffi::OsStringExt;
-use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle, RawHandle};
+use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
 use std::process::ExitStatus;
 use std::ptr;
 
@@ -41,10 +41,18 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_DUP_HANDLE, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
     PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
     PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
 };
 
 pub(crate) const INVALID_RAW_HANDLE: isize = -1;
+
+const JOB_LIMITS_SIZE: u32 = dword_const(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>());
+const STARTUPINFO_SIZE: u32 = dword_const(size_of::<STARTUPINFOW>());
+const STARTUPINFOEX_SIZE: u32 = dword_const(size_of::<STARTUPINFOEXW>());
+
+/// The longest Windows path in UTF-16 units, including the terminator.
+const MAXIMUM_PATH: usize = 32_768;
+const MAXIMUM_PATH_CAPACITY: u32 = dword_const(MAXIMUM_PATH);
 
 struct EnvironmentBlock(*mut u16);
 
@@ -131,7 +139,7 @@ pub(crate) struct RemoteHandle<'a> {
 
 impl RemoteHandle<'_> {
     pub(crate) fn value(&self) -> isize {
-        self.value as isize
+        handle_value(self.value)
     }
 }
 
@@ -140,13 +148,13 @@ impl Drop for RemoteHandle<'_> {
     fn drop(&mut self) {
         // SAFETY: `GetCurrentProcess` cannot fail and returns a pseudo-handle that stays valid and is never closed.
         let current = unsafe { GetCurrentProcess() };
-        let _ = duplicate_between(
+        drop(duplicate_between(
             raw(self.process),
             self.value,
             current,
             false,
             DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE,
-        );
+        ));
     }
 }
 
@@ -193,7 +201,7 @@ pub(crate) fn standard_handle(stream: StandardStream) -> io::Result<Option<Owned
         return Ok(None);
     }
     // SAFETY: GetStdHandle returned a live handle; it is borrowed only for DuplicateHandle and never closed.
-    let borrowed = unsafe { BorrowedHandle::borrow_raw(handle as RawHandle) };
+    let borrowed = unsafe { BorrowedHandle::borrow_raw(handle) };
     duplicate_local(borrowed, false).map(Some)
 }
 
@@ -243,8 +251,8 @@ pub(crate) fn create_pipe(parent_reads: bool) -> io::Result<Pipe> {
     // SAFETY: CreatePipe succeeded, so both handles are valid and distinct; they are adopted together.
     let (read, write) = unsafe {
         (
-            OwnedHandle::from_raw_handle(read as RawHandle),
-            OwnedHandle::from_raw_handle(write as RawHandle),
+            OwnedHandle::from_raw_handle(read),
+            OwnedHandle::from_raw_handle(write),
         )
     };
     if parent_reads {
@@ -305,8 +313,7 @@ pub(crate) fn set_job_kill_on_close(handle: BorrowedHandle<'_>, enable: bool) ->
             raw(handle),
             JobObjectExtendedLimitInformation,
             ptr::addr_of!(limits).cast(),
-            u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
-                .expect("Job limit structure size fits u32"),
+            JOB_LIMITS_SIZE,
         )
     } == 0
     {
@@ -328,8 +335,7 @@ fn query_job_limits(
             raw(handle),
             JobObjectExtendedLimitInformation,
             ptr::addr_of_mut!(limits).cast(),
-            u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
-                .expect("Job limit structure size fits u32"),
+            JOB_LIMITS_SIZE,
             ptr::null_mut(),
         )
     } == 0
@@ -370,7 +376,7 @@ impl AttributeList {
         let words = storage_words(bytes);
         let mut storage = vec![0_usize; words].into_boxed_slice();
         let pointer = storage.as_mut_ptr().cast();
-        let mut actual = words * size_of::<usize>();
+        let mut actual = size_of_val(&*storage);
         // SAFETY: the `Box<[usize]>` is word-aligned, stable, at least `bytes` long, and owned by the returned `AttributeList`.
         if unsafe { InitializeProcThreadAttributeList(pointer, count, 0, &mut actual) } == 0 {
             return Err(io::Error::last_os_error());
@@ -380,7 +386,7 @@ impl AttributeList {
 
     pub(crate) fn set_handle_list(&mut self, handles: &[isize]) -> io::Result<()> {
         self.update(
-            PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
             handles.as_ptr().cast(),
             size_of_val(handles),
         )
@@ -388,15 +394,15 @@ impl AttributeList {
 
     pub(crate) fn set_parent(&mut self, parent: &isize) -> io::Result<()> {
         self.update(
-            PROC_THREAD_ATTRIBUTE_PARENT_PROCESS as usize,
-            (parent as *const isize).cast(),
+            PROC_THREAD_ATTRIBUTE_PARENT_PROCESS,
+            ptr::addr_of!(*parent).cast(),
             size_of::<isize>(),
         )
     }
 
     pub(crate) fn set_mitigation(&mut self, words: &[u64; 2]) -> io::Result<()> {
         self.update(
-            PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY as usize,
+            PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
             words.as_ptr().cast(),
             size_of::<[u64; 2]>(),
         )
@@ -404,7 +410,7 @@ impl AttributeList {
 
     pub(crate) fn set_jobs(&mut self, jobs: &[isize]) -> io::Result<()> {
         self.update(
-            PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
+            PROC_THREAD_ATTRIBUTE_JOB_LIST,
             jobs.as_ptr().cast(),
             size_of_val(jobs),
         )
@@ -413,15 +419,16 @@ impl AttributeList {
     /// Unlike the other attributes, `lpValue` is the `HPCON` value itself, not its address.
     pub(crate) fn set_pseudoconsole(&mut self, pseudoconsole: isize) -> io::Result<()> {
         self.update(
-            PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
-            pseudoconsole as *const c_void,
+            PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+            handle_from_value(pseudoconsole).cast_const(),
             size_of::<isize>(),
         )
     }
 
-    fn update(&mut self, attribute: usize, value: *const c_void, bytes: usize) -> io::Result<()> {
+    fn update(&mut self, attribute: u32, value: *const c_void, bytes: usize) -> io::Result<()> {
         #[cfg(test)]
         fault::check(fault::Call::UpdateAttribute)?;
+        let attribute = widen(attribute);
         // SAFETY: the list is initialized, `value` points to `bytes` readable bytes or is the `HPCON` value, and the transaction keeps every backing allocation stable until CreateProcessW returns.
         if unsafe {
             UpdateProcThreadAttribute(
@@ -453,15 +460,14 @@ fn probed_size(probe: i32, error: io::Error, bytes: usize) -> io::Result<usize> 
             "attribute-list size probe unexpectedly succeeded",
         ));
     }
-    let insufficient = i32::try_from(ERROR_INSUFFICIENT_BUFFER).expect("Win32 error code fits i32");
-    if error.raw_os_error() != Some(insufficient) || bytes == 0 {
+    if !is_win32_error(&error, ERROR_INSUFFICIENT_BUFFER) || bytes == 0 {
         return Err(error);
     }
     Ok(bytes)
 }
 
 /// Returns how many words hold `bytes`.
-fn storage_words(bytes: usize) -> usize {
+const fn storage_words(bytes: usize) -> usize {
     bytes.div_ceil(size_of::<usize>())
 }
 
@@ -509,23 +515,17 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
     #[cfg(test)]
     fault::check(fault::Call::CreateProcess)?;
     let mut startup = STARTUPINFOEXW::default();
-    startup.StartupInfo.cb = if request.attributes.is_some() {
-        u32::try_from(size_of::<STARTUPINFOEXW>()).expect("startup structure size fits u32")
-    } else {
-        u32::try_from(size_of::<windows_sys::Win32::System::Threading::STARTUPINFOW>())
-            .expect("startup structure size fits u32")
-    };
-    set_standard_handles(&mut startup, request.stdio);
-    startup.lpAttributeList = request
-        .attributes
-        .map_or(ptr::null_mut(), AttributeList::pointer);
-
     let mut flags = request.creation_flags | CREATE_UNICODE_ENVIRONMENT;
+    if let Some(attributes) = request.attributes {
+        startup.StartupInfo.cb = STARTUPINFOEX_SIZE;
+        startup.lpAttributeList = attributes.pointer();
+        flags |= EXTENDED_STARTUPINFO_PRESENT;
+    } else {
+        startup.StartupInfo.cb = STARTUPINFO_SIZE;
+    }
+    set_standard_handles(&mut startup, request.stdio);
     if request.suspended {
         flags |= CREATE_SUSPENDED;
-    }
-    if request.attributes.is_some() {
-        flags |= EXTENDED_STARTUPINFO_PRESENT;
     }
     let environment = request
         .environment
@@ -555,8 +555,8 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
     // SAFETY: CreateProcessW succeeded, so both handles are valid; they are adopted together so neither can leak.
     let (process, thread) = unsafe {
         (
-            OwnedHandle::from_raw_handle(information.hProcess as RawHandle),
-            OwnedHandle::from_raw_handle(information.hThread as RawHandle),
+            OwnedHandle::from_raw_handle(information.hProcess),
+            OwnedHandle::from_raw_handle(information.hThread),
         )
     };
     Ok(CreatedProcess {
@@ -569,9 +569,9 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
 fn set_standard_handles(startup: &mut STARTUPINFOEXW, stdio: StartupStdio) {
     startup.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
     if let StartupStdio::Ordinary(handles) = stdio {
-        startup.StartupInfo.hStdInput = handles.stdin as HANDLE;
-        startup.StartupInfo.hStdOutput = handles.stdout as HANDLE;
-        startup.StartupInfo.hStdError = handles.stderr as HANDLE;
+        startup.StartupInfo.hStdInput = handle_from_value(handles.stdin);
+        startup.StartupInfo.hStdOutput = handle_from_value(handles.stdout);
+        startup.StartupInfo.hStdError = handle_from_value(handles.stderr);
     }
 }
 
@@ -723,9 +723,7 @@ pub(crate) mod fault {
 /// Test helpers that call Win32 directly, so mutants of the production wrappers cannot disable them.
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::os::windows::io::{
-        AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle, RawHandle,
-    };
+    use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
     use std::ptr;
 
     use windows_sys::Win32::Foundation::{
@@ -764,7 +762,7 @@ pub(crate) mod test_support {
     pub(crate) fn current_process() -> BorrowedHandle<'static> {
         // SAFETY: `GetCurrentProcess` cannot fail and returns a pseudo-handle valid for the process lifetime.
         // `BorrowedHandle` never closes it, so a `'static` borrow cannot dangle or double-close.
-        unsafe { BorrowedHandle::borrow_raw(GetCurrentProcess() as RawHandle) }
+        unsafe { BorrowedHandle::borrow_raw(GetCurrentProcess()) }
     }
 
     pub(crate) fn process_handle_count(process: BorrowedHandle<'_>) -> std::io::Result<u32> {
@@ -805,7 +803,7 @@ pub(crate) mod test_support {
         };
         assert_ne!(duplicated, 0, "DuplicateHandle failed");
         // SAFETY: DuplicateHandle returned a new, uniquely owned handle.
-        unsafe { OwnedHandle::from_raw_handle(duplicate as RawHandle) }
+        unsafe { OwnedHandle::from_raw_handle(duplicate) }
     }
 
     /// Returns a non-inheritable duplicate limited to `access`.
@@ -825,7 +823,7 @@ pub(crate) mod test_support {
         };
         assert_ne!(duplicated, 0, "DuplicateHandle failed");
         // SAFETY: DuplicateHandle returned a new, uniquely owned handle.
-        unsafe { OwnedHandle::from_raw_handle(duplicate as RawHandle) }
+        unsafe { OwnedHandle::from_raw_handle(duplicate) }
     }
 
     /// Returns true if `handle` is inheritable.
@@ -847,8 +845,8 @@ pub(crate) mod test_support {
         // SAFETY: CreatePipe succeeded, so both handles are new and distinct.
         unsafe {
             (
-                OwnedHandle::from_raw_handle(read as RawHandle),
-                OwnedHandle::from_raw_handle(write as RawHandle),
+                OwnedHandle::from_raw_handle(read),
+                OwnedHandle::from_raw_handle(write),
             )
         }
     }
@@ -955,18 +953,13 @@ pub(crate) fn read_handle(handle: BorrowedHandle<'_>, buffer: &mut [u8]) -> io::
     } == 0
     {
         let error = io::Error::last_os_error();
-        if matches!(
-            error.raw_os_error(),
-            Some(code)
-                if code == i32::try_from(ERROR_BROKEN_PIPE).expect("Win32 error code fits i32")
-                    || code == i32::try_from(ERROR_HANDLE_EOF).expect("Win32 error code fits i32")
-        ) {
+        if is_win32_error(&error, ERROR_BROKEN_PIPE) || is_win32_error(&error, ERROR_HANDLE_EOF) {
             Ok(0)
         } else {
             Err(error)
         }
     } else {
-        Ok(read as usize)
+        Ok(widen(read))
     }
 }
 
@@ -991,7 +984,7 @@ pub(crate) fn write_handle(handle: BorrowedHandle<'_>, buffer: &[u8]) -> io::Res
     {
         Err(io::Error::last_os_error())
     } else {
-        Ok(written as usize)
+        Ok(widen(written))
     }
 }
 
@@ -1014,29 +1007,29 @@ pub(crate) fn environment_strings() -> io::Result<Vec<(OsString, OsString)>> {
         let mut length = 0_usize;
         // SAFETY: the current entry is NUL-terminated.
         while unsafe { *cursor.add(length) } != 0 {
-            length = length
-                .checked_add(1)
-                .ok_or_else(|| io::Error::other("environment entry is too large"))?;
+            length = length.saturating_add(1);
         }
         // SAFETY: the range was just measured inside the current entry.
         let entry = unsafe { std::slice::from_raw_parts(cursor, length) };
-        if let Some(separator) = entry[1..]
-            .iter()
-            .position(|unit| *unit == u16::from(b'='))
-            .map(|index| index + 1)
-        {
-            entries.push((
-                OsString::from_wide(&entry[..separator]),
-                OsString::from_wide(&entry[separator + 1..]),
-            ));
+        if let Some((key, value)) = split_entry(entry) {
+            entries.push((OsString::from_wide(key), OsString::from_wide(value)));
         }
-        let advance = length
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("environment block is too large"))?;
+        let advance = length.saturating_add(1);
         // SAFETY: `advance` moves just past this entry's terminator, still inside the block.
         cursor = unsafe { cursor.add(advance) };
     }
     Ok(entries)
+}
+
+/// Splits `KEY=value` at the first `=` after the first unit, so hidden `=C:` entries keep their key.
+fn split_entry(entry: &[u16]) -> Option<(&[u16], &[u16])> {
+    let (separator, _) = entry
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, unit)| **unit == u16::from(b'='))?;
+    let (key, rest) = entry.split_at(separator);
+    rest.split_first().map(|(_, value)| (key, value))
 }
 
 pub(crate) fn compare_ordinal(left: &[u16], right: &[u16]) -> Ordering {
@@ -1098,9 +1091,8 @@ pub(crate) fn full_path(path: &[u16]) -> io::Result<Vec<u16>> {
 fn maximum_path(fill: impl FnOnce(*mut u16, u32) -> u32) -> io::Result<Vec<u16>> {
     #[cfg(test)]
     fault::check(fault::Call::MaximumPath)?;
-    let mut buffer = vec![0_u16; 32_768];
-    let capacity = u32::try_from(buffer.len()).expect("maximum Windows path fits u32");
-    let length = fill(buffer.as_mut_ptr(), capacity) as usize;
+    let mut buffer = vec![0_u16; MAXIMUM_PATH];
+    let length = widen(fill(buffer.as_mut_ptr(), MAXIMUM_PATH_CAPACITY));
     if length == 0 {
         return Err(io::Error::last_os_error());
     }
@@ -1114,13 +1106,13 @@ fn maximum_path(fill: impl FnOnce(*mut u16, u32) -> u32) -> io::Result<Vec<u16>>
 }
 
 fn raw(handle: BorrowedHandle<'_>) -> HANDLE {
-    handle.as_raw_handle() as HANDLE
+    handle.as_raw_handle()
 }
 
 fn owned(handle: HANDLE) -> io::Result<OwnedHandle> {
     if is_valid_handle(handle) {
         // SAFETY: callers pass a new handle and transfer its only local ownership.
-        Ok(unsafe { OwnedHandle::from_raw_handle(handle as RawHandle) })
+        Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
     } else {
         Err(io::Error::last_os_error())
     }
@@ -1128,6 +1120,39 @@ fn owned(handle: HANDLE) -> io::Result<OwnedHandle> {
 
 fn is_valid_handle(handle: HANDLE) -> bool {
     !handle.is_null() && handle != INVALID_HANDLE_VALUE
+}
+
+/// Returns a handle's numeric value, as a child sees it in an argument or the environment.
+#[allow(clippy::as_conversions)]
+pub(crate) fn handle_value(handle: HANDLE) -> isize {
+    handle as isize
+}
+
+/// Returns the handle a numeric value names.
+#[allow(clippy::as_conversions)]
+pub(crate) const fn handle_from_value(value: isize) -> HANDLE {
+    value as HANDLE
+}
+
+/// Converts a compile-time size to a Win32 `DWORD`; a size that does not fit fails constant evaluation.
+#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+const fn dword_const(value: usize) -> u32 {
+    let wide = value as u64;
+    assert!(wide <= 0xFFFF_FFFF, "size does not fit a DWORD");
+    wide as u32
+}
+
+/// Widens a `DWORD`; `usize` has at least 32 bits on every Windows target.
+#[allow(clippy::as_conversions)]
+const fn widen(value: u32) -> usize {
+    value as usize
+}
+
+/// Returns true if `error` carries the Win32 error `code`.
+fn is_win32_error(error: &io::Error, code: u32) -> bool {
+    error
+        .raw_os_error()
+        .is_some_and(|raw| u32::try_from(raw) == Ok(code))
 }
 
 fn bool_result(result: i32) -> io::Result<()> {
@@ -1224,9 +1249,9 @@ mod tests {
         );
         let process = open_parent_process(std::process::id())?;
         let inherited = duplicate_local(job.as_handle(), true)?;
-        let handles = [inherited.as_raw_handle() as isize];
-        let jobs = [job.as_raw_handle() as isize];
-        let parent = process.as_raw_handle() as isize;
+        let handles = [handle_value(inherited.as_raw_handle())];
+        let jobs = [handle_value(job.as_raw_handle())];
+        let parent = handle_value(process.as_raw_handle());
         let words = [1_u64, 0_u64];
         let mut attributes = AttributeList::new(4)?;
         attributes.set_handle_list(&handles)?;
@@ -1236,7 +1261,7 @@ mod tests {
         drop(attributes);
 
         let mut pseudoconsole = AttributeList::new(1)?;
-        let _ = pseudoconsole.set_pseudoconsole(1);
+        drop(pseudoconsole.set_pseudoconsole(1));
         drop(pseudoconsole);
         assert!(ATTRIBUTE_LIST_DROPS.load(std::sync::atomic::Ordering::Relaxed) > drops_before);
 
@@ -1267,9 +1292,9 @@ mod tests {
             }),
         );
         assert_ne!(ordinary.StartupInfo.dwFlags & STARTF_USESTDHANDLES, 0);
-        assert_eq!(ordinary.StartupInfo.hStdInput as isize, 1);
-        assert_eq!(ordinary.StartupInfo.hStdOutput as isize, 2);
-        assert_eq!(ordinary.StartupInfo.hStdError as isize, 3);
+        assert_eq!(handle_value(ordinary.StartupInfo.hStdInput), 1);
+        assert_eq!(handle_value(ordinary.StartupInfo.hStdOutput), 2);
+        assert_eq!(handle_value(ordinary.StartupInfo.hStdError), 3);
     }
 
     #[test]
@@ -1318,7 +1343,7 @@ mod tests {
         assert!(open_parent_process(u32::MAX).is_err());
 
         let file = File::open("NUL")?;
-        assert!(is_valid_handle(file.as_raw_handle() as HANDLE));
+        assert!(is_valid_handle(file.as_raw_handle()));
         assert!(!is_valid_handle(ptr::null_mut()));
         assert!(!is_valid_handle(INVALID_HANDLE_VALUE));
         assert!(validate_process_handle(file.as_handle()).is_err());
@@ -1365,7 +1390,7 @@ mod tests {
         assert!(exit_status(unqueryable.as_handle()).is_err());
 
         // SAFETY: `GetCurrentThread` cannot fail and returns a pseudo-handle valid for this call.
-        let thread = unsafe { BorrowedHandle::borrow_raw(GetCurrentThread() as RawHandle) };
+        let thread = unsafe { BorrowedHandle::borrow_raw(GetCurrentThread()) };
         let unresumable = test_support::duplicate_with_access(thread, PROCESS_SYNCHRONIZE);
         assert!(resume_thread(unresumable.as_handle()).is_err());
 
@@ -1379,7 +1404,7 @@ mod tests {
 
         assert!(AttributeList::new(u32::MAX).is_err());
         let mut full = AttributeList::new(1)?;
-        let jobs = [job.as_raw_handle() as isize];
+        let jobs = [handle_value(job.as_raw_handle())];
         full.set_jobs(&jobs)?;
         let words = [1_u64, 0_u64];
         assert!(full.set_mitigation(&words).is_err());
@@ -1397,6 +1422,20 @@ mod tests {
         })?;
         assert_eq!(written, [u16::from(b'x')]);
         Ok(())
+    }
+
+    #[test]
+    fn environment_entries_split_at_the_first_separator_after_the_key() {
+        let wide = |text: &str| -> Vec<u16> { text.encode_utf16().collect() };
+        let split = |text: &str| {
+            let entry = wide(text);
+            split_entry(&entry).map(|(key, value)| (key.to_vec(), value.to_vec()))
+        };
+        assert_eq!(split("KEY=a=b"), Some((wide("KEY"), wide("a=b"))));
+        assert_eq!(split("=C:=C:\\work"), Some((wide("=C:"), wide("C:\\work"))));
+        assert_eq!(split("EMPTY="), Some((wide("EMPTY"), Vec::new())));
+        assert_eq!(split("NOSEPARATOR"), None);
+        assert_eq!(split("="), None);
     }
 
     #[test]

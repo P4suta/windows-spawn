@@ -1,5 +1,6 @@
 #![cfg_attr(not(windows), allow(missing_docs))]
 #![cfg(windows)]
+#![allow(clippy::as_conversions, clippy::expect_used, clippy::unwrap_in_result)]
 
 //! End-to-end Windows process creation tests.
 
@@ -525,10 +526,10 @@ fn child_pipes_try_wait_and_cached_lifecycle_work() -> io::Result<()> {
     drop(stdin);
     let _ = child.stdout.as_ref().expect("piped stdout").as_handle();
     let _ = child.stderr.as_ref().expect("piped stderr").as_handle();
-    let output = child.wait_with_output()?;
-    assert!(output.status.success());
-    assert_eq!(output.stdout, b"out:hello");
-    assert_eq!(output.stderr, b"err");
+    let piped = child.wait_with_output()?;
+    assert!(piped.status.success());
+    assert_eq!(piped.stdout, b"out:hello");
+    assert_eq!(piped.stderr, b"err");
 
     let mut exited = cmd("exit /b 0").spawn()?;
     assert!(exited.wait()?.success());
@@ -549,8 +550,8 @@ fn child_pipes_try_wait_and_cached_lifecycle_work() -> io::Result<()> {
 
     let mut silent = cmd("exit /b 0");
     silent.stdout(Stdio::null()).stderr(Stdio::null());
-    let output = silent.spawn()?.wait_with_output()?;
-    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+    let silenced = silent.spawn()?.wait_with_output()?;
+    assert!(silenced.stdout.is_empty() && silenced.stderr.is_empty());
     Ok(())
 }
 
@@ -609,14 +610,18 @@ impl TestPseudoConsole {
         drop((input_reader, output_writer));
         let (sender, output) = mpsc::channel();
         let mut output_reader = File::from(output_reader);
-        let _ = thread::spawn(move || {
+        drop(thread::spawn(move || {
             let mut buffer = [0_u8; 4096];
             while let Ok(read) = output_reader.read(&mut buffer) {
-                if read == 0 || sender.send(buffer[..read].to_vec()).is_err() {
+                if read == 0
+                    || sender
+                        .send(buffer.get(..read).unwrap_or_default().to_vec())
+                        .is_err()
+                {
                     break;
                 }
             }
-        });
+        }));
         Ok(Self {
             value,
             input_writer: Some(input_writer),
@@ -631,7 +636,7 @@ impl TestPseudoConsole {
             .expect("a live pseudoconsole retains its input writer");
         let mut written = 0_u32;
         let length = u32::try_from(input.len())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "input is too large"))?;
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         // SAFETY: the buffer and byte count are valid for the synchronous write, and `self` owns the writer.
         if unsafe {
             WriteFile(
@@ -674,10 +679,10 @@ impl Drop for TestPseudoConsole {
     fn drop(&mut self) {
         drop(self.input_writer.take());
         let value = self.value;
-        let _ = thread::spawn(move || {
+        drop(thread::spawn(move || {
             // SAFETY: this type uniquely owns the HPCON.
             unsafe { ClosePseudoConsole(value) };
-        });
+        }));
     }
 }
 
@@ -763,14 +768,18 @@ fn forward<R: Read + Send + 'static>(
     index: usize,
     sender: mpsc::Sender<(usize, Vec<u8>)>,
 ) {
-    let _ = thread::spawn(move || {
+    drop(thread::spawn(move || {
         let mut buffer = [0_u8; 4096];
         while let Ok(read) = stream.read(&mut buffer) {
-            if read == 0 || sender.send((index, buffer[..read].to_vec())).is_err() {
+            if read == 0
+                || sender
+                    .send((index, buffer.get(..read).unwrap_or_default().to_vec()))
+                    .is_err()
+            {
                 break;
             }
         }
-    });
+    }));
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -996,12 +1005,12 @@ fn reusable_command_environment_and_accessors_work() -> io::Result<()> {
         .current_dir(directory.path());
     assert_eq!(command.get_program(), "cmd.exe");
     assert_eq!(command.get_current_dir(), Some(directory.path()));
-    let output = command.output()?;
-    assert!(String::from_utf8_lossy(&output.stdout).contains("one-two"));
+    let modified = command.output()?;
+    assert!(String::from_utf8_lossy(&modified.stdout).contains("one-two"));
 
     command.env_clear().env("WINDOWS_SPAWN_ONE", "clear");
-    let output = command.output()?;
-    assert!(String::from_utf8_lossy(&output.stdout).contains("clear-"));
+    let cleared = command.output()?;
+    assert!(String::from_utf8_lossy(&cleared.stdout).contains("clear-"));
     Ok(())
 }
 

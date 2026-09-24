@@ -5,7 +5,6 @@ use std::io::{self, Read, Write};
 use std::os::windows::io::{AsHandle, AsRawHandle, OwnedHandle};
 use std::thread;
 
-use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Console::{ClosePseudoConsole, CreatePseudoConsole, COORD, HPCON};
 
 use crate::sys::fault::{self, Call};
@@ -351,8 +350,8 @@ impl TestConsole {
         let created = unsafe {
             CreatePseudoConsole(
                 COORD { X: 80, Y: 25 },
-                input_reader.as_raw_handle() as HANDLE,
-                output_writer.as_raw_handle() as HANDLE,
+                input_reader.as_raw_handle(),
+                output_writer.as_raw_handle(),
                 0,
                 &mut value,
             )
@@ -360,10 +359,10 @@ impl TestConsole {
         assert!(created >= 0, "CreatePseudoConsole failed with {created:#x}");
         drop((input_reader, output_writer));
         let mut output = File::from(output_reader);
-        let _ = thread::spawn(move || {
+        drop(thread::spawn(move || {
             let mut buffer = [0_u8; 4096];
             while matches!(output.read(&mut buffer), Ok(read) if read > 0) {}
-        });
+        }));
         Self {
             value,
             input: Some(input_writer),
@@ -376,10 +375,10 @@ impl Drop for TestConsole {
     fn drop(&mut self) {
         drop(self.input.take());
         let value = self.value;
-        let _ = thread::spawn(move || {
+        drop(thread::spawn(move || {
             // SAFETY: this type uniquely owns the HPCON.
             unsafe { ClosePseudoConsole(value) };
-        });
+        }));
     }
 }
 

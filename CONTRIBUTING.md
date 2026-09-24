@@ -36,6 +36,8 @@ gitleaks dir . --redact --no-banner
 
 - Keep the documented ownership and cleanup behavior, including on errors.
 - Give every `unsafe` block a specific safety justification.
+- Write only doc comments and `// SAFETY:` comments; the reason for a change goes in its commit message (ADR 0013).
+- Register every `#[allow]` in `xtask/src/gates.rs` with its reason; `just gates` checks the registry and the other repository laws.
 - Add deterministic tests for behavior changes; tests wait for events, never for time (ADR 0010).
 - Change the public API snapshot only with an API change, and state its compatibility impact.
 - Update the crate docs, ADRs, or security boundary when a contract changes.

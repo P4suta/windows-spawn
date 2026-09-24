@@ -4,6 +4,7 @@ use std::path::PathBuf;
 pub(crate) enum SimpleTask {
     Fmt,
     Clippy,
+    Gates,
     Test,
     Doc,
     Msrv,
@@ -58,6 +59,7 @@ pub(crate) fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Task,
     match command.as_str() {
         "fmt" => no_arguments(&rest, Task::Simple(SimpleTask::Fmt)),
         "clippy" => no_arguments(&rest, Task::Simple(SimpleTask::Clippy)),
+        "gates" => no_arguments(&rest, Task::Simple(SimpleTask::Gates)),
         "test" => no_arguments(&rest, Task::Simple(SimpleTask::Test)),
         "doc" => no_arguments(&rest, Task::Simple(SimpleTask::Doc)),
         "msrv" => no_arguments(&rest, Task::Simple(SimpleTask::Msrv)),
@@ -85,10 +87,9 @@ pub(crate) fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Task,
 }
 
 fn no_arguments(rest: &[String], task: Task) -> Result<Task, String> {
-    if rest.is_empty() {
-        Ok(task)
-    } else {
-        Err(format!("unexpected argument: {}", rest[0]))
+    match rest {
+        [] => Ok(task),
+        [first, ..] => Err(format!("unexpected argument: {first}")),
     }
 }
 

@@ -276,16 +276,16 @@ mod tests {
     #[test]
     fn rejects_conflicting_console_flags() {
         let command = Command::new("cmd.exe");
-        let options = SpawnOptions::new()
+        let detached_console = SpawnOptions::new()
             .creation_flags(CreationFlags::DETACHED_PROCESS | CreationFlags::NEW_CONSOLE);
-        assert!(SpawnPlan::new_running(&command, options, IoMode::Spawn).is_err());
+        assert!(SpawnPlan::new_running(&command, detached_console, IoMode::Spawn).is_err());
 
         for flags in [
             CreationFlags::NO_WINDOW | CreationFlags::DETACHED_PROCESS,
             CreationFlags::NO_WINDOW | CreationFlags::NEW_CONSOLE,
         ] {
-            let options = SpawnOptions::new().creation_flags(flags);
-            assert!(SpawnPlan::new_running(&command, options, IoMode::Spawn).is_err());
+            let conflicting = SpawnOptions::new().creation_flags(flags);
+            assert!(SpawnPlan::new_running(&command, conflicting, IoMode::Spawn).is_err());
         }
     }
 

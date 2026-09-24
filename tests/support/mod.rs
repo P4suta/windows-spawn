@@ -133,7 +133,7 @@ pub(crate) enum Role {
 }
 
 impl Role {
-    fn name(self) -> &'static str {
+    const fn name(self) -> &'static str {
         match self {
             Self::Gate => "gate",
             Self::Ran => "ran",
@@ -198,18 +198,21 @@ pub(crate) fn run_probe_if_requested() {
     let Some(role) = std::env::var_os(ROLE) else {
         return;
     };
-    let code = match run_role(&role) {
-        Ok(code) => code,
-        Err(_) => EXIT_SETUP_FAILED,
-    };
-    std::process::exit(i32::from_ne_bytes(code.to_ne_bytes()));
+    let code = run_role(&role).unwrap_or(EXIT_SETUP_FAILED);
+    exit(code);
+}
+
+/// Ends the probe with `code`; a probe reports by exit code, and no destructor may run after the gate.
+#[allow(clippy::disallowed_methods)]
+fn exit(code: u32) -> ! {
+    std::process::exit(i32::from_ne_bytes(code.to_ne_bytes()))
 }
 
 fn run_role(role: &OsString) -> io::Result<u32> {
     let role = role.to_str().unwrap_or_default();
     if role == "ran" {
         let mut report = adopt_pipe(REPORT)?;
-        let _ = report.write_all(b"!");
+        drop(report.write_all(b"!"));
         return Ok(EXIT_RAN);
     }
     let gate = adopt_pipe(GATE)?;
@@ -251,7 +254,7 @@ fn wait_on_gate(mut gate: File, mut report: File) -> u32 {
     match gate.read(&mut byte) {
         Ok(1) => u32::from(byte[0]),
         Ok(_) => {
-            let _ = report.write_all(b"x");
+            drop(report.write_all(b"x"));
             EXIT_RELEASED
         }
         Err(_) => loop {
@@ -393,6 +396,6 @@ impl TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        drop(fs::remove_dir_all(&self.0));
     }
 }
