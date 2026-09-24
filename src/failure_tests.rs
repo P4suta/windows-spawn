@@ -56,6 +56,7 @@ struct Fixture {
     parent: ParentProcess,
     host: SuspendedChild,
     _host_guard: ProcessExitGuard,
+    console: TestConsole,
 }
 
 impl Fixture {
@@ -74,6 +75,7 @@ impl Fixture {
             parent: ParentProcess::open(host.id())?,
             host,
             _host_guard: host_guard,
+            console: TestConsole::create(),
         })
     }
 
@@ -105,7 +107,7 @@ impl Fixture {
             Operation::ConfigureHandleInputs => self.configure_handle_inputs(),
             Operation::RenderCommandLine => Self::render_command_line(),
             Operation::TryWaitExitedChild => Self::try_wait_exited_child(),
-            Operation::SpawnOnPseudoConsole => Self::spawn_on_pseudoconsole(),
+            Operation::SpawnOnPseudoConsole => self.spawn_on_pseudoconsole(),
         }
     }
 
@@ -144,6 +146,7 @@ impl Fixture {
         Ok(())
     }
 
+    /// Writes and reads once each, so the call sequence does not depend on how the pipe splits output.
     fn pipe_through_child() -> io::Result<()> {
         let mut command = Command::new("cmd.exe");
         command
@@ -153,14 +156,10 @@ impl Fixture {
             .stderr(Stdio::null());
         let mut child = command.spawn()?;
         let mut stdin = child.stdin.take().expect("piped stdin");
-        let written = stdin.write_all(b"line\r\n");
+        let written = stdin.write(b"line\r\n");
         drop(stdin);
-        let mut output = Vec::new();
-        let read = child
-            .stdout
-            .take()
-            .expect("piped stdout")
-            .read_to_end(&mut output);
+        let mut output = [0_u8; 1];
+        let read = child.stdout.take().expect("piped stdout").read(&mut output);
         child.wait()?;
         written?;
         read?;
@@ -220,12 +219,12 @@ impl Fixture {
         Ok(())
     }
 
-    fn spawn_on_pseudoconsole() -> io::Result<()> {
-        let console = TestConsole::create();
+    /// Reuses one pseudoconsole: closing one per run can block on some Windows Server 2022 builds and hold handles.
+    fn spawn_on_pseudoconsole(&self) -> io::Result<()> {
         let mut command = Command::new("cmd.exe");
         command.args(["/D", "/C", "exit /b 0"]);
         command
-            .spawn_with(SpawnOptions::new().pseudoconsole(&console))?
+            .spawn_with(SpawnOptions::new().pseudoconsole(&self.console))?
             .wait()?;
         Ok(())
     }
