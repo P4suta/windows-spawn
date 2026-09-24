@@ -1425,6 +1425,20 @@ mod tests {
     }
 
     #[test]
+    fn environment_entries_split_at_the_first_separator_after_the_key() {
+        let wide = |text: &str| -> Vec<u16> { text.encode_utf16().collect() };
+        let split = |text: &str| {
+            let entry = wide(text);
+            split_entry(&entry).map(|(key, value)| (key.to_vec(), value.to_vec()))
+        };
+        assert_eq!(split("KEY=a=b"), Some((wide("KEY"), wide("a=b"))));
+        assert_eq!(split("=C:=C:\\work"), Some((wide("=C:"), wide("C:\\work"))));
+        assert_eq!(split("EMPTY="), Some((wide("EMPTY"), Vec::new())));
+        assert_eq!(split("NOSEPARATOR"), None);
+        assert_eq!(split("="), None);
+    }
+
+    #[test]
     fn system_and_windows_directories_are_distinct() -> io::Result<()> {
         let system = system_directory()?.to_string_lossy().to_lowercase();
         let windows = windows_directory()?.to_string_lossy().to_lowercase();
