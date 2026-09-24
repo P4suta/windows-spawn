@@ -48,9 +48,7 @@ impl<M> SpawnTransaction<M> {
 
 impl<M: SpawnState> SpawnTransaction<M> {
     #[allow(clippy::too_many_lines)]
-    pub(crate) fn new<'command, 'options>(
-        plan: &SpawnPlan<'command, 'options, M>,
-    ) -> io::Result<Self> {
+    pub(crate) fn new<'options>(plan: &SpawnPlan<'_, 'options, M>) -> io::Result<Self> {
         let parent: Option<BorrowedHandle<'options>> = plan.options.parent.map(AsHandle::as_handle);
         let mut transfer = HandleTransfer::new(parent);
         let (stdio_values, stdio) = match &plan.stdio {
@@ -88,10 +86,10 @@ impl<M: SpawnState> SpawnTransaction<M> {
             .options
             .jobs
             .iter()
-            .map(|job| job.as_handle().as_raw_handle() as isize)
+            .map(|job| sys::handle_value(job.as_handle().as_raw_handle()))
             .collect();
         if let Some(job) = &kill_job {
-            job_values.push(job.as_handle().as_raw_handle() as isize);
+            job_values.push(sys::handle_value(job.as_handle().as_raw_handle()));
         }
 
         let command_line = build_command_line(plan.command, &mut transfer)?;
@@ -108,21 +106,28 @@ impl<M: SpawnState> SpawnTransaction<M> {
         let inherited_values = transfer.inherited_values().to_vec().into_boxed_slice();
         let parent_value = transfer
             .parent()
-            .map(|handle| Box::new(handle.as_raw_handle() as isize));
+            .map(|handle| Box::new(sys::handle_value(handle.as_raw_handle())));
         let mitigation_words = plan.options.mitigation.words();
         let mitigation_value = (mitigation_words != [0, 0]).then(|| Box::new(mitigation_words));
         let job_values = job_values.into_boxed_slice();
         let pseudoconsole = plan.options.pseudoconsole_raw();
 
-        let attribute_count = u32::from(!inherited_values.is_empty())
-            + u32::from(parent_value.is_some())
-            + u32::from(mitigation_value.is_some())
-            + u32::from(!job_values.is_empty())
-            + u32::from(pseudoconsole.is_some());
+        let attribute_count = [
+            !inherited_values.is_empty(),
+            parent_value.is_some(),
+            mitigation_value.is_some(),
+            !job_values.is_empty(),
+            pseudoconsole.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
         let mut attributes = if attribute_count == 0 {
             None
         } else {
-            Some(sys::AttributeList::new(attribute_count)?)
+            Some(sys::AttributeList::new(
+                u32::try_from(attribute_count).map_err(io::Error::other)?,
+            )?)
         };
         if let Some(list) = &mut attributes {
             if !inherited_values.is_empty() {
@@ -167,6 +172,7 @@ impl<M: SpawnState> SpawnTransaction<M> {
         })
     }
 
+    #[allow(clippy::expect_used)]
     fn commit_parts(mut self) -> (Child, OwnedHandle) {
         let created = self
             .created
@@ -202,7 +208,7 @@ impl SpawnTransaction<Suspended> {
 impl<M> Drop for SpawnTransaction<M> {
     fn drop(&mut self) {
         if let Some(created) = &self.created {
-            let _ = sys::terminate_process(created.process.as_handle(), 1);
+            drop(sys::terminate_process(created.process.as_handle(), 1));
         }
         drop(self.kill_job.take());
     }
@@ -296,7 +302,7 @@ struct HandleTransfer<'a> {
 }
 
 impl<'a> HandleTransfer<'a> {
-    fn new(parent: Option<BorrowedHandle<'a>>) -> Self {
+    const fn new(parent: Option<BorrowedHandle<'a>>) -> Self {
         Self {
             parent,
             local: Vec::new(),
@@ -313,7 +319,7 @@ impl<'a> HandleTransfer<'a> {
             value
         } else {
             let handle = sys::duplicate_local(source, true)?;
-            let value = handle.as_raw_handle() as isize;
+            let value = sys::handle_value(handle.as_raw_handle());
             self.local.push(handle);
             value
         };
@@ -323,7 +329,7 @@ impl<'a> HandleTransfer<'a> {
         Ok(value)
     }
 
-    fn parent(&self) -> Option<BorrowedHandle<'a>> {
+    const fn parent(&self) -> Option<BorrowedHandle<'a>> {
         self.parent
     }
 
@@ -539,10 +545,10 @@ fn append_regular_arg(command: &mut Vec<u16>, argument: &OsStr) {
     let mut backslashes = 0_usize;
     for unit in argument.encode_wide() {
         if unit == BACKSLASH {
-            backslashes += 1;
+            backslashes = backslashes.saturating_add(1);
         } else {
             if unit == QUOTE {
-                command.extend(iter::repeat(BACKSLASH).take(backslashes + 1));
+                command.extend(iter::repeat(BACKSLASH).take(backslashes.saturating_add(1)));
             }
             backslashes = 0;
         }
@@ -555,12 +561,12 @@ fn append_regular_arg(command: &mut Vec<u16>, argument: &OsStr) {
 }
 
 fn resolve_executable(program: &OsStr, child_path: Option<&OsStr>) -> io::Result<Vec<u16>> {
-    let path = Path::new(program);
+    let program_path = Path::new(program);
     let has_exe_suffix = program
         .as_encoded_bytes()
         .get(program.len().saturating_sub(4)..)
         .is_some_and(|suffix| suffix.eq_ignore_ascii_case(b".exe"));
-    let is_file_name = path.file_name() == Some(program);
+    let is_file_name = program_path.file_name() == Some(program);
 
     if !is_file_name {
         if has_exe_suffix {
@@ -586,7 +592,7 @@ fn resolve_executable(program: &OsStr, child_path: Option<&OsStr>) -> io::Result
     };
 
     if let Some(paths) = child_path {
-        for directory in env::split_paths(paths).filter(|path| !path.as_os_str().is_empty()) {
+        for directory in env::split_paths(paths).filter(|entry| !entry.as_os_str().is_empty()) {
             if let Some(found) = search(directory) {
                 return Ok(found);
             }
@@ -605,7 +611,7 @@ fn resolve_executable(program: &OsStr, child_path: Option<&OsStr>) -> io::Result
         return Ok(found);
     }
     if let Some(paths) = env::var_os("PATH") {
-        for directory in env::split_paths(&paths).filter(|path| !path.as_os_str().is_empty()) {
+        for directory in env::split_paths(&paths).filter(|entry| !entry.as_os_str().is_empty()) {
             if let Some(found) = search(directory) {
                 return Ok(found);
             }

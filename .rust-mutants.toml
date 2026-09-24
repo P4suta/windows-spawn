@@ -120,20 +120,20 @@ outcome = "survived"
 
 [[mutation.skip]]
 path = "src/sys.rs"
-lines = "1004-1004"
+lines = "996-996"
 reason = "Unreachable: GetEnvironmentStringsW returns null only when out of memory."
 
 [[mutation.skip]]
 path = "src/sys.rs"
-lines = "1012-1012"
+lines = "1004-1004"
 reason = "Hang-only: continuing past the block terminator loops forever."
 
 [[mutation.skip]]
 path = "src/transaction.rs"
-lines = "492-495"
+lines = "498-501"
 reason = "Unreachable: GetFullPathNameW cannot return a double quote."
 
 [[mutation.skip]]
 path = "src/transaction.rs"
-lines = "106-106"
+lines = "104-104"
 reason = "Unreachable: wide_nul fails only on an interior NUL, which validate_command rejects first; rejects_every_malformed_text_component holds it."

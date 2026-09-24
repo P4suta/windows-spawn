@@ -1,4 +1,5 @@
 //! End-to-end UTF-16 argument and environment round-trip test.
+#![allow(clippy::as_conversions, clippy::expect_used, clippy::unwrap_in_result)]
 
 #[cfg(windows)]
 mod windows {

@@ -1,3 +1,8 @@
+allow-expect-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-panic-in-tests = true
+allow-unwrap-in-tests = true
+
 # Time decides nothing (docs/adr/0010-time-decides-nothing.md).
 disallowed-types = [
   { path = "std::time::Duration", reason = "time decides nothing; wait for the event itself" },
@@ -13,4 +18,8 @@ disallowed-methods = [
   { path = "std::fs::Metadata::modified", reason = "file times decide nothing; compare content" },
   { path = "std::fs::Metadata::accessed", reason = "file times decide nothing; compare content" },
   { path = "std::fs::Metadata::created", reason = "file times decide nothing; compare content" },
+  { path = "std::mem::forget", reason = "leaks destructors; use ManuallyDrop" },
+  { path = "std::process::exit", reason = "skips destructors; return an exit code" },
+  { path = "std::env::set_var", reason = "races with other threads; pass the value explicitly" },
+  { path = "std::env::remove_var", reason = "races with other threads; pass the value explicitly" },
 ]

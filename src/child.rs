@@ -207,7 +207,10 @@ fn drain_output(handle: BorrowedHandle<'_>) -> io::Result<Vec<u8>> {
         let Some(read) = std::num::NonZeroUsize::new(sys::read_handle(handle, &mut buffer)?) else {
             return Ok(bytes);
         };
-        bytes.extend_from_slice(&buffer[..read.get()]);
+        let chunk = buffer.get(..read.get()).ok_or_else(|| {
+            io::Error::other("ReadFile reported more bytes than the buffer holds")
+        })?;
+        bytes.extend_from_slice(chunk);
     }
 }
 
@@ -215,7 +218,7 @@ fn join_reader(reader: Option<thread::JoinHandle<io::Result<Vec<u8>>>>) -> io::R
     match reader {
         Some(reader) => reader
             .join()
-            .map_err(|_| io::Error::other("output reader thread panicked"))?,
+            .map_err(|_payload| io::Error::other("output reader thread panicked"))?,
         None => Ok(Vec::new()),
     }
 }
@@ -251,7 +254,7 @@ pub struct SuspendedChild {
 }
 
 impl SuspendedChild {
-    pub(crate) fn new(child: Child, main_thread: OwnedHandle) -> Self {
+    pub(crate) const fn new(child: Child, main_thread: OwnedHandle) -> Self {
         Self {
             child: Some(child),
             main_thread,
@@ -264,6 +267,7 @@ impl SuspendedChild {
     ///
     /// Panics only if an internal ownership invariant is broken.
     #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn id(&self) -> u32 {
         self.child
             .as_ref()
@@ -300,6 +304,7 @@ impl SuspendedChild {
 }
 
 impl AsHandle for SuspendedChild {
+    #[allow(clippy::expect_used)]
     fn as_handle(&self) -> BorrowedHandle<'_> {
         self.child
             .as_ref()
@@ -311,7 +316,7 @@ impl AsHandle for SuspendedChild {
 impl Drop for SuspendedChild {
     fn drop(&mut self) {
         if let Some(child) = &mut self.child {
-            let _ = child.kill();
+            drop(child.kill());
         }
     }
 }
