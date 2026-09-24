@@ -34,20 +34,17 @@ pub(crate) enum EnvValue {
 
 /// A reusable description of a Windows process launch.
 ///
-/// Handles embedded by [`Self::arg_handle`] and [`Self::env_handle`] are
-/// privately duplicated when configured. Each spawn duplicates those handles
-/// again into the actual parent process and only then lowers their numeric
-/// values to decimal text.
+/// Handles given to [`Self::arg_handle`] and [`Self::env_handle`] are duplicated privately when configured.
+/// Each spawn duplicates them into the effective parent and only then lowers their values to decimal text.
 ///
 /// # Examples
 ///
-/// Run a command to completion and capture what it wrote, terminating any
-/// descendants it leaves behind:
+/// Capture output and terminate leftover descendants:
 ///
 /// ```
 /// use windows_spawn::{Command, DropPolicy, SpawnOptions};
 ///
-/// // `.bat` and `.cmd` are rejected, so a shell boundary is always explicit.
+/// // `.bat` and `.cmd` are rejected; the shell is explicit.
 /// let shell = std::env::var_os("COMSPEC").expect("COMSPEC is set on Windows");
 /// let mut command = Command::new(shell);
 /// command.args(["/D", "/S", "/C"]).raw_arg("echo hello");
@@ -71,7 +68,7 @@ pub struct Command {
 }
 
 impl Command {
-    /// Creates a command which will execute `program`.
+    /// Creates a command that runs `program`.
     #[must_use]
     pub fn new<S: AsRef<OsStr>>(program: S) -> Self {
         Self {
@@ -106,8 +103,7 @@ impl Command {
 
     /// Appends text verbatim to the Windows command line.
     ///
-    /// The text is separated from the preceding element by one space but is
-    /// otherwise neither quoted nor escaped.
+    /// The text follows one space and is neither quoted nor escaped.
     pub fn raw_arg<S: AsRef<OsStr>>(&mut self, text: S) -> &mut Self {
         self.args.push(Arg::Raw(text.as_ref().to_os_string()));
         self

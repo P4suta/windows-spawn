@@ -13,14 +13,14 @@ body:
     id: context
     attributes:
       label: Context and attempted approach
-      description: Include relevant sanitized code, Windows version, and crate version.
+      description: Sanitized code, Windows version, and crate version.
     validations:
       required: true
   - type: textarea
     id: research
     attributes:
       label: Documentation already consulted
-      description: Link the API documentation, example, ADR, or issue you checked.
+      description: The documentation, example, ADR, or issue you checked.
   - type: checkboxes
     id: checks
     attributes:

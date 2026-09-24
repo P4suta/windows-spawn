@@ -1,30 +1,27 @@
 # Contributing
 
-Contributions must preserve the crate's ownership and cleanup contracts.
+Changes must preserve the crate's ownership and cleanup contracts.
 
-## Before opening a change
+## Before a change
 
-Use the bug, feature, or question issue form when discussion would help define
-the expected behavior. Report suspected vulnerabilities through
-[GitHub private vulnerability reporting](https://github.com/P4suta/windows-spawn/security/advisories/new),
-not a public issue.
+Open an issue with the bug, feature, or question form when the expected behavior needs discussion.
+Report vulnerabilities through [private vulnerability reporting](https://github.com/P4suta/windows-spawn/security/advisories/new), not an issue.
 
-Keep pull requests focused. Changes to ownership, handle inheritance, Job
-lifetime, ConPTY, mitigation, quoting, or suspended-process behavior should
-explain the safety invariant they preserve.
+Keep pull requests focused.
+A change to ownership, handle inheritance, Job lifetime, ConPTY, mitigation, quoting, or suspended processes states the invariant it preserves.
 
-## Development environment
+## Development
 
-Development and integration tests require Windows 10 version 1809 or later.
-The crate supports Rust 1.75 and later. Install the tool versions used by CI,
-then run:
+Tests require Windows 10 version 1809 or later.
+The crate supports Rust 1.75 and later.
+With the tool versions CI uses installed, run:
 
 ```powershell
 just ci
 just coverage
 ```
 
-Before submitting, also run:
+Also run:
 
 ```powershell
 actionlint
@@ -33,19 +30,16 @@ gitleaks git . --redact --no-banner
 gitleaks dir . --redact --no-banner
 ```
 
-`just release-candidate` validates packaging and reproducibility locally; it
-does not publish anything.
+`just release-candidate` checks packaging and reproducibility without publishing.
 
-## Code and documentation expectations
+## Expectations
 
-- Preserve the documented ownership and cleanup behavior, including on errors.
+- Keep the documented ownership and cleanup behavior, including on errors.
 - Give every `unsafe` block a specific safety justification.
-- Add deterministic tests for behavior changes and avoid timing-only assertions.
-- Keep the public API snapshot unchanged unless the pull request changes the
-  public API and explains the compatibility impact.
-- Update the crate documentation, ADRs, or security boundary when contracts
-  change.
-- Keep dependencies minimal and compatible with the MSRV.
+- Add deterministic tests for behavior changes; do not assert on timing.
+- Change the public API snapshot only with an API change, and state its compatibility impact.
+- Update the crate docs, ADRs, or security boundary when a contract changes.
+- Keep dependencies few and within the MSRV.
 
-Required checks and review conversations must be complete before merge. Pull
-requests are squash-merged into `main`.
+Required checks and review threads must be resolved before merge.
+Pull requests are squash-merged into `main`.

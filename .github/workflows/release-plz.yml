@@ -3,27 +3,17 @@
 #
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-# The upstream-recommended release-plz workflow. Two deviations, both of which
-# release-plz documents:
+# The upstream release-plz workflow, with documented deviations:
 #
-#   * A GitHub App token instead of GITHUB_TOKEN. The default token cannot
-#     trigger other workflows, so CI would never run on a release pull request.
-#   * `environment: release` on both jobs. The App credentials are scoped to it,
-#     and it is where the crates.io credential lives.
-#
-# Windows, not the ubuntu-latest of the upstream template: `cargo publish`
-# verifies the tarball by building it, and this crate does not build on Linux
-# because its windows-sys dependency sits behind `cfg(windows)`.
+#   * A GitHub App token, because GITHUB_TOKEN cannot trigger CI on the release pull request.
+#   * `environment: release` on both jobs, which holds the App and crates.io credentials.
+#   * Windows runners, because `cargo publish` verifies by building, and the `cfg(windows)` windows-sys dependency does not build on Linux.
 name: Release-plz
 
 "on":
   push:
     branches: [main]
-  # A release that fails partway cannot be recovered by re-running: a run that
-  # fails at startup is not retryable, and `main` only moves through pull
-  # requests. Manual dispatch is the retry path. It is not a second way to
-  # release -- release-plz still publishes only when the manifest version is
-  # ahead of the registry.
+  # Manual dispatch retries a failed release; it still publishes only when the manifest version is ahead of the registry.
   workflow_dispatch:
 
 permissions: {}
@@ -63,10 +53,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
         with:
           toolchain: stable
-      # A trusted publisher can only be registered against a crate that already
-      # exists. The bootstrap token covered 0.1.0; once a trusted publisher is
-      # registered for this workflow the secret can be deleted and the OpenID
-      # Connect exchange takes over.
+      # The bootstrap token published 0.1.0; once a trusted publisher is registered, delete it and OpenID Connect takes over.
       - name: Select the crates.io credential
         id: auth-mode
         env:
@@ -97,9 +84,7 @@ jobs:
           set -euo pipefail
           jq -r '.[0] | "tag=\(.tag)", "version=\(.version)"' <<< "$RELEASES" >> "$GITHUB_OUTPUT"
 
-  # release-plz publishes the crate and creates the tag; the GitHub release is
-  # built here so the crate, SBOM, checksums, and attestations are attached
-  # before it is published.
+  # Creates the GitHub release with the crate, SBOM, checksums, and attestations attached.
   finalize:
     name: Attest and publish the release
     needs: release
@@ -116,8 +101,7 @@ jobs:
 
   release-pr:
     name: Release-plz PR
-    # Ordered after `release` so a release pull request is never opened for a
-    # version that is being published in the same run.
+    # Runs after `release` so no release pull request opens for a version this run publishes.
     needs: release
     if: always() && github.repository == 'P4suta/windows-spawn'
     runs-on: windows-2022
@@ -144,7 +128,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
         with:
           toolchain: stable
-      # `semver_check = true` in release-plz.toml needs this on PATH.
+      # Required by `semver_check = true` in release-plz.toml.
       - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
         with:
           tool: cargo-semver-checks@0.45.0

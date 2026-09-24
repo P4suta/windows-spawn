@@ -4,20 +4,16 @@ Status: accepted (2026-08-01)
 
 ## Context
 
-`firehazard` provides a safe RAII `ThreadAttributeList` builder for the
-attributes targeted here. Its published version remains `0.0.0`, its broader
-sandboxing scope includes tokens, ACLs, AppContainers, and debugging, and Job
-libraries do not provide equivalent process-attribute integration.
+`firehazard` has a safe RAII `ThreadAttributeList` builder for these attributes.
+It is published only as `0.0.0` and also covers tokens, ACLs, AppContainers, and debugging.
+Job libraries do not integrate process attributes.
 
 ## Decision
 
-Build a crate limited to process creation, with stable releases and release
-gates.
+Build a crate limited to process creation, with stable releases and release gates.
 
 ## Consequences
 
-- This duplicates part of `firehazard`. Reconsider the crate if `firehazard`
-  publishes a stable process-creation API with regular releases.
-- Reject token and ACL features; direct users to `rappct` or `firehazard`.
-- Interoperate with existing Job libraries by adopting foreign Job handles
-  (ADR 0004).
+- Part of `firehazard` is duplicated; reconsider if it ships a stable process-creation API with regular releases.
+- Token and ACL features are out of scope; see `rappct` or `firehazard`.
+- Foreign Job handles can be adopted (ADR 0004).

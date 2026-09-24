@@ -651,9 +651,7 @@ fn sha256(path: &Path) -> Result<String> {
     Ok(lower_hex(&digest.finalize()))
 }
 
-// `sha2` 0.11 returns `hybrid_array::Array` instead of `GenericArray`, and that
-// type no longer implements `LowerHex`. Formatting the bytes ourselves keeps the
-// checksum output identical across both generations of the crate.
+/// Formats a digest as lowercase hex; `sha2` 0.11 digests do not implement `LowerHex`.
 fn lower_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
 

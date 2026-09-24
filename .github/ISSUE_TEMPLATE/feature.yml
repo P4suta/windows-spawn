@@ -7,14 +7,14 @@ body:
     id: problem
     attributes:
       label: Problem
-      description: Describe the Windows process-creation need that is not currently met.
+      description: The unmet Windows process-creation need.
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
       label: Proposed behavior
-      description: Explain the API or behavior and its ownership or safety contract.
+      description: The API or behavior and its ownership or safety contract.
     validations:
       required: true
   - type: textarea
@@ -27,7 +27,7 @@ body:
     id: compatibility
     attributes:
       label: Compatibility and platform scope
-      description: Note Windows baseline, MSRV, public API, and dependency implications.
+      description: Windows baseline, MSRV, public API, and dependency effects.
   - type: checkboxes
     id: checks
     attributes:
