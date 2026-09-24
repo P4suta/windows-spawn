@@ -19,8 +19,8 @@ use windows_sys::Win32::Globalization::{
 };
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, GetFileAttributesW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
+    CreateFileW, GetFileAttributesW, GetFullPathNameW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
@@ -760,34 +760,50 @@ pub(crate) fn windows_directory() -> io::Result<OsString> {
 }
 
 fn system_path(windows: bool) -> io::Result<OsString> {
-    // Windows paths cannot exceed 32,767 UTF-16 code units. A single maximum
-    // sized allocation avoids a retry loop whose termination would otherwise
-    // depend on a length reported by the operating system.
-    let mut buffer = vec![0_u16; 32_768];
-    // SAFETY: buffer is writable for its reported length.
-    let length = unsafe {
+    let path = maximum_path(|buffer, length| {
         if windows {
-            GetWindowsDirectoryW(
-                buffer.as_mut_ptr(),
-                u32::try_from(buffer.len()).expect("maximum Windows path fits u32"),
-            )
+            // SAFETY: `buffer` is writable for `length` UTF-16 units.
+            unsafe { GetWindowsDirectoryW(buffer, length) }
         } else {
-            GetSystemDirectoryW(
-                buffer.as_mut_ptr(),
-                u32::try_from(buffer.len()).expect("maximum Windows path fits u32"),
-            )
+            // SAFETY: `buffer` is writable for `length` UTF-16 units.
+            unsafe { GetSystemDirectoryW(buffer, length) }
         }
-    } as usize;
+    })?;
+    Ok(OsString::from_wide(&path))
+}
+
+/// Returns the absolute form of a NUL-terminated path, without the terminator.
+pub(crate) fn full_path(path: &[u16]) -> io::Result<Vec<u16>> {
+    if path.last() != Some(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path is not NUL-terminated",
+        ));
+    }
+    maximum_path(|buffer, length| {
+        // SAFETY: `path` is NUL-terminated, `buffer` is writable for `length` units, and the file-part pointer is null.
+        unsafe { GetFullPathNameW(path.as_ptr(), length, buffer, ptr::null_mut()) }
+    })
+}
+
+/// Calls `fill` with a buffer of the maximum Windows path length and returns what it wrote.
+///
+/// `fill` returns the written length without the terminator, or zero on failure.
+/// A maximum-size buffer avoids a size-query retry loop.
+fn maximum_path(fill: impl FnOnce(*mut u16, u32) -> u32) -> io::Result<Vec<u16>> {
+    let mut buffer = vec![0_u16; 32_768];
+    let capacity = u32::try_from(buffer.len()).expect("maximum Windows path fits u32");
+    let length = fill(buffer.as_mut_ptr(), capacity) as usize;
     if length == 0 {
         return Err(io::Error::last_os_error());
     }
     if length >= buffer.len() {
         return Err(io::Error::other(
-            "Windows directory exceeds the maximum path length",
+            "path exceeds the maximum Windows path length",
         ));
     }
     buffer.truncate(length);
-    Ok(OsString::from_wide(&buffer))
+    Ok(buffer)
 }
 
 fn raw(handle: BorrowedHandle<'_>) -> HANDLE {

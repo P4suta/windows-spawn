@@ -386,6 +386,7 @@ pub fn windows_spawn::Command::status_with(&mut self, windows_spawn::SpawnOption
 pub fn windows_spawn::Command::stderr<T: core::convert::Into<windows_spawn::Stdio>>(&mut self, T) -> &mut Self
 pub fn windows_spawn::Command::stdin<T: core::convert::Into<windows_spawn::Stdio>>(&mut self, T) -> &mut Self
 pub fn windows_spawn::Command::stdout<T: core::convert::Into<windows_spawn::Stdio>>(&mut self, T) -> &mut Self
+pub fn windows_spawn::Command::to_command_line(&self) -> core::io::error::Result<std::ffi::os_str::OsString>
 impl core::fmt::Debug for windows_spawn::Command
 pub fn windows_spawn::Command::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for windows_spawn::Command
