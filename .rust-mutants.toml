@@ -1,0 +1,17 @@
+# Mutation testing with rust-mutants; see docs/adr/0011-mutation-testing-runs-on-rust-mutants.md.
+version = 1
+
+[project]
+packages = ["windows-spawn"]
+
+[mutation]
+# `strong` adds the bitwise rules; the crate is built on flag words.
+tier = "strong"
+# Each counted step locks and rewrites a file, which on Windows makes a run take hours; the clock bounds instead.
+steps = 0
+
+[execution]
+locked = true
+# The documented examples repeat integration tests and would cost a rustdoc build per routed mutant.
+doctests = false
+test_binary_args = ["--test-threads=1"]

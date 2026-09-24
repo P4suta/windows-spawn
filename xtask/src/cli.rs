@@ -35,8 +35,7 @@ pub(crate) enum Task {
     VerifyReleaseTag {
         tag: String,
     },
-    Mutants {
-        output: Option<PathBuf>,
+    Mutation {
         forwarded: Vec<String>,
     },
     DraftRelease {
@@ -75,7 +74,7 @@ pub(crate) fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Task,
         "sbom" => parse_output(&rest).map(|output| Task::Sbom { output }),
         "release-candidate" => parse_release_candidate(&rest),
         "verify-release-tag" => parse_tag(&rest).map(|tag| Task::VerifyReleaseTag { tag }),
-        "mutants" => parse_mutants(&rest),
+        "mutation" => parse_mutation(&rest),
         "draft-release" => parse_tag_and_github_output(&rest)
             .map(|(tag, github_output)| Task::DraftRelease { tag, github_output }),
         "crates-io-auth-mode" => parse_single_flag(&rest, "--github-output")
@@ -151,36 +150,26 @@ fn parse_tag_and_github_output(rest: &[String]) -> Result<(String, bool), String
     }
 }
 
-fn parse_mutants(rest: &[String]) -> Result<Task, String> {
-    let delimiter = rest.iter().position(|argument| argument == "--");
-    let (options, forwarded) = delimiter.map_or((rest, &[][..]), |index| {
-        (&rest[..index], &rest[index + 1..])
-    });
-    let output = parse_output(options).map_err(|error| error.replace("sbom", "mutants"))?;
+fn parse_mutation(rest: &[String]) -> Result<Task, String> {
+    let forwarded = match rest {
+        [] => &[][..],
+        [delimiter, forwarded @ ..] if delimiter == "--" => forwarded,
+        [argument, ..] => return Err(format!("unexpected mutation argument: {argument}")),
+    };
     reject_mutation_scope(forwarded)?;
-    Ok(Task::Mutants {
-        output,
+    Ok(Task::Mutation {
         forwarded: forwarded.to_vec(),
     })
 }
 
+/// Rejects arguments that would measure something other than `.rust-mutants.toml` describes.
 fn reject_mutation_scope(arguments: &[String]) -> Result<(), String> {
-    let prohibited = ["--workspace", "--all", "--package", "-p", "--manifest-path"];
-    for (index, argument) in arguments.iter().enumerate() {
-        if prohibited.contains(&argument.as_str())
-            || argument.starts_with("--workspace=")
-            || argument.starts_with("--all=")
-            || argument.starts_with("--package=")
-            || argument.starts_with("--manifest-path=")
-            || (argument.starts_with("-p") && argument.len() > 2)
-        {
+    let prohibited = ["--package", "--root", "--config", "--no-config"];
+    for argument in arguments {
+        let name = argument.split('=').next().unwrap_or(argument);
+        if prohibited.contains(&name) {
             return Err(format!(
-                "mutation package selection is fixed to windows-spawn: {argument}"
-            ));
-        }
-        if index > 0 && prohibited[..].contains(&arguments[index - 1].as_str()) {
-            return Err(format!(
-                "mutation package selection is fixed to windows-spawn: {argument}"
+                "the mutation scope is fixed by .rust-mutants.toml: {argument}"
             ));
         }
     }
@@ -196,30 +185,33 @@ mod tests {
     }
 
     #[test]
-    fn parses_flags_and_forwarded_mutant_arguments() {
+    fn parses_flags_and_forwarded_mutation_arguments() {
         assert_eq!(
             parse(strings(&["public-api", "--update"])).unwrap(),
             Task::PublicApi { update: true }
         );
         assert_eq!(
-            parse(strings(&[
-                "mutants", "--output", "out", "--", "--list", "-vV"
-            ]))
-            .unwrap(),
-            Task::Mutants {
-                output: Some(PathBuf::from("out")),
-                forwarded: strings(&["--list", "-vV"]),
+            parse(strings(&["mutation", "--", "--shard", "1/4", "--json"])).unwrap(),
+            Task::Mutation {
+                forwarded: strings(&["--shard", "1/4", "--json"]),
+            }
+        );
+        assert_eq!(
+            parse(strings(&["mutation"])).unwrap(),
+            Task::Mutation {
+                forwarded: Vec::new()
             }
         );
     }
 
     #[test]
-    fn rejects_unknown_and_workspace_mutation_arguments() {
+    fn rejects_unknown_and_scope_changing_mutation_arguments() {
         assert!(parse(strings(&["no-such-command"])).is_err());
-        assert!(parse(strings(&["mutants", "--", "--workspace"])).is_err());
-        assert!(parse(strings(&["mutants", "--", "--workspace=true"])).is_err());
-        assert!(parse(strings(&["mutants", "--", "-p", "other"])).is_err());
-        assert!(parse(strings(&["mutants", "--list"])).is_err());
+        assert!(parse(strings(&["mutation", "--", "--package", "xtask"])).is_err());
+        assert!(parse(strings(&["mutation", "--", "--root=elsewhere"])).is_err());
+        assert!(parse(strings(&["mutation", "--", "--no-config"])).is_err());
+        assert!(parse(strings(&["mutation", "--", "--config", "other.toml"])).is_err());
+        assert!(parse(strings(&["mutation", "--shard", "1/4"])).is_err());
     }
 
     #[test]

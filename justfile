@@ -45,11 +45,8 @@ sbom:
 coverage:
     cargo xtask coverage
 
-mutants:
-    cargo xtask mutants --
-
-mutants-ci shard:
-    cargo xtask mutants --output . -- --in-place --shard {{ shard }}/4 --timeout 90 --build-timeout 180 --no-shuffle -vV
+mutation:
+    cargo xtask mutation
 
 package-check:
     cargo xtask package-check

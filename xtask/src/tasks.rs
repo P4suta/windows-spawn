@@ -101,7 +101,7 @@ pub(crate) fn execute(task: Task) -> Result<i32> {
             github_output,
         } => release_candidate(&root, allow_dirty, github_output)?,
         Task::VerifyReleaseTag { tag } => verify_release_tag(&root, &tag)?,
-        Task::Mutants { output, forwarded } => return run_mutants(&root, output, &forwarded),
+        Task::Mutation { forwarded } => return run_mutation(&root, &forwarded),
         Task::DraftRelease { tag, github_output } => {
             draft_release(&root, &tag, github_output)?;
         }
@@ -122,7 +122,7 @@ Repository tasks:
   cargo xtask sbom [--output DIR]
   cargo xtask release-candidate [--allow-dirty] [--github-output]
   cargo xtask verify-release-tag TAG
-  cargo xtask mutants [--output DIR] -- [cargo-mutants arguments]
+  cargo xtask mutation [-- rust-mutants run arguments]
   cargo xtask draft-release TAG [--github-output]
   cargo xtask crates-io-auth-mode [--github-output]"
     );
@@ -747,58 +747,26 @@ fn append_github_output(path: &Path, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Runs `rust-mutants run` under a private kill-on-close Job, so an interrupted run leaves no process behind.
+///
+/// Lints are capped to warnings: the instrumented tree trips `unused_qualifications`, and lints are not behavior.
 #[cfg(windows)]
-fn run_mutants(root: &Path, output: Option<PathBuf>, forwarded: &[String]) -> Result<i32> {
+fn run_mutation(root: &Path, forwarded: &[String]) -> Result<i32> {
     use windows_spawn::{Command as SpawnCommand, DropPolicy, SpawnOptions};
 
-    let output = mutation_output(root, output)?;
-    println!("cargo-mutants output: {}", output.display());
-    let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo.exe"));
-    let mut command = SpawnCommand::new(cargo);
+    let mut command = SpawnCommand::new("rust-mutants");
     command
-        .args(["mutants", "--package", PACKAGE_NAME])
+        .args(["run", "--locked"])
         .args(forwarded)
-        .env("CARGO_MUTANTS_OUTPUT", &output)
+        .env("RUSTFLAGS", "--cap-lints=warn")
         .current_dir(root);
     let status = command.status_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
     Ok(status.code().unwrap_or(1))
 }
 
 #[cfg(not(windows))]
-fn run_mutants(_root: &Path, _output: Option<PathBuf>, _forwarded: &[String]) -> Result<i32> {
-    fail("mutation containment requires Windows")
-}
-
-#[cfg(windows)]
-fn mutation_output(root: &Path, requested: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(output) = requested {
-        return Ok(output);
-    }
-    if let Some(output) = env::var_os("CARGO_MUTANTS_OUTPUT").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(output));
-    }
-    Ok(create_unique_directory(
-        &root.join("target/mutants/runs"),
-        "run",
-    )?)
-}
-
-/// Creates `parent/stem-N` for the first free `N`; `create_dir` fails atomically on a taken name.
-#[cfg(any(windows, test))]
-fn create_unique_directory(parent: &Path, stem: &str) -> io::Result<PathBuf> {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    fs::create_dir_all(parent)?;
-    loop {
-        let index = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = parent.join(format!("{stem}-{index}"));
-        match fs::create_dir(&path) {
-            Ok(()) => return Ok(path),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error),
-        }
-    }
+fn run_mutation(_root: &Path, _forwarded: &[String]) -> Result<i32> {
+    fail("mutation testing runs only on Windows, where the crate compiles")
 }
 
 fn resolve_directory(root: &Path, requested: &Path) -> Result<PathBuf> {
@@ -1107,6 +1075,23 @@ mod tests {
         );
         assert!(append_github_output(&output, "bad", "two\nlines").is_err());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// Creates `parent/stem-N` for the first free `N`; `create_dir` fails atomically on a taken name.
+    fn create_unique_directory(parent: &Path, stem: &str) -> io::Result<PathBuf> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        fs::create_dir_all(parent)?;
+        loop {
+            let index = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = parent.join(format!("{stem}-{index}"));
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(path),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     fn temporary_directory(label: &str) -> PathBuf {

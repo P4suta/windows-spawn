@@ -8,28 +8,72 @@ name: Mutation testing
 permissions:
   contents: read
 
+env:
+  # njutest has no release yet; pin the engine to a commit.
+  RUST_MUTANTS_REV: ec672aca648f70d48384637c23fc2a542862ee8d
+
 jobs:
-  mutants:
-    name: Mutants ${{ matrix.shard }}/4
+  measure:
+    name: Mutation ${{ matrix.shard }}/4
     runs-on: windows-latest
     timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
+      - id: engine
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
-          tool: just@1.57.0,cargo-mutants@27.1.0
-      - run: just mutants-ci ${{ matrix.shard }}
+          path: ~/.cargo/bin/rust-mutants.exe
+          key: rust-mutants-${{ runner.os }}-${{ env.RUST_MUTANTS_REV }}
+      - if: steps.engine.outputs.cache-hit != 'true'
+        run: cargo install --locked --git https://github.com/P4suta/njutest --rev ${{ env.RUST_MUTANTS_REV }} rust-mutants-cli
+      # The merged report is the gate; one part's findings do not fail its job.
+      - run: cargo xtask mutation -- --shard ${{ matrix.shard }}/4 --run-id ${{ github.run_id }}-${{ matrix.shard }}
+        continue-on-error: true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: mutation-${{ matrix.shard }}-of-4
+          path: reports/mutation/
+          if-no-files-found: error
+
+  report:
+    name: Mutation report
+    needs: measure
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
+        with:
+          toolchain: stable
+      - id: engine
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cargo/bin/rust-mutants.exe
+          key: rust-mutants-${{ runner.os }}-${{ env.RUST_MUTANTS_REV }}
+      - if: steps.engine.outputs.cache-hit != 'true'
+        run: cargo install --locked --git https://github.com/P4suta/njutest --rev ${{ env.RUST_MUTANTS_REV }} rust-mutants-cli
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: reports/mutation/
+          pattern: mutation-*-of-4
+          merge-multiple: true
+      - run: rust-mutants merge --runs "${{ github.run_id }}-*" --output mutants.json
+      - if: always()
+        run: rust-mutants report --format markdown | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+      - if: always()
+        run: rust-mutants report --format html --output mutants.html
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: mutants-${{ matrix.shard }}-of-4
-          path: mutants.out
-          if-no-files-found: error
+          name: mutation-report
+          path: |
+            mutants.json
+            mutants.html
