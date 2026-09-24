@@ -906,8 +906,23 @@ mod tests {
         unsafe { BorrowedHandle::borrow_raw(GetCurrentProcess() as RawHandle) }
     }
 
+    /// Compares this process's handle count, so it reruns alone in a fresh test process.
     #[test]
     fn pipe_null_and_duplicate_primitives_preserve_ownership() -> io::Result<()> {
+        const ISOLATED: &str = "WINDOWS_SPAWN_ISOLATED_HANDLE_COUNT";
+        if std::env::var_os(ISOLATED).is_none() {
+            let status = crate::Command::new(std::env::current_exe()?)
+                .args([
+                    "--exact",
+                    "sys::tests::pipe_null_and_duplicate_primitives_preserve_ownership",
+                    "--test-threads=1",
+                ])
+                .env(ISOLATED, "1")
+                .stdin(crate::Stdio::null())
+                .status()?;
+            assert!(status.success(), "the isolated handle-count test failed");
+            return Ok(());
+        }
         assert_eq!(
             null_share_mode(),
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
