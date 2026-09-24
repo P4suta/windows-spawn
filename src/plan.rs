@@ -263,12 +263,9 @@ mod tests {
     #[test]
     fn rejects_batch_and_empty_programs() {
         let empty = Command::new("");
-        assert_eq!(
-            SpawnPlan::new_running(&empty, SpawnOptions::new(), IoMode::Spawn,)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidInput
-        );
+        let error = SpawnPlan::new_running(&empty, SpawnOptions::new(), IoMode::Spawn).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "program must not be empty");
 
         for script in ["thing.cmd", "THING.BAT"] {
             let command = Command::new(script);

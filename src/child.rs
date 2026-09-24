@@ -323,6 +323,60 @@ mod tests {
 
     use super::*;
 
+    /// Named to run first, so a spawn that wrongly starts suspended fails before a test waits on it.
+    #[test]
+    fn a_running_spawn_is_not_suspended() {
+        let mut command = crate::Command::new("cmd.exe");
+        command
+            .args(["/D", "/C", "set /p x="])
+            .stdin(crate::Stdio::piped())
+            .stdout(crate::Stdio::null())
+            .stderr(crate::Stdio::null());
+        let plan = crate::plan::SpawnPlan::new_running(
+            &command,
+            crate::SpawnOptions::new(),
+            crate::plan::IoMode::Spawn,
+        )
+        .unwrap();
+        let transaction = crate::transaction::SpawnTransaction::new(&plan).unwrap();
+        assert_eq!(
+            sys::test_support::suspend_count(transaction.primary_thread()),
+            0
+        );
+        let mut child = transaction.commit_child();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn reader_errors_reach_the_caller() {
+        let (reader, writer) = sys::test_support::pipe();
+        assert!(drain_output(writer.as_handle()).is_err());
+        drop(reader);
+
+        let mut exited = crate::Command::new("cmd.exe");
+        exited
+            .args(["/D", "/C", "exit /b 0"])
+            .stdin(crate::Stdio::null())
+            .stdout(crate::Stdio::null())
+            .stderr(crate::Stdio::null());
+        let source = exited.spawn().unwrap();
+        let (unreadable_reader, unreadable) = sys::test_support::pipe();
+        let child = Child::new(
+            sys::test_support::duplicate(source.as_handle()),
+            source.id(),
+            None,
+            None,
+            Some(unreadable),
+            None,
+        );
+        assert!(child.wait_with_output().is_err());
+        drop(unreadable_reader);
+
+        let failed = thread::spawn(|| -> io::Result<Vec<u8>> { Err(io::Error::other("read")) });
+        let succeeded = thread::spawn(|| Ok(b"out".to_vec()));
+        assert!(join_readers(Some(succeeded), Some(failed)).is_err());
+    }
+
     #[test]
     fn absent_and_panicked_output_readers_become_results() {
         assert!(join_reader(None).unwrap().is_empty());

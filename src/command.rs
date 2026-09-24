@@ -324,3 +324,46 @@ impl Command {
             .wait_with_output()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs::File;
+
+    use super::*;
+    use crate::sys::test_support::is_inheritable;
+
+    #[test]
+    fn validation_errors_propagate_from_every_entry_point() {
+        let mut batch = Command::new("script.cmd");
+        for result in [
+            batch.spawn().map(drop),
+            batch.spawn_with(SpawnOptions::new()).map(drop),
+            batch.spawn_suspended().map(drop),
+            batch.spawn_suspended_with(SpawnOptions::new()).map(drop),
+            batch.status().map(drop),
+            batch.status_with(SpawnOptions::new()).map(drop),
+            batch.output().map(drop),
+            batch.output_with(SpawnOptions::new()).map(drop),
+        ] {
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        }
+    }
+
+    #[test]
+    fn stored_handle_duplicates_are_private() -> io::Result<()> {
+        let nul = File::open("NUL")?;
+        let mut command = Command::new("cmd.exe");
+        command
+            .arg_handle(&nul)?
+            .env_handle("WINDOWS_SPAWN_HANDLE", &nul)?;
+        let Some(Arg::Handle(argument)) = command.args.first() else {
+            panic!("arg_handle stores a handle argument");
+        };
+        assert!(!is_inheritable(argument.as_handle()));
+        let Some(EnvOp::Set(_, EnvValue::Handle(value))) = command.env_ops.first() else {
+            panic!("env_handle stores a handle value");
+        };
+        assert!(!is_inheritable(value.as_handle()));
+        Ok(())
+    }
+}

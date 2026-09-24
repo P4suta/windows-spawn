@@ -84,6 +84,8 @@ pub(crate) fn duplicate_local(
     source: BorrowedHandle<'_>,
     inheritable: bool,
 ) -> io::Result<OwnedHandle> {
+    #[cfg(test)]
+    fault::check(fault::Call::DuplicateLocal)?;
     // SAFETY: `GetCurrentProcess` cannot fail and returns a pseudo-handle that stays valid and is never closed.
     let current = unsafe { GetCurrentProcess() };
     duplicate_between(
@@ -153,6 +155,8 @@ pub(crate) fn duplicate_remote<'a>(
     target_process: BorrowedHandle<'a>,
     inheritable: bool,
 ) -> io::Result<RemoteHandle<'a>> {
+    #[cfg(test)]
+    fault::check(fault::Call::DuplicateRemote)?;
     let mut value = ptr::null_mut();
     // SAFETY: both process handles and `source` are valid; the returned value belongs to `target_process` and is owned by `RemoteHandle`.
     if unsafe {
@@ -176,6 +180,8 @@ pub(crate) fn duplicate_remote<'a>(
 }
 
 pub(crate) fn standard_handle(stream: StandardStream) -> io::Result<Option<OwnedHandle>> {
+    #[cfg(test)]
+    fault::check(fault::Call::StandardHandle)?;
     let id = match stream {
         StandardStream::Input => STD_INPUT_HANDLE,
         StandardStream::Output => STD_OUTPUT_HANDLE,
@@ -192,6 +198,8 @@ pub(crate) fn standard_handle(stream: StandardStream) -> io::Result<Option<Owned
 }
 
 pub(crate) fn null_handle(access: NullAccess) -> io::Result<OwnedHandle> {
+    #[cfg(test)]
+    fault::check(fault::Call::NullHandle)?;
     let name = [u16::from(b'N'), u16::from(b'U'), u16::from(b'L'), 0];
     let desired = match access {
         NullAccess::Read => GENERIC_READ,
@@ -224,6 +232,8 @@ pub(crate) struct Pipe {
 }
 
 pub(crate) fn create_pipe(parent_reads: bool) -> io::Result<Pipe> {
+    #[cfg(test)]
+    fault::check(fault::Call::CreatePipe)?;
     let mut read = ptr::null_mut();
     let mut write = ptr::null_mut();
     // SAFETY: both output pointers are valid, and null security attributes make both handles non-inheritable.
@@ -251,12 +261,16 @@ pub(crate) fn create_pipe(parent_reads: bool) -> io::Result<Pipe> {
 }
 
 pub(crate) fn open_parent_process(pid: u32) -> io::Result<OwnedHandle> {
+    #[cfg(test)]
+    fault::check(fault::Call::OpenProcess)?;
     // SAFETY: OpenProcess has no pointer preconditions.
     let handle = unsafe { OpenProcess(PROCESS_CREATE_PROCESS | PROCESS_DUP_HANDLE, 0, pid) };
     owned(handle)
 }
 
 pub(crate) fn validate_process_handle(handle: BorrowedHandle<'_>) -> io::Result<()> {
+    #[cfg(test)]
+    fault::check(fault::Call::ValidateProcess)?;
     // SAFETY: the borrowed handle is valid for the query.
     if unsafe { GetProcessId(raw(handle)) } == 0 {
         Err(io::Error::last_os_error())
@@ -266,6 +280,8 @@ pub(crate) fn validate_process_handle(handle: BorrowedHandle<'_>) -> io::Result<
 }
 
 pub(crate) fn create_job() -> io::Result<OwnedHandle> {
+    #[cfg(test)]
+    fault::check(fault::Call::CreateJob)?;
     // SAFETY: null arguments request an unnamed Job with default security.
     owned(unsafe { CreateJobObjectW(ptr::null(), ptr::null()) })
 }
@@ -275,6 +291,8 @@ pub(crate) fn validate_job_handle(handle: BorrowedHandle<'_>) -> io::Result<()> 
 }
 
 pub(crate) fn set_job_kill_on_close(handle: BorrowedHandle<'_>, enable: bool) -> io::Result<()> {
+    #[cfg(test)]
+    fault::check(fault::Call::SetJob)?;
     let mut limits = query_job_limits(handle)?;
     if enable {
         limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -301,6 +319,8 @@ pub(crate) fn set_job_kill_on_close(handle: BorrowedHandle<'_>, enable: bool) ->
 fn query_job_limits(
     handle: BorrowedHandle<'_>,
 ) -> io::Result<JOBOBJECT_EXTENDED_LIMIT_INFORMATION> {
+    #[cfg(test)]
+    fault::check(fault::Call::QueryJob)?;
     let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
     // SAFETY: `limits` is writable storage of the size this information class requires, and the returned-size pointer is null.
     if unsafe {
@@ -321,11 +341,15 @@ fn query_job_limits(
 }
 
 pub(crate) fn assign_job(job: BorrowedHandle<'_>, process: BorrowedHandle<'_>) -> io::Result<()> {
+    #[cfg(test)]
+    fault::check(fault::Call::AssignJob)?;
     // SAFETY: both handles are valid for the call.
     bool_result(unsafe { AssignProcessToJobObject(raw(job), raw(process)) })
 }
 
 pub(crate) fn terminate_job(job: BorrowedHandle<'_>, exit_code: u32) -> io::Result<()> {
+    #[cfg(test)]
+    fault::check(fault::Call::TerminateJob)?;
     // SAFETY: the Job handle is valid for the call.
     bool_result(unsafe { TerminateJobObject(raw(job), exit_code) })
 }
@@ -336,28 +360,14 @@ pub(crate) struct AttributeList {
 
 impl AttributeList {
     pub(crate) fn new(count: u32) -> io::Result<Self> {
+        #[cfg(test)]
+        fault::check(fault::Call::AttributeList)?;
         let mut bytes = 0_usize;
         // SAFETY: the documented size query passes a null list.
         let probe =
             unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), count, 0, &mut bytes) };
-        let probe_error = io::Error::last_os_error();
-        if probe != 0
-            || probe_error.raw_os_error()
-                != Some(
-                    i32::try_from(ERROR_INSUFFICIENT_BUFFER).expect("Win32 error code fits i32"),
-                )
-            || bytes == 0
-        {
-            return Err(if probe != 0 {
-                io::Error::other("attribute-list size probe unexpectedly succeeded")
-            } else {
-                probe_error
-            });
-        }
-        let words = bytes
-            .checked_add(size_of::<usize>() - 1)
-            .ok_or_else(|| io::Error::other("attribute list is too large"))?
-            / size_of::<usize>();
+        let bytes = probed_size(probe, io::Error::last_os_error(), bytes)?;
+        let words = storage_words(bytes);
         let mut storage = vec![0_usize; words].into_boxed_slice();
         let pointer = storage.as_mut_ptr().cast();
         let mut actual = words * size_of::<usize>();
@@ -410,6 +420,8 @@ impl AttributeList {
     }
 
     fn update(&mut self, attribute: usize, value: *const c_void, bytes: usize) -> io::Result<()> {
+        #[cfg(test)]
+        fault::check(fault::Call::UpdateAttribute)?;
         // SAFETY: the list is initialized, `value` points to `bytes` readable bytes or is the `HPCON` value, and the transaction keeps every backing allocation stable until CreateProcessW returns.
         if unsafe {
             UpdateProcThreadAttribute(
@@ -432,6 +444,25 @@ impl AttributeList {
     fn pointer(&self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
         self.storage.as_ptr().cast_mut().cast()
     }
+}
+
+/// Returns the size a null-list size probe reported, or why the probe is unusable.
+fn probed_size(probe: i32, error: io::Error, bytes: usize) -> io::Result<usize> {
+    if probe != 0 {
+        return Err(io::Error::other(
+            "attribute-list size probe unexpectedly succeeded",
+        ));
+    }
+    let insufficient = i32::try_from(ERROR_INSUFFICIENT_BUFFER).expect("Win32 error code fits i32");
+    if error.raw_os_error() != Some(insufficient) || bytes == 0 {
+        return Err(error);
+    }
+    Ok(bytes)
+}
+
+/// Returns how many words hold `bytes`.
+fn storage_words(bytes: usize) -> usize {
+    bytes.div_ceil(size_of::<usize>())
 }
 
 impl Drop for AttributeList {
@@ -475,6 +506,8 @@ pub(crate) struct CreatedProcess {
 }
 
 pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<CreatedProcess> {
+    #[cfg(test)]
+    fault::check(fault::Call::CreateProcess)?;
     let mut startup = STARTUPINFOEXW::default();
     startup.StartupInfo.cb = if request.attributes.is_some() {
         u32::try_from(size_of::<STARTUPINFOEXW>()).expect("startup structure size fits u32")
@@ -543,6 +576,8 @@ fn set_standard_handles(startup: &mut STARTUPINFOEXW, stdio: StartupStdio) {
 }
 
 pub(crate) fn wait_process(process: BorrowedHandle<'_>) -> io::Result<()> {
+    #[cfg(test)]
+    fault::check(fault::Call::WaitProcess)?;
     // SAFETY: the process handle is valid for the wait.
     match unsafe { WaitForSingleObject(raw(process), INFINITE) } {
         WAIT_OBJECT_0 => Ok(()),
@@ -551,12 +586,138 @@ pub(crate) fn wait_process(process: BorrowedHandle<'_>) -> io::Result<()> {
 }
 
 pub(crate) fn try_wait_process(process: BorrowedHandle<'_>) -> io::Result<bool> {
+    #[cfg(test)]
+    fault::check(fault::Call::TryWaitProcess)?;
     // SAFETY: the process handle is valid for the query.
     match unsafe { WaitForSingleObject(raw(process), 0) } {
         WAIT_OBJECT_0 => Ok(true),
         WAIT_TIMEOUT => Ok(false),
         _ => Err(io::Error::last_os_error()),
     }
+}
+
+/// Test-only failure injection: a test fails the Nth wrapper call made on its thread.
+#[cfg(test)]
+pub(crate) mod fault {
+    use std::cell::RefCell;
+    use std::fmt;
+    use std::io;
+
+    /// A fallible Win32 wrapper.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Call {
+        DuplicateLocal,
+        DuplicateRemote,
+        StandardHandle,
+        NullHandle,
+        CreatePipe,
+        OpenProcess,
+        ValidateProcess,
+        CreateJob,
+        QueryJob,
+        SetJob,
+        AssignJob,
+        TerminateJob,
+        AttributeList,
+        UpdateAttribute,
+        CreateProcess,
+        WaitProcess,
+        TryWaitProcess,
+        ExitStatus,
+        TerminateProcess,
+        ResumeThread,
+        ReadHandle,
+        WriteHandle,
+        EnvironmentStrings,
+        MaximumPath,
+    }
+
+    struct State {
+        fail_at: Option<usize>,
+        seen: Vec<Call>,
+    }
+
+    thread_local! {
+        static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+    }
+
+    /// Records this thread's wrapper calls, and fails one of them, until dropped.
+    pub(crate) struct Plan(());
+
+    impl Plan {
+        /// Returns the calls recorded so far.
+        pub(crate) fn calls(&self) -> Vec<Call> {
+            let Self(()) = self;
+            STATE.with(|state| {
+                state
+                    .borrow()
+                    .as_ref()
+                    .map(|state| state.seen.clone())
+                    .unwrap_or_default()
+            })
+        }
+    }
+
+    impl Drop for Plan {
+        fn drop(&mut self) {
+            STATE.with(|state| *state.borrow_mut() = None);
+        }
+    }
+
+    /// Records calls without failing any.
+    pub(crate) fn record() -> Plan {
+        install(None)
+    }
+
+    /// Fails the call at `index` in this thread's call order.
+    pub(crate) fn fail_at(index: usize) -> Plan {
+        install(Some(index))
+    }
+
+    fn install(fail_at: Option<usize>) -> Plan {
+        STATE.with(|state| {
+            *state.borrow_mut() = Some(State {
+                fail_at,
+                seen: Vec::new(),
+            });
+        });
+        Plan(())
+    }
+
+    /// Fails this call if the installed plan says so.
+    pub(crate) fn check(call: Call) -> io::Result<()> {
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            let Some(state) = state.as_mut() else {
+                return Ok(());
+            };
+            let index = state.seen.len();
+            state.seen.push(call);
+            if state.fail_at == Some(index) {
+                Err(io::Error::other(Injected(call)))
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    /// Returns true if `error` is the injected failure.
+    pub(crate) fn is_injected(error: &io::Error) -> bool {
+        error
+            .get_ref()
+            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<Injected>)
+    }
+
+    #[derive(Debug)]
+    struct Injected(Call);
+
+    impl fmt::Display for Injected {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(formatter, "injected failure of {:?}", self.0)
+        }
+    }
+
+    impl std::error::Error for Injected {}
 }
 
 /// Test helpers that call Win32 directly, so mutants of the production wrappers cannot disable them.
@@ -567,12 +728,65 @@ pub(crate) mod test_support {
     };
     use std::ptr;
 
-    use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, WAIT_OBJECT_0};
+    use windows_sys::Win32::Foundation::{
+        DuplicateHandle, GetHandleInformation, DUPLICATE_SAME_ACCESS, HANDLE_FLAG_INHERIT,
+        WAIT_OBJECT_0,
+    };
     use windows_sys::Win32::System::Pipes::CreatePipe;
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetExitCodeProcess, ResumeThread, TerminateProcess, WaitForSingleObject,
-        INFINITE,
+        GetCurrentProcess, GetExitCodeProcess, GetProcessHandleCount, ResumeThread, SuspendThread,
+        TerminateProcess, WaitForSingleObject, INFINITE,
     };
+
+    const ISOLATED_ARGUMENT: &str = "windows-spawn-isolated";
+    const ISOLATED_VARIABLE: &str = "WINDOWS_SPAWN_ISOLATED";
+
+    /// Reruns `test` alone in a fresh test process and returns false, unless this is that process.
+    ///
+    /// The marker travels as both an argument and a variable, so a mutant that loses one cannot make the rerun recurse.
+    pub(crate) fn isolated(test: &str) -> bool {
+        if std::env::var_os(ISOLATED_VARIABLE).is_some()
+            || std::env::args().any(|argument| argument == ISOLATED_ARGUMENT)
+        {
+            return true;
+        }
+        let status = crate::Command::new(std::env::current_exe().expect("the test binary path"))
+            .args(["--exact", test, "--test-threads=1", ISOLATED_ARGUMENT])
+            .env(ISOLATED_VARIABLE, "1")
+            .stdin(crate::Stdio::null())
+            .status()
+            .expect("the isolated test process starts");
+        assert!(status.success(), "{test} failed in isolation");
+        false
+    }
+
+    /// Returns the current-process pseudo-handle.
+    pub(crate) fn current_process() -> BorrowedHandle<'static> {
+        // SAFETY: `GetCurrentProcess` cannot fail and returns a pseudo-handle valid for the process lifetime.
+        // `BorrowedHandle` never closes it, so a `'static` borrow cannot dangle or double-close.
+        unsafe { BorrowedHandle::borrow_raw(GetCurrentProcess() as RawHandle) }
+    }
+
+    pub(crate) fn process_handle_count(process: BorrowedHandle<'_>) -> std::io::Result<u32> {
+        let mut count = 0;
+        // SAFETY: `process` is valid and `count` is writable DWORD storage.
+        if unsafe { GetProcessHandleCount(process.as_raw_handle(), &mut count) } == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(count)
+        }
+    }
+
+    /// Returns a thread's suspend count, leaving it unchanged.
+    pub(crate) fn suspend_count(thread: BorrowedHandle<'_>) -> u32 {
+        // SAFETY: the thread handle is valid and has THREAD_SUSPEND_RESUME access.
+        let previous = unsafe { SuspendThread(thread.as_raw_handle()) };
+        assert_ne!(previous, u32::MAX, "SuspendThread failed");
+        // SAFETY: the same handle is valid; this undoes the suspension above.
+        let resumed = unsafe { ResumeThread(thread.as_raw_handle()) };
+        assert_ne!(resumed, u32::MAX, "ResumeThread failed");
+        previous
+    }
 
     /// Returns a non-inheritable duplicate with the same access.
     pub(crate) fn duplicate(handle: BorrowedHandle<'_>) -> OwnedHandle {
@@ -592,6 +806,35 @@ pub(crate) mod test_support {
         assert_ne!(duplicated, 0, "DuplicateHandle failed");
         // SAFETY: DuplicateHandle returned a new, uniquely owned handle.
         unsafe { OwnedHandle::from_raw_handle(duplicate as RawHandle) }
+    }
+
+    /// Returns a non-inheritable duplicate limited to `access`.
+    pub(crate) fn duplicate_with_access(handle: BorrowedHandle<'_>, access: u32) -> OwnedHandle {
+        let mut duplicate = ptr::null_mut();
+        // SAFETY: both pseudo-handles and `handle` are valid, and `duplicate` is writable.
+        let duplicated = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                handle.as_raw_handle(),
+                GetCurrentProcess(),
+                &mut duplicate,
+                access,
+                0,
+                0,
+            )
+        };
+        assert_ne!(duplicated, 0, "DuplicateHandle failed");
+        // SAFETY: DuplicateHandle returned a new, uniquely owned handle.
+        unsafe { OwnedHandle::from_raw_handle(duplicate as RawHandle) }
+    }
+
+    /// Returns true if `handle` is inheritable.
+    pub(crate) fn is_inheritable(handle: BorrowedHandle<'_>) -> bool {
+        let mut flags = 0;
+        // SAFETY: `handle` is valid and `flags` is writable.
+        let queried = unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) };
+        assert_ne!(queried, 0, "GetHandleInformation failed");
+        flags & HANDLE_FLAG_INHERIT != 0
     }
 
     /// Returns a non-inheritable pipe as (reader, writer).
@@ -661,6 +904,9 @@ pub(crate) mod test_support {
 pub(crate) fn exit_status(process: BorrowedHandle<'_>) -> io::Result<ExitStatus> {
     use std::os::windows::process::ExitStatusExt;
 
+    #[cfg(test)]
+    fault::check(fault::Call::ExitStatus)?;
+
     let mut code = 0_u32;
     // SAFETY: `code` is writable and the process handle is valid.
     if unsafe { GetExitCodeProcess(raw(process), &mut code) } == 0 {
@@ -671,11 +917,15 @@ pub(crate) fn exit_status(process: BorrowedHandle<'_>) -> io::Result<ExitStatus>
 }
 
 pub(crate) fn terminate_process(process: BorrowedHandle<'_>, exit_code: u32) -> io::Result<()> {
+    #[cfg(test)]
+    fault::check(fault::Call::TerminateProcess)?;
     // SAFETY: the process handle is valid for the call.
     bool_result(unsafe { TerminateProcess(raw(process), exit_code) })
 }
 
 pub(crate) fn resume_thread(thread: BorrowedHandle<'_>) -> io::Result<u32> {
+    #[cfg(test)]
+    fault::check(fault::Call::ResumeThread)?;
     // SAFETY: the thread handle is valid for the call.
     let previous = unsafe { ResumeThread(raw(thread)) };
     if previous == u32::MAX {
@@ -686,6 +936,8 @@ pub(crate) fn resume_thread(thread: BorrowedHandle<'_>) -> io::Result<u32> {
 }
 
 pub(crate) fn read_handle(handle: BorrowedHandle<'_>, buffer: &mut [u8]) -> io::Result<usize> {
+    #[cfg(test)]
+    fault::check(fault::Call::ReadHandle)?;
     if buffer.is_empty() {
         return Ok(0);
     }
@@ -719,6 +971,8 @@ pub(crate) fn read_handle(handle: BorrowedHandle<'_>, buffer: &mut [u8]) -> io::
 }
 
 pub(crate) fn write_handle(handle: BorrowedHandle<'_>, buffer: &[u8]) -> io::Result<usize> {
+    #[cfg(test)]
+    fault::check(fault::Call::WriteHandle)?;
     if buffer.is_empty() {
         return Ok(0);
     }
@@ -742,6 +996,8 @@ pub(crate) fn write_handle(handle: BorrowedHandle<'_>, buffer: &[u8]) -> io::Res
 }
 
 pub(crate) fn environment_strings() -> io::Result<Vec<(OsString, OsString)>> {
+    #[cfg(test)]
+    fault::check(fault::Call::EnvironmentStrings)?;
     // SAFETY: GetEnvironmentStringsW returns a double-NUL block that stays valid until FreeEnvironmentStringsW.
     let base = unsafe { GetEnvironmentStringsW() };
     if base.is_null() {
@@ -840,6 +1096,8 @@ pub(crate) fn full_path(path: &[u16]) -> io::Result<Vec<u16>> {
 /// `fill` returns the written length without the terminator, or zero on failure.
 /// A maximum-size buffer avoids a size-query retry loop.
 fn maximum_path(fill: impl FnOnce(*mut u16, u32) -> u32) -> io::Result<Vec<u16>> {
+    #[cfg(test)]
+    fault::check(fault::Call::MaximumPath)?;
     let mut buffer = vec![0_u16; 32_768];
     let capacity = u32::try_from(buffer.len()).expect("maximum Windows path fits u32");
     let length = fill(buffer.as_mut_ptr(), capacity) as usize;
@@ -887,40 +1145,13 @@ mod tests {
     use std::os::windows::io::{AsHandle, AsRawHandle};
     use std::path::PathBuf;
 
+    use super::test_support::{current_process, isolated, process_handle_count};
     use super::*;
-    use windows_sys::Win32::System::Threading::GetProcessHandleCount;
-
-    fn process_handle_count(process: BorrowedHandle<'_>) -> io::Result<u32> {
-        let mut count = 0;
-        // SAFETY: `process` is valid and `count` is writable DWORD storage.
-        if unsafe { GetProcessHandleCount(raw(process), &mut count) } == 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(count)
-        }
-    }
-
-    fn current_process() -> BorrowedHandle<'static> {
-        // SAFETY: `GetCurrentProcess` cannot fail and returns a pseudo-handle valid for the process lifetime.
-        // `BorrowedHandle` never closes it, so a `'static` borrow cannot dangle or double-close.
-        unsafe { BorrowedHandle::borrow_raw(GetCurrentProcess() as RawHandle) }
-    }
 
     /// Compares this process's handle count, so it reruns alone in a fresh test process.
     #[test]
     fn pipe_null_and_duplicate_primitives_preserve_ownership() -> io::Result<()> {
-        const ISOLATED: &str = "WINDOWS_SPAWN_ISOLATED_HANDLE_COUNT";
-        if std::env::var_os(ISOLATED).is_none() {
-            let status = crate::Command::new(std::env::current_exe()?)
-                .args([
-                    "--exact",
-                    "sys::tests::pipe_null_and_duplicate_primitives_preserve_ownership",
-                    "--test-threads=1",
-                ])
-                .env(ISOLATED, "1")
-                .stdin(crate::Stdio::null())
-                .status()?;
-            assert!(status.success(), "the isolated handle-count test failed");
+        if !isolated("sys::tests::pipe_null_and_duplicate_primitives_preserve_ownership") {
             return Ok(());
         }
         assert_eq!(
@@ -1092,6 +1323,112 @@ mod tests {
         assert!(!is_valid_handle(INVALID_HANDLE_VALUE));
         assert!(validate_process_handle(file.as_handle()).is_err());
         assert!(validate_job_handle(file.as_handle()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn attribute_list_sizing_classifies_every_probe_result() {
+        let insufficient = || {
+            io::Error::from_raw_os_error(
+                i32::try_from(ERROR_INSUFFICIENT_BUFFER).expect("Win32 error code fits i32"),
+            )
+        };
+        assert_eq!(probed_size(0, insufficient(), 48).unwrap(), 48);
+        assert!(probed_size(1, insufficient(), 48).is_err());
+        assert!(probed_size(0, io::Error::from_raw_os_error(5), 48).is_err());
+        assert!(probed_size(0, insufficient(), 0).is_err());
+
+        let word = size_of::<usize>();
+        assert_eq!(storage_words(1), 1);
+        assert_eq!(storage_words(word), 1);
+        assert_eq!(storage_words(word + 1), 2);
+        assert_eq!(storage_words(usize::MAX), usize::MAX / word + 1);
+    }
+
+    #[test]
+    fn failed_win32_calls_return_their_errors() -> io::Result<()> {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        };
+
+        /// `JOB_OBJECT_QUERY` from winnt.h, outside the enabled windows-sys features.
+        const JOB_OBJECT_QUERY: u32 = 0x0004;
+
+        let unwaitable = test_support::duplicate_with_access(
+            current_process(),
+            PROCESS_QUERY_LIMITED_INFORMATION,
+        );
+        assert!(wait_process(unwaitable.as_handle()).is_err());
+        assert!(try_wait_process(unwaitable.as_handle()).is_err());
+        let unqueryable =
+            test_support::duplicate_with_access(current_process(), PROCESS_SYNCHRONIZE);
+        assert!(exit_status(unqueryable.as_handle()).is_err());
+
+        // SAFETY: `GetCurrentThread` cannot fail and returns a pseudo-handle valid for this call.
+        let thread = unsafe { BorrowedHandle::borrow_raw(GetCurrentThread() as RawHandle) };
+        let unresumable = test_support::duplicate_with_access(thread, PROCESS_SYNCHRONIZE);
+        assert!(resume_thread(unresumable.as_handle()).is_err());
+
+        let (reader, writer) = test_support::pipe();
+        assert!(read_handle(writer.as_handle(), &mut [0_u8; 1]).is_err());
+        assert!(write_handle(reader.as_handle(), b"x").is_err());
+
+        let job = create_job()?;
+        let query_only = test_support::duplicate_with_access(job.as_handle(), JOB_OBJECT_QUERY);
+        assert!(set_job_kill_on_close(query_only.as_handle(), true).is_err());
+
+        assert!(AttributeList::new(u32::MAX).is_err());
+        let mut full = AttributeList::new(1)?;
+        let jobs = [job.as_raw_handle() as isize];
+        full.set_jobs(&jobs)?;
+        let words = [1_u64, 0_u64];
+        assert!(full.set_mitigation(&words).is_err());
+
+        assert_eq!(
+            full_path(&[u16::from(b'a')]).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(maximum_path(|_, _| 0).is_err());
+        assert!(maximum_path(|_, capacity| capacity).is_err());
+        let written = maximum_path(|buffer, _| {
+            // SAFETY: `maximum_path` passes a buffer writable for its capacity, which exceeds one unit.
+            unsafe { buffer.write(u16::from(b'x')) };
+            1
+        })?;
+        assert_eq!(written, [u16::from(b'x')]);
+        Ok(())
+    }
+
+    #[test]
+    fn system_and_windows_directories_are_distinct() -> io::Result<()> {
+        let system = system_directory()?.to_string_lossy().to_lowercase();
+        let windows = windows_directory()?.to_string_lossy().to_lowercase();
+        assert_ne!(system, windows);
+        assert!(system.starts_with(&windows));
+        assert!(system.ends_with("system32"));
+        Ok(())
+    }
+
+    #[test]
+    fn standard_handles_are_private_duplicates() -> io::Result<()> {
+        let output =
+            standard_handle(StandardStream::Output)?.expect("the test has standard output");
+        assert!(!test_support::is_inheritable(output.as_handle()));
+        Ok(())
+    }
+
+    /// Changes this process's standard error slot, so it runs alone in a fresh test process.
+    #[test]
+    fn a_missing_standard_handle_is_none() -> io::Result<()> {
+        use windows_sys::Win32::System::Console::SetStdHandle;
+
+        if !isolated("sys::tests::a_missing_standard_handle_is_none") {
+            return Ok(());
+        }
+        // SAFETY: this isolated process no longer needs its standard error slot.
+        let cleared = unsafe { SetStdHandle(STD_ERROR_HANDLE, ptr::null_mut()) };
+        assert_ne!(cleared, 0);
+        assert!(standard_handle(StandardStream::Error)?.is_none());
         Ok(())
     }
 }
