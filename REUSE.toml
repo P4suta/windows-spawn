@@ -7,6 +7,7 @@ path = [
   ".gitattributes",
   ".gitignore",
   "_typos.toml",
+  ".rust-mutants.toml",
   "Cargo.toml",
   "clippy.toml",
   "CHANGELOG.md",

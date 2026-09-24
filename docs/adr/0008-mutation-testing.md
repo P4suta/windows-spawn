@@ -1,6 +1,6 @@
 # 0008 — Mutation testing is a scheduled audited gate
 
-Status: accepted (2026-08-02)
+Status: superseded by ADR 0011 (2026-09-25)
 
 ## Context
 

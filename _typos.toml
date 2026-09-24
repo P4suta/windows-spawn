@@ -7,5 +7,5 @@ ignore-hidden = false
 extend-exclude = [
     ".git/",
     "target/",
-    "mutants.out/",
+    "reports/",
 ]
