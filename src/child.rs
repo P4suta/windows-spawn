@@ -71,8 +71,7 @@ impl AsHandle for ChildStderr {
 /// The handle from [`AsHandle`] has full access, including `SYNCHRONIZE`, and stays valid while this value lives.
 #[derive(Debug)]
 pub struct Child {
-    // Declared first so kill-on-close takes effect before pipe and process
-    // handles are released by Rust's field drop order.
+    /// Declared first so kill-on-close runs before the pipe and process handles drop.
     kill_job: Option<Job>,
     /// A pipe connected to the child's standard input, when requested.
     pub stdin: Option<ChildStdin>,
@@ -162,9 +161,7 @@ impl Child {
 
     /// Waits while draining both output pipes concurrently.
     ///
-    /// Under [`crate::DropPolicy::KillTree`], descendants are terminated after
-    /// the root exits and before reader threads are joined. This guarantees EOF
-    /// even when a grandchild retained a pipe handle.
+    /// Under [`crate::DropPolicy::KillTree`], descendants are terminated after the root exits and before the readers are joined, so the pipes reach EOF even if a descendant holds a writer.
     ///
     /// # Errors
     ///
@@ -234,9 +231,9 @@ fn join_readers(
 
 /// A process whose primary thread has not yet been resumed.
 ///
-/// Dropping this value without resuming always terminates the process.
+/// Dropping this value without resuming terminates the process.
 /// The process is already in every Job requested through [`crate::SpawnOptions`].
-/// The consuming transition makes a second resume unrepresentable:
+/// `resume` consumes the value, so a second resume does not compile:
 ///
 /// ```compile_fail
 /// use windows_spawn::Command;
@@ -265,8 +262,7 @@ impl SuspendedChild {
     ///
     /// # Panics
     ///
-    /// Panics only if an internal ownership invariant was violated and the
-    /// process was removed before this suspended value was consumed.
+    /// Panics only if an internal ownership invariant is broken.
     #[must_use]
     pub fn id(&self) -> u32 {
         self.child
@@ -277,9 +273,7 @@ impl SuspendedChild {
 
     /// Borrows the suspended process's primary thread handle.
     ///
-    /// This handle is available for supported thread configuration and
-    /// inspection before [`Self::resume`] consumes the suspended state.
-    ///
+    /// Available for thread configuration and inspection before [`Self::resume`].
     #[must_use]
     pub fn primary_thread_handle(&self) -> BorrowedHandle<'_> {
         self.main_thread.as_handle()
@@ -289,10 +283,8 @@ impl SuspendedChild {
     ///
     /// # Errors
     ///
-    /// Returns the operating-system error when the primary thread cannot be
-    /// resumed. It also returns `InvalidData` when external suspension or
-    /// resumption changed the expected suspend count of exactly one. The
-    /// process is terminated during either rollback.
+    /// Returns the operating-system error if the primary thread cannot be resumed, and `InvalidData` if its previous suspend count was not exactly one.
+    /// The process is terminated in both cases.
     pub fn resume(mut self) -> io::Result<Child> {
         let previous = sys::resume_thread(self.main_thread.as_handle())?;
         if previous != 1 {

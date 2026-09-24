@@ -120,9 +120,8 @@ pub enum ModuleTampering {
 
 /// CET user shadow-stack modes.
 ///
-/// Runtime support depends on the Windows release, processor architecture,
-/// hardware capabilities, and child executable. Representability here does
-/// not imply that the current host accepts the policy.
+/// Support depends on the Windows release, architecture, hardware, and child executable.
+/// A representable value may still be rejected by the host.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(u64)]
 pub enum CetShadowStacks {
@@ -139,8 +138,7 @@ pub enum CetShadowStacks {
 
 /// CET set-context instruction-pointer validation modes.
 ///
-/// Runtime support depends on the Windows release, processor architecture,
-/// hardware capabilities, and child executable.
+/// Support depends on the Windows release, architecture, hardware, and child executable.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(u64)]
 pub enum UserCetContextIpValidation {
@@ -157,8 +155,7 @@ pub enum UserCetContextIpValidation {
 
 /// Modes for blocking binaries without CET or EH continuation metadata.
 ///
-/// Runtime support depends on the Windows release, processor architecture,
-/// and executable metadata.
+/// Support depends on the Windows release, architecture, and executable metadata.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(u64)]
 pub enum BlockNonCetBinaries {
@@ -175,23 +172,21 @@ pub enum BlockNonCetBinaries {
 
 /// A complete SDK 10.0.22621 process-creation mitigation policy.
 ///
-/// Setters replace one field. Reserved values and combined raw policy words
-/// cannot be represented.
+/// Each setter replaces one field.
+/// Reserved values and raw policy words cannot be represented.
 ///
 /// # Runtime support
 ///
-/// This type mirrors the policy fields in Windows SDK 10.0.22621; it is not a
-/// claim that every field works on every supported Windows installation.
-/// Availability varies by individual policy, Windows release, processor
-/// architecture, hardware, and child executable. windows-spawn does not weaken
-/// a requested policy. Unsupported policies return the process-creation error.
+/// The fields mirror Windows SDK 10.0.22621; not every field works on every supported installation.
+/// Support varies by policy, Windows release, architecture, hardware, and child executable.
+/// Requested policies are not weakened; an unsupported one fails process creation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct MitigationPolicy {
     words: [u64; 2],
 }
 
 impl MitigationPolicy {
-    /// Creates a policy which defers every field.
+    /// Creates a policy that defers every field.
     #[must_use]
     pub const fn new() -> Self {
         Self { words: [0, 0] }

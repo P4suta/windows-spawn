@@ -1,9 +1,7 @@
 name: Finalize release
 
-# Called by release-plz.yml once release-plz has published the crate and created
-# the tag. `git_release_enable = false` leaves the GitHub release to this
-# workflow, because the crate, SBOM, checksums, and attestations have to be
-# attached before it is published.
+# Called by release-plz.yml after it publishes the crate and creates the tag.
+# The GitHub release is created here so the crate, SBOM, checksums, and attestations are attached before it is published.
 "on":
   workflow_call:
     inputs:
@@ -54,10 +52,8 @@ jobs:
         id: candidate
         run: cargo xtask release-candidate --github-output
 
-      # The attestations below cover the archive built here, so it has to be
-      # the archive crates.io actually serves. `cargo package` is deterministic
-      # for a given source tree, and release-plz published from this same tag,
-      # so a mismatch means something diverged and the release must not proceed.
+      # The attestations cover this rebuilt archive, so it must equal the one crates.io serves.
+      # `cargo package` is deterministic for a source tree; a mismatch stops the release.
       - name: Require the built archive to match the published crate
         shell: pwsh
         run: |

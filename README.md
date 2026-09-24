@@ -2,19 +2,15 @@
 
 [![CI](https://github.com/P4suta/windows-spawn/actions/workflows/ci.yml/badge.svg)](https://github.com/P4suta/windows-spawn/actions/workflows/ci.yml)
 
-Windows process creation with explicit handle transfer, ordered Job attachment,
-mitigation policies, ConPTY, and suspended inspection.
+Windows process creation with explicit handle transfer, ordered Job attachment, mitigation policies, ConPTY, and suspended inspection.
 
-## Use and platform
+Use `std::process::Command` for portable child processes.
+Use this crate when `CreateProcessW` features need explicit ownership and rollback.
 
-Use `std::process::Command` for portable child processes. Use this crate for
-`CreateProcessW` features that require explicit ownership and rollback.
+Requires Windows 10 version 1809 or later and Rust 1.75 or later.
+Non-Windows targets expose no API.
 
-The crate requires Windows 10 version 1809 or later and Rust 1.75 or later.
-Non-Windows targets expose no public API.
-
-This project is not affiliated with Microsoft or the `windows-rs` project. The
-`windows-` prefix describes the target platform, not the publisher.
+Not affiliated with Microsoft or `windows-rs`; `windows-` names the target platform.
 
 ## Installation
 
@@ -22,7 +18,7 @@ This project is not affiliated with Microsoft or the `windows-rs` project. The
 cargo add windows-spawn
 ```
 
-## Minimal example
+## Example
 
 ```rust
 use windows_spawn::{Command, DropPolicy, SpawnOptions};
@@ -39,7 +35,7 @@ assert!(output.status.success());
 
 ## Documentation
 
-- [API and behavioral contracts](https://docs.rs/windows-spawn)
+- [API and contracts](https://docs.rs/windows-spawn)
 - [Examples](https://github.com/P4suta/windows-spawn/tree/main/examples)
 - [Architecture decisions](https://github.com/P4suta/windows-spawn/tree/main/docs/adr)
 - [Security policy](https://github.com/P4suta/windows-spawn/security/policy)

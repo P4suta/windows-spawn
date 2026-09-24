@@ -1,4 +1,7 @@
 //! Passes a privately duplicated handle through a child-side protocol.
+//!
+//! `arg_handle` keeps a private duplicate, so the source can be dropped before the spawn.
+//! `worker.exe` parses the next argument as a borrowed handle value.
 
 #[cfg(windows)]
 fn main() -> std::io::Result<()> {
@@ -10,8 +13,6 @@ fn main() -> std::io::Result<()> {
     let mut command = Command::new("worker.exe");
     command.arg("--log-handle").arg_handle(&log)?;
 
-    // arg_handle stored a private non-inheritable duplicate. The worker
-    // protocol parses the following decimal argument as its borrowed handle.
     drop(log);
     let status = command.status()?;
     assert!(status.success());

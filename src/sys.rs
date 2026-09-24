@@ -60,8 +60,7 @@ impl Drop for EnvironmentBlock {
     fn drop(&mut self) {
         #[cfg(test)]
         ENVIRONMENT_BLOCK_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        // SAFETY: the pointer came from GetEnvironmentStringsW and is
-        // released exactly once.
+        // SAFETY: the pointer came from GetEnvironmentStringsW and is freed once.
         unsafe {
             FreeEnvironmentStringsW(self.0);
         }
@@ -85,9 +84,7 @@ pub(crate) fn duplicate_local(
     source: BorrowedHandle<'_>,
     inheritable: bool,
 ) -> io::Result<OwnedHandle> {
-    // SAFETY: `GetCurrentProcess` takes no arguments, cannot fail, and returns
-    // the current-process pseudo-handle. The value is a constant that stays
-    // valid for the lifetime of the process and must never be closed.
+    // SAFETY: `GetCurrentProcess` cannot fail and returns a pseudo-handle that stays valid and is never closed.
     let current = unsafe { GetCurrentProcess() };
     duplicate_between(
         current,
@@ -106,8 +103,7 @@ fn duplicate_between(
     options: u32,
 ) -> io::Result<OwnedHandle> {
     let mut duplicate = ptr::null_mut();
-    // SAFETY: process and source handles are valid for the call; `duplicate`
-    // points to writable storage and becomes uniquely owned on success.
+    // SAFETY: the process and source handles are valid for the call, and `duplicate` is writable; on success it is uniquely owned.
     if unsafe {
         DuplicateHandle(
             source_process,
@@ -137,15 +133,11 @@ impl RemoteHandle<'_> {
     }
 }
 
+/// Moves the remote value back with close-source duplication and closes the local copy.
 impl Drop for RemoteHandle<'_> {
     fn drop(&mut self) {
-        // SAFETY: `GetCurrentProcess` takes no arguments, cannot fail, and
-        // returns the current-process pseudo-handle. The value is a constant
-        // that stays valid for the lifetime of the process and is never closed.
+        // SAFETY: `GetCurrentProcess` cannot fail and returns a pseudo-handle that stays valid and is never closed.
         let current = unsafe { GetCurrentProcess() };
-        // `duplicate_between` turns the temporary local copy into an
-        // `OwnedHandle`; discarding the result closes it immediately. The
-        // close-source option atomically removes the remote value.
         let _ = duplicate_between(
             raw(self.process),
             self.value,
@@ -162,8 +154,7 @@ pub(crate) fn duplicate_remote<'a>(
     inheritable: bool,
 ) -> io::Result<RemoteHandle<'a>> {
     let mut value = ptr::null_mut();
-    // SAFETY: both process handles and `source` remain valid. The returned
-    // numeric handle belongs to `target_process` and is owned by RemoteHandle.
+    // SAFETY: both process handles and `source` are valid; the returned value belongs to `target_process` and is owned by `RemoteHandle`.
     if unsafe {
         DuplicateHandle(
             GetCurrentProcess(),
@@ -195,8 +186,7 @@ pub(crate) fn standard_handle(stream: StandardStream) -> io::Result<Option<Owned
     if !is_valid_handle(handle) {
         return Ok(None);
     }
-    // SAFETY: GetStdHandle returned a live borrowed handle. The borrow is used
-    // only during DuplicateHandle and is never closed.
+    // SAFETY: GetStdHandle returned a live handle; it is borrowed only for DuplicateHandle and never closed.
     let borrowed = unsafe { BorrowedHandle::borrow_raw(handle as RawHandle) };
     duplicate_local(borrowed, false).map(Some)
 }
@@ -207,8 +197,7 @@ pub(crate) fn null_handle(access: NullAccess) -> io::Result<OwnedHandle> {
         NullAccess::Read => GENERIC_READ,
         NullAccess::Write => GENERIC_WRITE,
     };
-    // SAFETY: `name` is NUL-terminated; optional pointers are null. The return
-    // value is transferred into OwnedHandle on success.
+    // SAFETY: `name` is NUL-terminated and the optional pointers are null; the result is adopted only on success.
     let handle = unsafe {
         CreateFileW(
             name.as_ptr(),
@@ -237,14 +226,11 @@ pub(crate) struct Pipe {
 pub(crate) fn create_pipe(parent_reads: bool) -> io::Result<Pipe> {
     let mut read = ptr::null_mut();
     let mut write = ptr::null_mut();
-    // SAFETY: both output pointers are valid. Null security attributes make
-    // both initial handles private; the child end is duplicated immediately
-    // before CreateProcessW.
+    // SAFETY: both output pointers are valid, and null security attributes make both handles non-inheritable.
     if unsafe { CreatePipe(&mut read, &mut write, ptr::null::<SECURITY_ATTRIBUTES>(), 0) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: successful CreatePipe guarantees two valid, distinct handles;
-    // ownership of both is transferred together before either can be lost.
+    // SAFETY: CreatePipe succeeded, so both handles are valid and distinct; they are adopted together.
     let (read, write) = unsafe {
         (
             OwnedHandle::from_raw_handle(read as RawHandle),
@@ -271,7 +257,7 @@ pub(crate) fn open_parent_process(pid: u32) -> io::Result<OwnedHandle> {
 }
 
 pub(crate) fn validate_process_handle(handle: BorrowedHandle<'_>) -> io::Result<()> {
-    // SAFETY: the borrowed handle remains valid for the query.
+    // SAFETY: the borrowed handle is valid for the query.
     if unsafe { GetProcessId(raw(handle)) } == 0 {
         Err(io::Error::last_os_error())
     } else {
@@ -295,8 +281,7 @@ pub(crate) fn set_job_kill_on_close(handle: BorrowedHandle<'_>, enable: bool) ->
     } else {
         limits.BasicLimitInformation.LimitFlags &= !JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     }
-    // SAFETY: `limits` is the exact structure required by the information
-    // class and remains readable for the call.
+    // SAFETY: `limits` is the structure this information class requires and is readable for the call.
     if unsafe {
         SetInformationJobObject(
             raw(handle),
@@ -317,8 +302,7 @@ fn query_job_limits(
     handle: BorrowedHandle<'_>,
 ) -> io::Result<JOBOBJECT_EXTENDED_LIMIT_INFORMATION> {
     let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-    // SAFETY: `limits` is correctly sized writable storage for the selected
-    // information class; the optional returned-size pointer is null.
+    // SAFETY: `limits` is writable storage of the size this information class requires, and the returned-size pointer is null.
     if unsafe {
         QueryInformationJobObject(
             raw(handle),
@@ -337,12 +321,12 @@ fn query_job_limits(
 }
 
 pub(crate) fn assign_job(job: BorrowedHandle<'_>, process: BorrowedHandle<'_>) -> io::Result<()> {
-    // SAFETY: both handles remain valid for the call.
+    // SAFETY: both handles are valid for the call.
     bool_result(unsafe { AssignProcessToJobObject(raw(job), raw(process)) })
 }
 
 pub(crate) fn terminate_job(job: BorrowedHandle<'_>, exit_code: u32) -> io::Result<()> {
-    // SAFETY: the Job handle remains valid for the call.
+    // SAFETY: the Job handle is valid for the call.
     bool_result(unsafe { TerminateJobObject(raw(job), exit_code) })
 }
 
@@ -353,7 +337,7 @@ pub(crate) struct AttributeList {
 impl AttributeList {
     pub(crate) fn new(count: u32) -> io::Result<Self> {
         let mut bytes = 0_usize;
-        // SAFETY: the documented first call uses a null list to obtain size.
+        // SAFETY: the documented size query passes a null list.
         let probe =
             unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), count, 0, &mut bytes) };
         let probe_error = io::Error::last_os_error();
@@ -377,8 +361,7 @@ impl AttributeList {
         let mut storage = vec![0_usize; words].into_boxed_slice();
         let pointer = storage.as_mut_ptr().cast();
         let mut actual = words * size_of::<usize>();
-        // SAFETY: Box<[usize]> is word-aligned, stable, and at least `bytes`
-        // bytes long. It remains owned by the returned AttributeList.
+        // SAFETY: the `Box<[usize]>` is word-aligned, stable, at least `bytes` long, and owned by the returned `AttributeList`.
         if unsafe { InitializeProcThreadAttributeList(pointer, count, 0, &mut actual) } == 0 {
             return Err(io::Error::last_os_error());
         }
@@ -417,9 +400,8 @@ impl AttributeList {
         )
     }
 
+    /// Unlike the other attributes, `lpValue` is the `HPCON` value itself, not its address.
     pub(crate) fn set_pseudoconsole(&mut self, pseudoconsole: isize) -> io::Result<()> {
-        // PSEUDOCONSOLE is the sole attribute whose lpValue is the HPCON value
-        // itself, matching Microsoft's ConPTY sample, not `&HPCON`.
         self.update(
             PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
             pseudoconsole as *const c_void,
@@ -428,9 +410,7 @@ impl AttributeList {
     }
 
     fn update(&mut self, attribute: usize, value: *const c_void, bytes: usize) -> io::Result<()> {
-        // SAFETY: the list is initialized, `value` points to `bytes` readable
-        // bytes (or is the documented HPCON value), and the transaction keeps
-        // every backing allocation stable through CreateProcessW.
+        // SAFETY: the list is initialized, `value` points to `bytes` readable bytes or is the `HPCON` value, and the transaction keeps every backing allocation stable until CreateProcessW returns.
         if unsafe {
             UpdateProcThreadAttribute(
                 self.pointer(),
@@ -520,9 +500,7 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
     let current_dir = request.current_dir.map_or(ptr::null(), <[u16]>::as_ptr);
     let mut information = PROCESS_INFORMATION::default();
 
-    // SAFETY: all UTF-16 buffers are correctly terminated and remain live;
-    // command_line is writable as required by CreateProcessW. Startup handles
-    // and every attribute backing allocation remain live for the call.
+    // SAFETY: every UTF-16 buffer is terminated and live, `command_line` is writable, and the startup handles and attribute allocations outlive the call.
     if unsafe {
         CreateProcessW(
             request.application.as_ptr(),
@@ -541,8 +519,7 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
         return Err(io::Error::last_os_error());
     }
 
-    // SAFETY: successful CreateProcessW guarantees valid process and primary
-    // thread handles. Adopt both in one step so no success-only handle can leak.
+    // SAFETY: CreateProcessW succeeded, so both handles are valid; they are adopted together so neither can leak.
     let (process, thread) = unsafe {
         (
             OwnedHandle::from_raw_handle(information.hProcess as RawHandle),
@@ -566,7 +543,7 @@ fn set_standard_handles(startup: &mut STARTUPINFOEXW, stdio: StartupStdio) {
 }
 
 pub(crate) fn wait_process(process: BorrowedHandle<'_>) -> io::Result<()> {
-    // SAFETY: the process handle remains valid while waiting.
+    // SAFETY: the process handle is valid for the wait.
     match unsafe { WaitForSingleObject(raw(process), INFINITE) } {
         WAIT_OBJECT_0 => Ok(()),
         _ => Err(io::Error::last_os_error()),
@@ -574,7 +551,7 @@ pub(crate) fn wait_process(process: BorrowedHandle<'_>) -> io::Result<()> {
 }
 
 pub(crate) fn try_wait_process(process: BorrowedHandle<'_>) -> io::Result<bool> {
-    // SAFETY: the process handle remains valid while querying.
+    // SAFETY: the process handle is valid for the query.
     match unsafe { WaitForSingleObject(raw(process), 0) } {
         WAIT_OBJECT_0 => Ok(true),
         WAIT_TIMEOUT => Ok(false),
@@ -587,7 +564,7 @@ pub(crate) fn wait_process_for_test(
     process: BorrowedHandle<'_>,
     timeout_millis: u32,
 ) -> io::Result<bool> {
-    // SAFETY: the process handle remains valid while querying.
+    // SAFETY: the process handle is valid for the query.
     match unsafe { WaitForSingleObject(raw(process), timeout_millis) } {
         WAIT_OBJECT_0 => Ok(true),
         WAIT_TIMEOUT => Ok(false),
@@ -595,12 +572,12 @@ pub(crate) fn wait_process_for_test(
     }
 }
 
+/// Calls Win32 directly so mutants of the production wrappers cannot disable cleanup.
 #[cfg(test)]
 pub(crate) fn cleanup_process_for_test(process: BorrowedHandle<'_>) {
-    // Bypass the production wrapper so its mutants cannot disable cleanup.
-    // SAFETY: tests pass a duplicate with the source process handle's access.
+    // SAFETY: tests pass a duplicate with the source handle's access.
     let _ = unsafe { TerminateProcess(raw(process), 1) };
-    // SAFETY: the same borrowed process handle remains valid for the wait.
+    // SAFETY: the same handle is valid for the wait.
     let _ = unsafe { WaitForSingleObject(raw(process), 5_000) };
 }
 
@@ -608,7 +585,7 @@ pub(crate) fn exit_status(process: BorrowedHandle<'_>) -> io::Result<ExitStatus>
     use std::os::windows::process::ExitStatusExt;
 
     let mut code = 0_u32;
-    // SAFETY: `code` is writable and the process handle remains valid.
+    // SAFETY: `code` is writable and the process handle is valid.
     if unsafe { GetExitCodeProcess(raw(process), &mut code) } == 0 {
         Err(io::Error::last_os_error())
     } else {
@@ -617,12 +594,12 @@ pub(crate) fn exit_status(process: BorrowedHandle<'_>) -> io::Result<ExitStatus>
 }
 
 pub(crate) fn terminate_process(process: BorrowedHandle<'_>, exit_code: u32) -> io::Result<()> {
-    // SAFETY: the process handle remains valid for the call.
+    // SAFETY: the process handle is valid for the call.
     bool_result(unsafe { TerminateProcess(raw(process), exit_code) })
 }
 
 pub(crate) fn resume_thread(thread: BorrowedHandle<'_>) -> io::Result<u32> {
-    // SAFETY: the thread handle remains valid for the call.
+    // SAFETY: the thread handle is valid for the call.
     let previous = unsafe { ResumeThread(raw(thread)) };
     if previous == u32::MAX {
         Err(io::Error::last_os_error())
@@ -637,8 +614,7 @@ pub(crate) fn read_handle(handle: BorrowedHandle<'_>, buffer: &mut [u8]) -> io::
     }
     let length = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
     let mut read = 0_u32;
-    // SAFETY: buffer is writable for `length` bytes, the synchronous handle
-    // remains valid, and a null OVERLAPPED requests synchronous I/O.
+    // SAFETY: `buffer` is writable for `length` bytes, the handle is valid, and a null OVERLAPPED requests synchronous I/O.
     if unsafe {
         ReadFile(
             raw(handle),
@@ -671,8 +647,7 @@ pub(crate) fn write_handle(handle: BorrowedHandle<'_>, buffer: &[u8]) -> io::Res
     }
     let length = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
     let mut written = 0_u32;
-    // SAFETY: buffer is readable for `length` bytes, the synchronous handle
-    // remains valid, and a null OVERLAPPED requests synchronous I/O.
+    // SAFETY: `buffer` is readable for `length` bytes, the handle is valid, and a null OVERLAPPED requests synchronous I/O.
     if unsafe {
         WriteFile(
             raw(handle),
@@ -690,8 +665,7 @@ pub(crate) fn write_handle(handle: BorrowedHandle<'_>, buffer: &[u8]) -> io::Res
 }
 
 pub(crate) fn environment_strings() -> io::Result<Vec<(OsString, OsString)>> {
-    // SAFETY: GetEnvironmentStringsW returns a process-owned double-NUL block
-    // which remains valid until FreeEnvironmentStringsW below.
+    // SAFETY: GetEnvironmentStringsW returns a double-NUL block that stays valid until FreeEnvironmentStringsW.
     let base = unsafe { GetEnvironmentStringsW() };
     if base.is_null() {
         return Err(io::Error::last_os_error());
@@ -700,19 +674,18 @@ pub(crate) fn environment_strings() -> io::Result<Vec<(OsString, OsString)>> {
     let mut entries = Vec::new();
     let mut cursor = guard.0;
     loop {
-        // SAFETY: cursor walks one NUL-terminated entry at a time inside the
-        // double-NUL-terminated environment block.
+        // SAFETY: `cursor` points at the start of an entry inside the double-NUL block.
         if unsafe { *cursor } == 0 {
             break;
         }
         let mut length = 0_usize;
-        // SAFETY: the OS-provided current entry is NUL-terminated.
+        // SAFETY: the current entry is NUL-terminated.
         while unsafe { *cursor.add(length) } != 0 {
             length = length
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("environment entry is too large"))?;
         }
-        // SAFETY: the just-computed range lies within the current entry.
+        // SAFETY: the range was just measured inside the current entry.
         let entry = unsafe { std::slice::from_raw_parts(cursor, length) };
         if let Some(separator) = entry[1..]
             .iter()
@@ -727,8 +700,7 @@ pub(crate) fn environment_strings() -> io::Result<Vec<(OsString, OsString)>> {
         let advance = length
             .checked_add(1)
             .ok_or_else(|| io::Error::other("environment block is too large"))?;
-        // SAFETY: `advance` moves to the first unit after this entry's
-        // terminator, which is still inside the double-NUL-terminated block.
+        // SAFETY: `advance` moves just past this entry's terminator, still inside the block.
         cursor = unsafe { cursor.add(advance) };
     }
     Ok(entries)
@@ -747,7 +719,7 @@ pub(crate) fn compare_ordinal(left: &[u16], right: &[u16]) -> Ordering {
 }
 
 pub(crate) fn program_exists(path: &[u16]) -> bool {
-    // SAFETY: callers supply a NUL-terminated path buffer.
+    // SAFETY: callers pass a NUL-terminated path.
     unsafe { GetFileAttributesW(path.as_ptr()) != INVALID_FILE_ATTRIBUTES }
 }
 
@@ -812,8 +784,7 @@ fn raw(handle: BorrowedHandle<'_>) -> HANDLE {
 
 fn owned(handle: HANDLE) -> io::Result<OwnedHandle> {
     if is_valid_handle(handle) {
-        // SAFETY: callers pass a newly-created or newly-duplicated handle and
-        // transfer its sole local ownership into this function.
+        // SAFETY: callers pass a new handle and transfer its only local ownership.
         Ok(unsafe { OwnedHandle::from_raw_handle(handle as RawHandle) })
     } else {
         Err(io::Error::last_os_error())
@@ -844,7 +815,7 @@ mod tests {
 
     fn process_handle_count(process: BorrowedHandle<'_>) -> io::Result<u32> {
         let mut count = 0;
-        // SAFETY: `process` remains valid and count is writable DWORD storage.
+        // SAFETY: `process` is valid and `count` is writable DWORD storage.
         if unsafe { GetProcessHandleCount(raw(process), &mut count) } == 0 {
             Err(io::Error::last_os_error())
         } else {
@@ -853,10 +824,8 @@ mod tests {
     }
 
     fn current_process() -> BorrowedHandle<'static> {
-        // SAFETY: `GetCurrentProcess` cannot fail and returns the
-        // current-process pseudo-handle, a constant that stays valid for the
-        // whole process lifetime. `BorrowedHandle` never closes what it borrows,
-        // so a `'static` borrow of it can never dangle or double-close.
+        // SAFETY: `GetCurrentProcess` cannot fail and returns a pseudo-handle valid for the process lifetime.
+        // `BorrowedHandle` never closes it, so a `'static` borrow cannot dangle or double-close.
         unsafe { BorrowedHandle::borrow_raw(GetCurrentProcess() as RawHandle) }
     }
 

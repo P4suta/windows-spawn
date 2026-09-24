@@ -1,10 +1,10 @@
 ## Summary
 
-<!-- Explain the problem and the focused change. -->
+<!-- The problem and the change. -->
 
 ## Validation
 
-<!-- List the exact commands and relevant Windows versions tested. -->
+<!-- Exact commands and Windows versions. -->
 
 ## Checklist
 

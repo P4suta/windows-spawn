@@ -93,7 +93,6 @@ impl<M: SpawnState> SpawnTransaction<M> {
             .map(|path| wide_nul(path.as_os_str()))
             .transpose()?;
 
-        // Freeze every pointer-valued attribute before adding it to the list.
         let inherited_values = transfer.inherited_values().to_vec().into_boxed_slice();
         let parent_value = transfer
             .parent()
@@ -145,8 +144,6 @@ impl<M: SpawnState> SpawnTransaction<M> {
         };
         let created = sys::create_process(&mut request)?;
 
-        // Attribute backing, local inheritable duplicates, and alternate-parent
-        // remote sources all roll back here. The child now owns inherited copies.
         drop(attributes);
         drop(transfer);
 

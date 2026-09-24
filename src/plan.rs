@@ -253,8 +253,7 @@ mod tests {
 
     struct InvalidPseudoConsole;
 
-    // SAFETY: every test rejects the request during pure planning, before the
-    // sentinel value can reach the system layer.
+    // SAFETY: each request is rejected during planning, before the sentinel reaches the system layer.
     unsafe impl AsPseudoConsole for InvalidPseudoConsole {
         fn raw_pseudoconsole(&self) -> isize {
             1

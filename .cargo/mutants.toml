@@ -4,8 +4,7 @@ minimum_test_timeout = 60.0
 gitignore = true
 cap_lints = false
 
-# Each exclusion is an audited equivalent transformation documented in
-# docs/adr/0008-mutation-testing.md. No file or mutation class is excluded.
+# Each exclusion is an equivalent mutation audited in docs/adr/0008-mutation-testing.md.
 exclude_re = [
   'src/mitigation\.rs:.*replace \| with \^ in replace',
   'src/sys\.rs:.*replace \| with \^ in <impl Drop for RemoteHandle',

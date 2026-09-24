@@ -2,7 +2,7 @@ blank_issues_enabled: false
 contact_links:
   - name: Report a security vulnerability
     url: https://github.com/P4suta/windows-spawn/security/advisories/new
-    about: Privately report a suspected vulnerability; do not open a public issue.
+    about: Report a suspected vulnerability privately.
   - name: Read the support policy
     url: https://github.com/P4suta/windows-spawn/blob/main/SUPPORT.md
-    about: Check supported help channels and the information to include.
+    about: Help channels and what to include.

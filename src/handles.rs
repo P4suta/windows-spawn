@@ -59,7 +59,7 @@ impl Stdio {
 
     /// Duplicates a borrowed handle into private, non-inheritable ownership.
     ///
-    /// The original handle may be closed immediately after this call.
+    /// The original handle may be closed afterwards.
     ///
     /// # Errors
     ///
@@ -195,22 +195,14 @@ impl AsHandle for Job {
 ///
 /// # Safety
 ///
-/// Implementations must return a valid, nonzero `HPCON` and keep it open and
-/// unchanged for the full lifetime of every borrow passed to
-/// [`crate::SpawnOptions::pseudoconsole`]. The implementation retains
-/// ownership: windows-spawn borrows the value for process creation and never closes
-/// or releases it.
+/// Implementations must return a valid, nonzero `HPCON` that stays open and unchanged for every borrow passed to [`crate::SpawnOptions::pseudoconsole`].
+/// The implementation keeps ownership; windows-spawn never closes or releases it.
 #[allow(unsafe_code)]
 pub unsafe trait AsPseudoConsole {
     /// Returns the borrowed raw `HPCON` value.
     ///
-    /// Library implementations use this method to bridge their owned
-    /// pseudoconsole type to windows-spawn. Applications should normally pass the
-    /// implementing object to [`crate::SpawnOptions::pseudoconsole`] instead
-    /// of reading the numeric value.
-    ///
-    /// The returned value must satisfy the trait's safety contract. Calling
-    /// this method does not transfer ownership.
+    /// Terminal libraries implement this to bridge their pseudoconsole type; applications pass the implementing value to [`crate::SpawnOptions::pseudoconsole`].
+    /// The value must satisfy the trait's safety contract; ownership does not transfer.
     fn raw_pseudoconsole(&self) -> isize;
 }
 

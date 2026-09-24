@@ -59,8 +59,7 @@ fn temporary_path(label: &str) -> PathBuf {
 
 fn local_duplicate<T: AsHandle>(source: &T, inheritable: bool) -> io::Result<OwnedHandle> {
     let mut duplicate = std::ptr::null_mut();
-    // SAFETY: both process pseudo-handles are valid, the source remains
-    // borrowed for the call, and `duplicate` is writable output storage.
+    // SAFETY: both pseudo-handles are valid, the source is borrowed for the call, and `duplicate` is writable.
     let success = unsafe {
         DuplicateHandle(
             GetCurrentProcess(),
@@ -87,8 +86,7 @@ fn inheritable_duplicate<T: AsHandle>(source: &T) -> io::Result<OwnedHandle> {
 fn file_identity(handle: HANDLE) -> io::Result<(u32, u64)> {
     // SAFETY: the all-zero value is a valid output buffer initialization.
     let mut information = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
-    // SAFETY: the caller supplies the handle under test and the output buffer
-    // remains writable for the duration of the call.
+    // SAFETY: the handle is valid and the output buffer is writable for the call.
     if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0 {
         Err(io::Error::last_os_error())
     } else {
@@ -113,7 +111,7 @@ impl ProcessExitGuard {
 
     fn wait(&mut self, timeout: Duration) -> io::Result<bool> {
         let timeout = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
-        // SAFETY: the duplicated process handle remains valid for the wait.
+        // SAFETY: the duplicated process handle is valid for the wait.
         match unsafe { WaitForSingleObject(self.process.as_raw_handle(), timeout) } {
             WAIT_OBJECT_0 => {
                 self.armed = false;
@@ -125,13 +123,13 @@ impl ProcessExitGuard {
     }
 }
 
+/// Terminates through Win32 directly so mutants of the crate cannot disable cleanup.
 impl Drop for ProcessExitGuard {
     fn drop(&mut self) {
         if self.armed {
-            // Bypass the crate path so its mutants cannot disable cleanup.
             // SAFETY: the duplicate has the source process handle's access.
             let _ = unsafe { TerminateProcess(self.process.as_raw_handle(), 1) };
-            // SAFETY: the same owned process handle remains valid here.
+            // SAFETY: the same handle is valid for the wait.
             let _ = unsafe { WaitForSingleObject(self.process.as_raw_handle(), 5_000) };
         }
     }
@@ -211,7 +209,7 @@ fn suspended_child_resumes_once_into_normal_state() -> io::Result<()> {
     let pid = suspended.id();
     let process_handle = suspended.as_handle().as_raw_handle();
     let thread_handle = suspended.primary_thread_handle().as_raw_handle();
-    // SAFETY: SuspendedChild owns both handles for these non-mutating queries.
+    // SAFETY: SuspendedChild owns both handles for these read-only queries.
     assert_eq!(unsafe { GetProcessId(process_handle) }, pid);
     // SAFETY: the primary thread handle is valid until resume consumes it.
     assert_ne!(unsafe { GetThreadId(thread_handle) }, 0);
@@ -239,8 +237,7 @@ fn resume_rejects_an_externally_changed_suspend_count() -> io::Result<()> {
     let mut command = cmd("ping -n 10 127.0.0.1 >nul");
     let suspended = command.spawn_suspended()?;
     let mut process = ProcessExitGuard::new(local_duplicate(&suspended, false)?);
-    // SAFETY: the primary thread handle remains owned by SuspendedChild and
-    // has THREAD_SUSPEND_RESUME access from CreateProcessW.
+    // SAFETY: SuspendedChild owns the primary thread handle, which has THREAD_SUSPEND_RESUME access.
     let previous_suspend_count =
         unsafe { SuspendThread(suspended.primary_thread_handle().as_raw_handle()) };
     assert_eq!(previous_suspend_count, 1);
@@ -278,17 +275,16 @@ fn native_standard_handle_probe() {
     let Ok(mode) = std::env::var("WINDOWS_SPAWN_STDIO_PROBE") else {
         return;
     };
-    // SAFETY: this only inspects the process-owned standard input slot.
+    // SAFETY: this only reads the standard input slot.
     let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
-    // SAFETY: this only inspects the process-owned standard output slot.
+    // SAFETY: this only reads the standard output slot.
     let output = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
-    // SAFETY: this only inspects the process-owned standard error slot.
+    // SAFETY: this only reads the standard error slot.
     let error = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
     let valid = |handle: HANDLE| {
         !handle.is_null()
             && handle != INVALID_HANDLE_VALUE
-            // SAFETY: a non-null standard-handle value is valid for this
-            // non-owning query; FILE_TYPE_UNKNOWN detects invalid values.
+            // SAFETY: the query does not take ownership, and FILE_TYPE_UNKNOWN reports an invalid value.
             && unsafe { GetFileType(handle) } != FILE_TYPE_UNKNOWN
     };
     assert!(valid(output));
@@ -298,18 +294,18 @@ fn native_standard_handle_probe() {
         assert!(valid(input));
         let mut byte = [0_u8; 1];
         let mut read = 0_u32;
-        // SAFETY: buffers and byte-count outputs are valid for synchronous I/O.
+        // SAFETY: the buffers and byte counts are valid for synchronous I/O.
         let read_succeeded =
             unsafe { ReadFile(input, byte.as_mut_ptr(), 1, &mut read, std::ptr::null_mut()) };
         assert_ne!(read_succeeded, 0);
         assert_eq!(read, 0);
         let mut written = 0_u32;
-        // SAFETY: the one-byte buffer and byte-count output remain valid.
+        // SAFETY: the one-byte buffer and byte count are valid.
         let wrote_stdout =
             unsafe { WriteFile(output, byte.as_ptr(), 1, &mut written, std::ptr::null_mut()) };
         assert_ne!(wrote_stdout, 0);
         assert_eq!(written, 1);
-        // SAFETY: the one-byte buffer and byte-count output remain valid.
+        // SAFETY: the one-byte buffer and byte count are valid.
         let wrote_stderr =
             unsafe { WriteFile(error, byte.as_ptr(), 1, &mut written, std::ptr::null_mut()) };
         assert_ne!(wrote_stderr, 0);
@@ -345,12 +341,6 @@ fn explicit_job_attachment_and_kill_tree_output_complete() -> io::Result<()> {
     let options = SpawnOptions::new().job(&outer_job).job(&inner_job);
     assert!(ordinary.status_with(options)?.success());
 
-    // The background grandchild inherits stdout. Without terminating the
-    // private Job after root exit, wait_with_output would never observe EOF.
-    // Keep the natural grandchild lifetime well beyond the assertion budget.
-    // This preserves the EOF proof without making a three-second wall-clock
-    // deadline flaky when the full integration suite creates processes in
-    // parallel on a loaded CI host.
     let mut tree = cmd("start \"\" /b cmd.exe /D /C \"ping -n 20 127.0.0.1 >nul\" & echo root");
     let started = Instant::now();
     let output = tree.output_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
@@ -370,8 +360,7 @@ fn requested_mitigation_is_visible_on_the_real_process() -> io::Result<()> {
     let mitigation = MitigationPolicy::new().disable_extension_points(Mitigation::AlwaysOn);
     let mut child = command.spawn_with(SpawnOptions::new().mitigation(mitigation))?;
     let mut flags = 0_u32;
-    // SAFETY: the child owns a valid process handle, and `flags` is writable
-    // storage of the exact DWORD size required by this policy query.
+    // SAFETY: the child's process handle is valid, and `flags` is writable DWORD storage as this query requires.
     let queried = unsafe {
         GetProcessMitigationPolicy(
             child.as_handle().as_raw_handle(),
@@ -394,8 +383,7 @@ fn failed_transactions_do_not_leak_handles() -> io::Result<()> {
     const PROBE: &str = "WINDOWS_SPAWN_HANDLE_LEAK_PROBE";
     fn handle_count() -> io::Result<u32> {
         let mut count = 0;
-        // SAFETY: GetCurrentProcess returns a valid pseudo-handle and `count`
-        // points to writable DWORD storage for the duration of the call.
+        // SAFETY: the pseudo-handle is valid and `count` is writable DWORD storage.
         let success = unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) };
         if success == 0 {
             Err(io::Error::last_os_error())
@@ -627,8 +615,7 @@ fn child_pipes_try_wait_and_cached_lifecycle_work() -> io::Result<()> {
 
 struct InvalidPseudoConsole;
 
-// SAFETY: this implementation is used only in validation tests that reject
-// the request before the numeric value reaches the Win32 transaction.
+// SAFETY: only validation tests use this value, and they fail before it reaches Win32.
 unsafe impl AsPseudoConsole for InvalidPseudoConsole {
     fn raw_pseudoconsole(&self) -> isize {
         1
@@ -646,8 +633,7 @@ impl TestPseudoConsole {
         fn pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
             let mut read = std::ptr::null_mut();
             let mut write = std::ptr::null_mut();
-            // SAFETY: both output pointers are writable. On success each raw
-            // handle is transferred immediately to one OwnedHandle.
+            // SAFETY: both output pointers are writable; on success each handle is adopted once.
             if unsafe { CreatePipe(&mut read, &mut write, std::ptr::null(), 0) } == 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -663,8 +649,7 @@ impl TestPseudoConsole {
         let (input_reader, input_writer) = pipe()?;
         let (output_reader, output_writer) = pipe()?;
         let mut value = 0;
-        // SAFETY: the pipe handles remain valid for the call and `value` is
-        // writable HPCON storage. Ownership of HPCON is retained by this type.
+        // SAFETY: the pipe handles are valid for the call and `value` is writable; this type owns the HPCON.
         let result = unsafe {
             CreatePseudoConsole(
                 COORD { X: 80, Y: 25 },
@@ -695,8 +680,7 @@ impl TestPseudoConsole {
         let mut written = 0_u32;
         let length = u32::try_from(input.len())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "input is too large"))?;
-        // SAFETY: the input buffer and byte-count output are valid for the
-        // synchronous write, and the writer remains owned by self.
+        // SAFETY: the buffer and byte count are valid for the synchronous write, and `self` owns the writer.
         if unsafe {
             WriteFile(
                 writer.as_raw_handle(),
@@ -727,8 +711,7 @@ impl TestPseudoConsole {
         let mut received = Vec::new();
         loop {
             let mut available = 0_u32;
-            // SAFETY: the pipe handle remains owned by self, available is
-            // writable, and the unused optional output pointers are null.
+            // SAFETY: `self` owns the pipe handle, `available` is writable, and the unused outputs are null.
             if unsafe {
                 PeekNamedPipe(
                     output.as_raw_handle(),
@@ -745,8 +728,7 @@ impl TestPseudoConsole {
             if available != 0 {
                 let mut buffer = vec![0_u8; available as usize];
                 let mut read = 0_u32;
-                // SAFETY: buffer is writable for its length, read is writable,
-                // and the owned synchronous pipe handle remains valid.
+                // SAFETY: `buffer` and `read` are writable, and the owned pipe handle is valid.
                 if unsafe {
                     ReadFile(
                         output.as_raw_handle(),
@@ -776,26 +758,22 @@ impl TestPseudoConsole {
     }
 }
 
+/// Closes the client pipe ends first so `ClosePseudoConsole` cannot wait on an undrained reader.
+/// The close runs on a detached thread because some Windows Server 2022 builds block in it.
 impl Drop for TestPseudoConsole {
     fn drop(&mut self) {
-        // Closing both client pipe ends first prevents ClosePseudoConsole from
-        // waiting on an undrained output reader on affected Windows releases.
         drop(self.input_writer.take());
         drop(self.output_reader.take());
 
-        // Some Windows Server 2022 builds can still block indefinitely in
-        // ClosePseudoConsole after the attached child exits. Keep this test's
-        // teardown bounded; process teardown is the fallback for a stuck close.
         let value = self.value;
         let _ = thread::spawn(move || {
-            // SAFETY: this type uniquely owned the HPCON returned by creation.
+            // SAFETY: this type uniquely owns the HPCON.
             unsafe { ClosePseudoConsole(value) };
         });
     }
 }
 
-// SAFETY: TestPseudoConsole owns a live HPCON for its full borrow and does not
-// transfer that ownership to windows-spawn.
+// SAFETY: TestPseudoConsole owns a live HPCON for every borrow and keeps ownership.
 unsafe impl AsPseudoConsole for TestPseudoConsole {
     fn raw_pseudoconsole(&self) -> isize {
         self.value
@@ -821,15 +799,13 @@ fn pseudoconsole_attribute_connects_the_child_console() -> io::Result<()> {
     Ok(())
 }
 
+/// A nonzero console code page proves the child is attached to a console; `CONOUT$` is an extra check.
 #[test]
 fn pseudoconsole_child_probe() {
     if std::env::var_os("WINDOWS_SPAWN_PCON_PROBE").is_none() {
         return;
     }
-    // SAFETY: GetConsoleCP has no pointer preconditions. A nonzero code page
-    // proves this process was attached to a console. Opening CONOUT$ directly
-    // is only an auxiliary connection check; the isolated stdio regression
-    // below exercises the child's ordinary stdin/stdout/stderr slots.
+    // SAFETY: GetConsoleCP has no pointer preconditions.
     assert_ne!(unsafe { GetConsoleCP() }, 0);
     let mut output = File::options().write(true).open("CONOUT$").unwrap();
     output.write_all(b"windows-spawn-pcon-attached").unwrap();

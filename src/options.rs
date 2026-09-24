@@ -25,8 +25,8 @@ pub enum DropPolicy {
 
 /// Safe, named `CreateProcessW` creation flags.
 ///
-/// Unicode-environment, extended-startup-info, and suspended flags are set
-/// internally. There is no raw-bits constructor.
+/// Unicode-environment, extended-startup-info, and suspended flags are set internally.
+/// There is no raw-bits constructor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct CreationFlags(u32);
 
@@ -93,11 +93,9 @@ impl BitOrAssign for CreationFlags {
 
 /// Capabilities and policy needed only for one spawn operation.
 ///
-/// Jobs are retained in call order, from the root Job to the innermost Job.
-/// The options borrow every capability; they never assume ownership of a Job,
-/// parent process, or pseudoconsole.
-///
-/// The borrow cannot escape the capability it protects:
+/// Jobs are kept in call order, root first.
+/// The options borrow every capability and own none.
+/// A borrow cannot outlive its capability:
 ///
 /// ```compile_fail
 /// use windows_spawn::{Command, Job, SpawnOptions};

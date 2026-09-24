@@ -180,8 +180,6 @@ mod windows {
             .env(REMOVE, "must disappear")
             .env_remove("windows_spawn_roundtrip_remove");
         if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-            // LLVM writes a default `*.profraw` in the working directory when
-            // env_clear removes this instrumentation-only destination.
             command.env("LLVM_PROFILE_FILE", profile);
         }
         let status = command.status()?;
