@@ -10,6 +10,9 @@ mod readme_examples {}
 mod child;
 #[cfg(windows)]
 mod command;
+#[cfg(all(windows, test))]
+#[allow(unsafe_code)]
+mod failure_tests;
 #[cfg(windows)]
 mod handles;
 #[cfg(windows)]

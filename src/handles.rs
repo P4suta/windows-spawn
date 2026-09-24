@@ -213,6 +213,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stored_duplicates_are_private() -> io::Result<()> {
+        use crate::sys::test_support::is_inheritable;
+
+        let stdio = Stdio::from_borrowed(&File::open("NUL")?)?;
+        let StdioInner::Owned(owned) = &stdio.inner else {
+            panic!("from_borrowed stores an owned handle");
+        };
+        assert!(!is_inheritable(owned.as_handle()));
+        let duplicate = Job::create()?.duplicate()?;
+        assert!(!is_inheritable(duplicate.as_handle()));
+        Ok(())
+    }
+
+    #[test]
     fn owned_handle_adoption_validates_resource_kind() {
         let mut host_command = crate::Command::new("cmd.exe");
         host_command

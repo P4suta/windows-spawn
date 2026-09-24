@@ -15,3 +15,125 @@ locked = true
 # The documented examples repeat integration tests and would cost a rustdoc build per routed mutant.
 doctests = false
 test_binary_args = ["--test-threads=1"]
+
+# Survivors that no test can observe, each with the reason it is not a gap.
+
+[[mutation.expect]]
+path = "src/child.rs"
+item = "Child::try_wait"
+rule = "condition-to-false"
+original = "self.exit.is_some()"
+reason = "Equivalence: re-querying an exited process returns the cached status; child_pipes_try_wait_and_cached_lifecycle_work holds the cache."
+outcome = "survived"
+
+[[mutation.expect]]
+path = "src/sys.rs"
+item = "<RemoteHandle as Drop>::drop"
+rule = "false-to-true"
+original = "false"
+reason = "Equivalence: the local copy closes as the call returns; its inheritability matters only to a concurrent broad-inheritance spawn (ADR 0005)."
+outcome = "survived"
+
+[[mutation.expect]]
+path = "src/sys.rs"
+item = "create_process"
+rule = "condition-to-true"
+original = "request.attributes.is_some()"
+count = 2
+reason = "Equivalence: CreateProcessW accepts the STARTUPINFOEXW size and EXTENDED_STARTUPINFO_PRESENT with a null attribute list; every spawn test holds creation."
+outcome = "survived"
+
+[[mutation.expect]]
+path = "src/sys.rs"
+item = "read_handle"
+rule = "condition-to-false"
+original = "buffer.is_empty()"
+reason = "Equivalence: ReadFile with a zero length returns zero without consuming input."
+outcome = "survived"
+
+[[mutation.expect]]
+path = "src/sys.rs"
+item = "write_handle"
+rule = "condition-to-false"
+original = "buffer.is_empty()"
+reason = "Equivalence: WriteFile with a zero length writes nothing and returns zero."
+outcome = "survived"
+
+[[mutation.expect]]
+path = "src/sys.rs"
+item = "environment_strings"
+rule = "condition-to-false"
+original = "base.is_null()"
+reason = "Fail-open: GetEnvironmentStringsW returns null only when out of memory."
+outcome = "survived"
+
+[[mutation.expect]]
+path = "src/sys.rs"
+item = "environment_strings"
+rule = "question-to-unwrap"
+original = "?"
+count = 2
+reason = "Fail-open: an environment entry or block cannot approach usize::MAX units."
+outcome = "survived"
+
+[[mutation.expect]]
+path = "src/transaction.rs"
+item = "SpawnTransaction::new"
+rule = "condition-to-false"
+original = "attribute_count == 0"
+reason = "Equivalence: CreateProcessW accepts an empty attribute list."
+outcome = "survived"
+
+[[mutation.expect]]
+path = "src/transaction.rs"
+item = "build_environment"
+rule = "condition-to-false"
+original = "!command.env_clear && command.env_ops.is_empty()"
+reason = "Equivalence: a block built from the unmodified environment equals the inherited one."
+outcome = "survived"
+
+[[mutation.expect]]
+path = "src/transaction.rs"
+item = "build_environment"
+rule = "condition-to-true"
+original = "block.is_empty()"
+reason = "Equivalence: CreateProcessW ignores an extra NUL after the block's terminator."
+outcome = "survived"
+
+[[mutation.expect]]
+path = "src/transaction.rs"
+item = "broker_command_line"
+rule = "condition-to-false"
+original = "absolute.contains(&QUOTE)"
+reason = "Fail-open: GetFullPathNameW cannot return a double quote, which Windows paths cannot contain."
+outcome = "survived"
+
+[[mutation.expect]]
+path = "src/transaction.rs"
+item = "resolve_executable"
+rule = "condition-to-false"
+original = "has_exe_suffix"
+reason = "Equivalence: appending .exe to a path ending in .exe names no file, so the original path is returned."
+outcome = "survived"
+
+# Code no test can reach, or a fault observable only as a hang.
+
+[[mutation.skip]]
+path = "src/sys.rs"
+lines = "1004-1004"
+reason = "Unreachable: GetEnvironmentStringsW returns null only when out of memory."
+
+[[mutation.skip]]
+path = "src/sys.rs"
+lines = "1012-1012"
+reason = "Hang-only: continuing past the block terminator loops forever."
+
+[[mutation.skip]]
+path = "src/transaction.rs"
+lines = "492-495"
+reason = "Unreachable: GetFullPathNameW cannot return a double quote."
+
+[[mutation.skip]]
+path = "src/transaction.rs"
+lines = "106-106"
+reason = "Unreachable: wide_nul fails only on an interior NUL, which validate_command rejects first; rejects_every_malformed_text_component holds it."

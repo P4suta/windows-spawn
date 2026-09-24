@@ -340,6 +340,27 @@ pub(crate) fn suspend_count(thread: BorrowedHandle<'_>) -> io::Result<u32> {
     Ok(previous)
 }
 
+const ISOLATED_ARGUMENT: &str = "windows-spawn-isolated";
+const ISOLATED_VARIABLE: &str = "WINDOWS_SPAWN_ISOLATED";
+
+/// Reruns `test` alone in a fresh test process and returns false, unless this is that process.
+///
+/// The marker travels as both an argument and a variable, so a mutant that loses one cannot make the rerun recurse.
+pub(crate) fn isolated(test: &str) -> io::Result<bool> {
+    if std::env::var_os(ISOLATED_VARIABLE).is_some()
+        || std::env::args().any(|argument| argument == ISOLATED_ARGUMENT)
+    {
+        return Ok(true);
+    }
+    let status = Command::new(std::env::current_exe()?)
+        .args(["--exact", test, "--test-threads=1", ISOLATED_ARGUMENT])
+        .env(ISOLATED_VARIABLE, "1")
+        .stdin(Stdio::null())
+        .status()?;
+    assert!(status.success(), "{test} failed in isolation");
+    Ok(false)
+}
+
 /// A new directory under the temporary directory, removed on drop.
 pub(crate) struct TempDir(PathBuf);
 

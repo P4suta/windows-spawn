@@ -28,8 +28,9 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_TYPE_UNKNOWN,
 };
 use windows_sys::Win32::System::Console::{
-    ClosePseudoConsole, CreatePseudoConsole, GetConsoleCP, GetStdHandle, COORD, HPCON,
-    STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    ClosePseudoConsole, CreatePseudoConsole, GetConsoleCP, GetConsoleScreenBufferInfo,
+    GetStdHandle, CONSOLE_SCREEN_BUFFER_INFO, COORD, HPCON, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
+    STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
@@ -42,6 +43,20 @@ const PCON_STDIO_PROBE: &str = "WINDOWS_SPAWN_PCON_STDIO_PROBE";
 const PCON_STDIN_MARKER: &[u8] = b"windows-spawn-pcon-stdin";
 const PCON_STDOUT_MARKER: &[u8] = b"windows-spawn-pcon-stdout";
 const PCON_STDERR_MARKER: &[u8] = b"windows-spawn-pcon-stderr";
+/// An unusual pseudoconsole size, so a probe can tell it is attached to the test's pseudoconsole.
+const PCON_SIZE: COORD = COORD { X: 97, Y: 31 };
+
+/// Returns true if this process's console has the test pseudoconsole's size.
+fn attached_to_test_pseudoconsole() -> bool {
+    let Ok(output) = File::options().read(true).write(true).open("CONOUT$") else {
+        return false;
+    };
+    let mut information = CONSOLE_SCREEN_BUFFER_INFO::default();
+    // SAFETY: `output` is an open console handle and `information` is writable.
+    let queried =
+        unsafe { GetConsoleScreenBufferInfo(output.as_raw_handle() as HANDLE, &mut information) };
+    queried != 0 && information.dwSize.X == PCON_SIZE.X && information.dwSize.Y == PCON_SIZE.Y
+}
 
 fn cmd(script: &str) -> Command {
     let mut command = Command::new("cmd.exe");
@@ -313,7 +328,6 @@ fn requested_mitigation_is_visible_on_the_real_process() -> io::Result<()> {
 
 #[test]
 fn failed_transactions_do_not_leak_handles() -> io::Result<()> {
-    const PROBE: &str = "WINDOWS_SPAWN_HANDLE_LEAK_PROBE";
     fn handle_count() -> io::Result<u32> {
         let mut count = 0;
         // SAFETY: the pseudo-handle is valid and `count` is writable DWORD storage.
@@ -337,16 +351,7 @@ fn failed_transactions_do_not_leak_handles() -> io::Result<()> {
         assert_ne!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
-    if std::env::var_os(PROBE).is_none() {
-        let status = Command::new(std::env::current_exe()?)
-            .args([
-                "--exact",
-                "failed_transactions_do_not_leak_handles",
-                "--test-threads=1",
-            ])
-            .env(PROBE, "1")
-            .status()?;
-        assert!(status.success(), "isolated handle-leak probe failed");
+    if !support::isolated("failed_transactions_do_not_leak_handles")? {
         return Ok(());
     }
 
@@ -589,7 +594,7 @@ impl TestPseudoConsole {
         // SAFETY: the pipe handles are valid for the call and `value` is writable; this type owns the HPCON.
         let result = unsafe {
             CreatePseudoConsole(
-                COORD { X: 80, Y: 25 },
+                PCON_SIZE,
                 input_reader.as_raw_handle() as HANDLE,
                 output_writer.as_raw_handle() as HANDLE,
                 0,
@@ -696,7 +701,7 @@ fn pseudoconsole_attribute_connects_the_child_console() -> io::Result<()> {
     Ok(())
 }
 
-/// A nonzero console code page proves the child is attached to a console; `CONOUT$` is an extra check.
+/// The console's size proves the child is attached to the test pseudoconsole, so a missing attribute fails before any output wait.
 #[test]
 fn pseudoconsole_child_probe() {
     if std::env::var_os("WINDOWS_SPAWN_PCON_PROBE").is_none() {
@@ -704,6 +709,7 @@ fn pseudoconsole_child_probe() {
     }
     // SAFETY: GetConsoleCP has no pointer preconditions.
     assert_ne!(unsafe { GetConsoleCP() }, 0);
+    assert!(attached_to_test_pseudoconsole());
     let mut output = File::options().write(true).open("CONOUT$").unwrap();
     output.write_all(b"windows-spawn-pcon-attached").unwrap();
 }
@@ -801,6 +807,9 @@ fn pseudoconsole_stdio_isolation_helper() -> io::Result<()> {
 fn pseudoconsole_regular_stdio_probe() -> io::Result<()> {
     if std::env::var_os(PCON_STDIO_PROBE).is_none() {
         return Ok(());
+    }
+    if !attached_to_test_pseudoconsole() {
+        return Err(io::Error::other("not attached to the test pseudoconsole"));
     }
 
     let mut line = String::new();

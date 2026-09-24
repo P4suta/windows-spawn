@@ -34,6 +34,18 @@ pub(crate) struct SpawnTransaction<M> {
     state: PhantomData<M>,
 }
 
+impl<M> SpawnTransaction<M> {
+    /// Borrows the created process's primary thread.
+    #[cfg(test)]
+    pub(crate) fn primary_thread(&self) -> BorrowedHandle<'_> {
+        self.created
+            .as_ref()
+            .expect("an uncommitted transaction owns its process")
+            .thread
+            .as_handle()
+    }
+}
+
 impl<M: SpawnState> SpawnTransaction<M> {
     #[allow(clippy::too_many_lines)]
     pub(crate) fn new<'command, 'options>(
@@ -622,7 +634,9 @@ mod tests {
 
     use super::*;
     use crate::handles::Stdio;
-    use crate::sys::test_support::{duplicate, pipe, tempt_resume, ProcessExitGuard};
+    use crate::sys::test_support::{
+        duplicate, pipe, suspend_count, tempt_resume, ProcessExitGuard,
+    };
 
     fn decode(value: &[u16]) -> String {
         String::from_utf16_lossy(value.strip_suffix(&[0]).unwrap_or(value))
@@ -791,13 +805,75 @@ mod tests {
         cleared.env("PATH", "before").env_clear();
         let mut cleared_then_set = Command::new("cmd.exe");
         cleared_then_set.env_clear().env("pAtH", "after");
+        let mut set_then_other_removed = Command::new("cmd.exe");
+        set_then_other_removed
+            .env("PATH", "kept")
+            .env_remove("WINDOWS_SPAWN_OTHER");
 
         assert_eq!(child_path(&Command::new("cmd.exe")).unwrap(), None);
-        for command in [inherited, replaced, removed, cleared, cleared_then_set] {
+        assert_eq!(
+            child_path(&set_then_other_removed).unwrap(),
+            Some(OsString::from("kept"))
+        );
+        for command in [
+            inherited,
+            replaced,
+            removed,
+            cleared,
+            cleared_then_set,
+            set_then_other_removed,
+        ] {
             let mut transfer = HandleTransfer::new(None);
             let environment = build_environment(&command, &mut transfer).unwrap();
             assert_eq!(child_path(&command).unwrap(), environment.path);
         }
+    }
+
+    #[test]
+    fn executable_resolution_rejects_or_skips_nul_paths() {
+        assert_eq!(
+            resolve_executable(OsStr::new("dir\\a\0b"), None)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        let system = PathBuf::from(sys::system_directory().unwrap());
+        assert_eq!(
+            decode(&resolve_executable(OsStr::new("cmd"), Some(OsStr::new("a\0b"))).unwrap())
+                .to_lowercase(),
+            system.join("cmd.exe").to_string_lossy().to_lowercase()
+        );
+    }
+
+    #[test]
+    fn executable_resolution_searches_the_application_directory() {
+        let mut directory = env::current_exe().unwrap();
+        directory.pop();
+        let name = format!("windows-spawn-app-dir-{}.exe", std::process::id());
+        let path = directory.join(&name);
+        File::create(&path).unwrap();
+        let found = resolve_executable(OsStr::new(&name), None);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(decode(&found.unwrap()), path.to_string_lossy());
+    }
+
+    #[test]
+    fn executable_resolution_keeps_other_extensions_and_missing_paths() {
+        let system = PathBuf::from(sys::system_directory().unwrap());
+        assert_eq!(
+            decode(&resolve_executable(OsStr::new("more.com"), None).unwrap()).to_lowercase(),
+            system.join("more.com").to_string_lossy().to_lowercase()
+        );
+        assert_eq!(
+            decode(&resolve_executable(OsStr::new(r"nested\tool"), None).unwrap()),
+            r"nested\tool"
+        );
+        let mut system_only = Command::new("cmd");
+        system_only.env_clear();
+        assert_eq!(
+            broker_command_line(&system_only).unwrap(),
+            OsString::from(format!("\"{}\"", system.join("cmd.exe").display()))
+        );
     }
 
     #[test]
@@ -862,8 +938,13 @@ mod tests {
         )
         .unwrap();
         let transaction = SpawnTransaction::new(&plan).unwrap();
-        let mut process =
-            ProcessExitGuard::watch(transaction.created.as_ref().unwrap().process.as_handle());
+        let created = transaction.created.as_ref().unwrap();
+        let mut process = ProcessExitGuard::watch(created.process.as_handle());
+        assert_eq!(
+            suspend_count(created.thread.as_handle()),
+            0,
+            "a running spawn must not start suspended"
+        );
         drop(plan);
         drop(command);
 
