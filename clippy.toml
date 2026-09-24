@@ -1,0 +1,16 @@
+# Time decides nothing (docs/adr/0010-time-decides-nothing.md).
+disallowed-types = [
+  { path = "std::time::Duration", reason = "time decides nothing; wait for the event itself" },
+  { path = "std::time::Instant", reason = "time decides nothing; wait for the event itself" },
+  { path = "std::time::SystemTime", reason = "time decides nothing; wait for the event itself" },
+]
+disallowed-methods = [
+  { path = "std::thread::sleep", reason = "wait for the event itself" },
+  { path = "std::thread::park_timeout", reason = "wait for the event itself" },
+  { path = "std::sync::Condvar::wait_timeout", reason = "wait for the event itself" },
+  { path = "std::sync::Condvar::wait_timeout_while", reason = "wait for the event itself" },
+  { path = "std::sync::mpsc::Receiver::recv_timeout", reason = "wait for the event itself" },
+  { path = "std::fs::Metadata::modified", reason = "file times decide nothing; compare content" },
+  { path = "std::fs::Metadata::accessed", reason = "file times decide nothing; compare content" },
+  { path = "std::fs::Metadata::created", reason = "file times decide nothing; compare content" },
+]

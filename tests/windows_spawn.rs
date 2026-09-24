@@ -10,8 +10,8 @@ use std::io::{self, Read, Write};
 use std::mem::size_of_val;
 use std::os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::Path;
+use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
 
 use support::{
     local_duplicate, suspend_count, tempt_resume, ProbeCommand, ProcessExitGuard, Role, TempDir,
@@ -31,7 +31,7 @@ use windows_sys::Win32::System::Console::{
     ClosePseudoConsole, CreatePseudoConsole, GetConsoleCP, GetStdHandle, COORD, HPCON,
     STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
-use windows_sys::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
+use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetProcessHandleCount, GetProcessId, GetProcessMitigationPolicy,
     GetThreadId, ProcessExtensionPointDisablePolicy, SuspendThread,
@@ -63,19 +63,6 @@ fn file_identity(handle: HANDLE) -> io::Result<(u32, u64)> {
         let index =
             (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
         Ok((information.dwVolumeSerialNumber, index))
-    }
-}
-
-fn wait_bounded(child: &mut windows_spawn::Child) -> io::Result<Option<std::process::ExitStatus>> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(Some(status));
-        }
-        if Instant::now() >= deadline {
-            return Ok(None);
-        }
-        thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -571,10 +558,11 @@ unsafe impl AsPseudoConsole for InvalidPseudoConsole {
     }
 }
 
+/// A pseudoconsole whose output a detached thread drains from creation on.
 struct TestPseudoConsole {
     value: HPCON,
     input_writer: Option<OwnedHandle>,
-    output_reader: Option<OwnedHandle>,
+    output: mpsc::Receiver<Vec<u8>>,
 }
 
 impl TestPseudoConsole {
@@ -614,10 +602,20 @@ impl TestPseudoConsole {
             )));
         }
         drop((input_reader, output_writer));
+        let (sender, output) = mpsc::channel();
+        let mut output_reader = File::from(output_reader);
+        let _ = thread::spawn(move || {
+            let mut buffer = [0_u8; 4096];
+            while let Ok(read) = output_reader.read(&mut buffer) {
+                if read == 0 || sender.send(buffer[..read].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
         Ok(Self {
             value,
             input_writer: Some(input_writer),
-            output_reader: Some(output_reader),
+            output,
         })
     }
 
@@ -651,69 +649,25 @@ impl TestPseudoConsole {
         Ok(())
     }
 
-    fn wait_for_output_markers(&self, expected: &[&[u8]]) -> io::Result<bool> {
-        let output = self
-            .output_reader
-            .as_ref()
-            .expect("a live pseudoconsole retains its output reader");
-        let deadline = Instant::now() + Duration::from_secs(5);
+    /// Returns true once every marker has appeared in the output, or false if the output ends first.
+    fn wait_for_output_markers(&self, expected: &[&[u8]]) -> bool {
         let mut received = Vec::new();
         loop {
-            let mut available = 0_u32;
-            // SAFETY: `self` owns the pipe handle, `available` is writable, and the unused outputs are null.
-            if unsafe {
-                PeekNamedPipe(
-                    output.as_raw_handle(),
-                    std::ptr::null_mut(),
-                    0,
-                    std::ptr::null_mut(),
-                    &mut available,
-                    std::ptr::null_mut(),
-                )
-            } == 0
-            {
-                return Err(io::Error::last_os_error());
+            if expected.iter().all(|marker| contains(&received, marker)) {
+                return true;
             }
-            if available != 0 {
-                let mut buffer = vec![0_u8; available as usize];
-                let mut read = 0_u32;
-                // SAFETY: `buffer` and `read` are writable, and the owned pipe handle is valid.
-                if unsafe {
-                    ReadFile(
-                        output.as_raw_handle(),
-                        buffer.as_mut_ptr(),
-                        available,
-                        &mut read,
-                        std::ptr::null_mut(),
-                    )
-                } == 0
-                {
-                    return Err(io::Error::last_os_error());
-                }
-                received.extend_from_slice(&buffer[..read as usize]);
-                if expected.iter().all(|marker| {
-                    received
-                        .windows(marker.len())
-                        .any(|window| window == *marker)
-                }) {
-                    return Ok(true);
-                }
+            match self.output.recv() {
+                Ok(chunk) => received.extend_from_slice(&chunk),
+                Err(_) => return false,
             }
-            if Instant::now() >= deadline {
-                return Ok(false);
-            }
-            thread::sleep(Duration::from_millis(10));
         }
     }
 }
 
-/// Closes the client pipe ends first so `ClosePseudoConsole` cannot wait on an undrained reader.
 /// The close runs on a detached thread because some Windows Server 2022 builds block in it.
 impl Drop for TestPseudoConsole {
     fn drop(&mut self) {
         drop(self.input_writer.take());
-        drop(self.output_reader.take());
-
         let value = self.value;
         let _ = thread::spawn(move || {
             // SAFETY: this type uniquely owns the HPCON.
@@ -736,15 +690,9 @@ fn pseudoconsole_attribute_connects_the_child_console() -> io::Result<()> {
     command
         .args(["--exact", "pseudoconsole_child_probe", "--nocapture"])
         .env("WINDOWS_SPAWN_PCON_PROBE", "1");
-    let mut child = command.spawn_with(SpawnOptions::new().pseudoconsole(&pseudoconsole))?;
-    let status = if let Some(status) = wait_bounded(&mut child)? {
-        status
-    } else {
-        let _ = child.kill();
-        wait_bounded(&mut child)?.expect("ConPTY child must terminate after kill")
-    };
-    assert!(status.success());
-    assert!(pseudoconsole.wait_for_output_markers(&[b"windows-spawn-pcon-attached"])?);
+    let child = command.spawn_with(SpawnOptions::new().pseudoconsole(&pseudoconsole))?;
+    assert_eq!(ProcessExitGuard::watch(&child)?.exit_code()?, 0);
+    assert!(pseudoconsole.wait_for_output_markers(&[b"windows-spawn-pcon-attached"]));
     Ok(())
 }
 
@@ -760,6 +708,7 @@ fn pseudoconsole_child_probe() {
     output.write_all(b"windows-spawn-pcon-attached").unwrap();
 }
 
+/// Streams the helper's output and stops the helper as soon as a pseudoconsole marker leaks into it.
 #[test]
 fn pseudoconsole_regular_stdio_stays_off_parent_pipes() -> io::Result<()> {
     let mut helper = Command::new(std::env::current_exe()?);
@@ -773,30 +722,55 @@ fn pseudoconsole_regular_stdio_stays_off_parent_pipes() -> io::Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let output = helper.output()?;
-    assert!(
-        output.status.success(),
-        "isolated ConPTY stdio helper failed: stdout={:?}, stderr={:?}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    for marker in [PCON_STDOUT_MARKER, PCON_STDERR_MARKER] {
+    let mut child = helper.spawn_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
+    let (sender, events) = mpsc::channel();
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    forward(stdout, 0, sender.clone());
+    forward(stderr, 1, sender);
+
+    let mut received = [Vec::new(), Vec::new()];
+    for (stream, chunk) in events {
+        received[stream].extend_from_slice(&chunk);
+        let leaked = [PCON_STDOUT_MARKER, PCON_STDERR_MARKER]
+            .iter()
+            .any(|marker| contains(&received[stream], marker));
         assert!(
-            !output
-                .stdout
-                .windows(marker.len())
-                .any(|window| window == marker),
-            "ConPTY child output leaked to its parent's stdout"
-        );
-        assert!(
-            !output
-                .stderr
-                .windows(marker.len())
-                .any(|window| window == marker),
-            "ConPTY child output leaked to its parent's stderr"
+            !leaked,
+            "ConPTY child output leaked to its parent's {}",
+            ["stdout", "stderr"][stream]
         );
     }
+    let status = child.wait()?;
+    assert!(
+        status.success(),
+        "isolated ConPTY stdio helper failed: stdout={:?}, stderr={:?}",
+        String::from_utf8_lossy(&received[0]),
+        String::from_utf8_lossy(&received[1])
+    );
     Ok(())
+}
+
+/// Sends each chunk read from `stream` as `(index, chunk)` until EOF.
+fn forward<R: Read + Send + 'static>(
+    mut stream: R,
+    index: usize,
+    sender: mpsc::Sender<(usize, Vec<u8>)>,
+) {
+    let _ = thread::spawn(move || {
+        let mut buffer = [0_u8; 4096];
+        while let Ok(read) = stream.read(&mut buffer) {
+            if read == 0 || sender.send((index, buffer[..read].to_vec())).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 #[test]
@@ -814,19 +788,12 @@ fn pseudoconsole_stdio_isolation_helper() -> io::Result<()> {
             "--nocapture",
         ])
         .env(PCON_STDIO_PROBE, "1");
-    let mut child = command.spawn_with(SpawnOptions::new().pseudoconsole(&pseudoconsole))?;
+    let child = command.spawn_with(SpawnOptions::new().pseudoconsole(&pseudoconsole))?;
     let mut input = PCON_STDIN_MARKER.to_vec();
     input.extend_from_slice(b"\r\n");
     pseudoconsole.write_input(&input)?;
-
-    let status = if let Some(status) = wait_bounded(&mut child)? {
-        status
-    } else {
-        let _ = child.kill();
-        wait_bounded(&mut child)?.expect("ConPTY stdio probe must terminate after kill")
-    };
-    assert!(status.success());
-    assert!(pseudoconsole.wait_for_output_markers(&[PCON_STDOUT_MARKER, PCON_STDERR_MARKER])?);
+    assert_eq!(ProcessExitGuard::watch(&child)?.exit_code()?, 0);
+    assert!(pseudoconsole.wait_for_output_markers(&[PCON_STDOUT_MARKER, PCON_STDERR_MARKER]));
     Ok(())
 }
 

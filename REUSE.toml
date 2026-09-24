@@ -8,6 +8,7 @@ path = [
   ".gitignore",
   "_typos.toml",
   "Cargo.toml",
+  "clippy.toml",
   "CHANGELOG.md",
   "CONTRIBUTING.md",
   "README.md",
