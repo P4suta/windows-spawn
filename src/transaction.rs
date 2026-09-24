@@ -617,43 +617,15 @@ fn wide_nul(value: &OsStr) -> io::Result<Vec<u16>> {
 #[cfg(test)]
 mod tests {
     use std::fs::File;
+    use std::io::Read;
     use std::os::windows::ffi::OsStringExt;
 
     use super::*;
+    use crate::handles::Stdio;
+    use crate::sys::test_support::{duplicate, pipe, tempt_resume, ProcessExitGuard};
 
     fn decode(value: &[u16]) -> String {
         String::from_utf16_lossy(value.strip_suffix(&[0]).unwrap_or(value))
-    }
-
-    struct ProcessExitGuard {
-        process: OwnedHandle,
-        armed: bool,
-    }
-
-    impl ProcessExitGuard {
-        fn new(process: OwnedHandle) -> Self {
-            Self {
-                process,
-                armed: true,
-            }
-        }
-
-        #[track_caller]
-        fn assert_exited(&mut self, message: &str) {
-            match sys::wait_process_for_test(self.process.as_handle(), 5_000) {
-                Ok(true) => self.armed = false,
-                Ok(false) => panic!("{message}"),
-                Err(error) => panic!("{message}: {error}"),
-            }
-        }
-    }
-
-    impl Drop for ProcessExitGuard {
-        fn drop(&mut self) {
-            if self.armed {
-                sys::cleanup_process_for_test(self.process.as_handle());
-            }
-        }
     }
 
     #[test]
@@ -873,60 +845,44 @@ mod tests {
     }
 
     #[test]
-    fn uncommitted_running_and_suspended_transactions_roll_back() {
-        let mut running_command = Command::new("cmd.exe");
-        running_command.args(["/D", "/C", "ping -n 10 127.0.0.1 >nul"]);
-        let running = SpawnPlan::new_running(
-            &running_command,
+    fn uncommitted_running_transaction_rolls_back() {
+        let (gate_reader, gate_writer) = pipe();
+        let (ready_reader, ready_writer) = pipe();
+        let mut command = Command::new("cmd.exe");
+        command
+            .args(["/D", "/S", "/C"])
+            .raw_arg("echo r&set /p x=&exit 77")
+            .stdin(Stdio::from(gate_reader))
+            .stdout(Stdio::from(ready_writer))
+            .stderr(Stdio::null());
+        let plan = SpawnPlan::new_running(
+            &command,
             crate::SpawnOptions::new(),
             crate::plan::IoMode::Spawn,
         )
         .unwrap();
-        let running_transaction = SpawnTransaction::new(&running).unwrap();
-        let mut running_process = ProcessExitGuard::new(
-            sys::duplicate_local(
-                running_transaction
-                    .created
-                    .as_ref()
-                    .unwrap()
-                    .process
-                    .as_handle(),
-                false,
-            )
-            .unwrap(),
-        );
-        drop(running_transaction);
-        running_process.assert_exited("rollback did not terminate its running process");
+        let transaction = SpawnTransaction::new(&plan).unwrap();
+        let mut process =
+            ProcessExitGuard::watch(transaction.created.as_ref().unwrap().process.as_handle());
+        drop(plan);
+        drop(command);
 
-        let mut suspended_command = Command::new("cmd.exe");
-        suspended_command.args(["/D", "/C", "ping -n 10 127.0.0.1 >nul"]);
-        let suspended = SpawnPlan::new_suspended(
-            &suspended_command,
-            crate::SpawnOptions::new(),
-            crate::plan::IoMode::Spawn,
-        )
-        .unwrap();
-        let suspended_transaction = SpawnTransaction::new(&suspended).unwrap();
-        let mut suspended_process = ProcessExitGuard::new(
-            sys::duplicate_local(
-                suspended_transaction
-                    .created
-                    .as_ref()
-                    .unwrap()
-                    .process
-                    .as_handle(),
-                false,
-            )
-            .unwrap(),
+        let mut ready = [0_u8; 1];
+        File::from(ready_reader).read_exact(&mut ready).unwrap();
+        assert_eq!(&ready, b"r");
+        drop(transaction);
+        drop(gate_writer);
+        assert_eq!(
+            process.exit_code(),
+            1,
+            "rollback did not terminate its running process"
         );
-        drop(suspended_transaction);
-        suspended_process.assert_exited("rollback did not terminate its suspended process");
     }
 
     #[test]
-    fn suspended_child_drop_terminates_the_process() {
+    fn uncommitted_suspended_transaction_rolls_back() {
         let mut command = Command::new("cmd.exe");
-        command.args(["/D", "/C", "exit /b 0"]);
+        command.args(["/D", "/C", "exit /b 77"]);
         let plan = SpawnPlan::new_suspended(
             &command,
             crate::SpawnOptions::new(),
@@ -934,14 +890,38 @@ mod tests {
         )
         .unwrap();
         let transaction = SpawnTransaction::new(&plan).unwrap();
-        let mut process = ProcessExitGuard::new(
-            sys::duplicate_local(
-                transaction.created.as_ref().unwrap().process.as_handle(),
-                false,
-            )
-            .unwrap(),
+        let created = transaction.created.as_ref().unwrap();
+        let mut process = ProcessExitGuard::watch(created.process.as_handle());
+        let thread = duplicate(created.thread.as_handle());
+        drop(transaction);
+        tempt_resume(thread.as_handle());
+        assert_eq!(
+            process.exit_code(),
+            1,
+            "rollback did not terminate its suspended process"
         );
+    }
+
+    #[test]
+    fn suspended_child_drop_terminates_the_process() {
+        let mut command = Command::new("cmd.exe");
+        command.args(["/D", "/C", "exit /b 77"]);
+        let plan = SpawnPlan::new_suspended(
+            &command,
+            crate::SpawnOptions::new(),
+            crate::plan::IoMode::Spawn,
+        )
+        .unwrap();
+        let transaction = SpawnTransaction::new(&plan).unwrap();
+        let created = transaction.created.as_ref().unwrap();
+        let mut process = ProcessExitGuard::watch(created.process.as_handle());
+        let thread = duplicate(created.thread.as_handle());
         drop(transaction.commit_suspended());
-        process.assert_exited("dropping SuspendedChild did not terminate the process");
+        tempt_resume(thread.as_handle());
+        assert_eq!(
+            process.exit_code(),
+            1,
+            "dropping SuspendedChild did not terminate the process"
+        );
     }
 }

@@ -36,7 +36,7 @@ gitleaks dir . --redact --no-banner
 
 - Keep the documented ownership and cleanup behavior, including on errors.
 - Give every `unsafe` block a specific safety justification.
-- Add deterministic tests for behavior changes; do not assert on timing.
+- Add deterministic tests for behavior changes; tests wait for events, never for time (ADR 0010).
 - Change the public API snapshot only with an API change, and state its compatibility impact.
 - Update the crate docs, ADRs, or security boundary when a contract changes.
 - Keep dependencies few and within the MSRV.

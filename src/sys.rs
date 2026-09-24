@@ -559,26 +559,103 @@ pub(crate) fn try_wait_process(process: BorrowedHandle<'_>) -> io::Result<bool> 
     }
 }
 
+/// Test helpers that call Win32 directly, so mutants of the production wrappers cannot disable them.
 #[cfg(test)]
-pub(crate) fn wait_process_for_test(
-    process: BorrowedHandle<'_>,
-    timeout_millis: u32,
-) -> io::Result<bool> {
-    // SAFETY: the process handle is valid for the query.
-    match unsafe { WaitForSingleObject(raw(process), timeout_millis) } {
-        WAIT_OBJECT_0 => Ok(true),
-        WAIT_TIMEOUT => Ok(false),
-        _ => Err(io::Error::last_os_error()),
-    }
-}
+pub(crate) mod test_support {
+    use std::os::windows::io::{
+        AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle, RawHandle,
+    };
+    use std::ptr;
 
-/// Calls Win32 directly so mutants of the production wrappers cannot disable cleanup.
-#[cfg(test)]
-pub(crate) fn cleanup_process_for_test(process: BorrowedHandle<'_>) {
-    // SAFETY: tests pass a duplicate with the source handle's access.
-    let _ = unsafe { TerminateProcess(raw(process), 1) };
-    // SAFETY: the same handle is valid for the wait.
-    let _ = unsafe { WaitForSingleObject(raw(process), 5_000) };
+    use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Pipes::CreatePipe;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, GetExitCodeProcess, ResumeThread, TerminateProcess, WaitForSingleObject,
+        INFINITE,
+    };
+
+    /// Returns a non-inheritable duplicate with the same access.
+    pub(crate) fn duplicate(handle: BorrowedHandle<'_>) -> OwnedHandle {
+        let mut duplicate = ptr::null_mut();
+        // SAFETY: both pseudo-handles and `handle` are valid, and `duplicate` is writable.
+        let duplicated = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                handle.as_raw_handle(),
+                GetCurrentProcess(),
+                &mut duplicate,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        assert_ne!(duplicated, 0, "DuplicateHandle failed");
+        // SAFETY: DuplicateHandle returned a new, uniquely owned handle.
+        unsafe { OwnedHandle::from_raw_handle(duplicate as RawHandle) }
+    }
+
+    /// Returns a non-inheritable pipe as (reader, writer).
+    pub(crate) fn pipe() -> (OwnedHandle, OwnedHandle) {
+        let mut read = ptr::null_mut();
+        let mut write = ptr::null_mut();
+        // SAFETY: both output pointers are writable, and null security attributes make both handles non-inheritable.
+        let created = unsafe { CreatePipe(&mut read, &mut write, ptr::null(), 0) };
+        assert_ne!(created, 0, "CreatePipe failed");
+        // SAFETY: CreatePipe succeeded, so both handles are new and distinct.
+        unsafe {
+            (
+                OwnedHandle::from_raw_handle(read as RawHandle),
+                OwnedHandle::from_raw_handle(write as RawHandle),
+            )
+        }
+    }
+
+    /// Resumes a thread once, ignoring the result.
+    ///
+    /// Run after a termination under test: a terminated thread never runs again, while a surviving one runs and exits with its own code.
+    pub(crate) fn tempt_resume(thread: BorrowedHandle<'_>) {
+        // SAFETY: the thread handle is valid for the call.
+        let _ = unsafe { ResumeThread(thread.as_raw_handle()) };
+    }
+
+    /// Owns a duplicated process handle and terminates the process on drop unless it was observed to exit.
+    pub(crate) struct ProcessExitGuard {
+        process: OwnedHandle,
+        armed: bool,
+    }
+
+    impl ProcessExitGuard {
+        pub(crate) fn watch(process: BorrowedHandle<'_>) -> Self {
+            Self {
+                process: duplicate(process),
+                armed: true,
+            }
+        }
+
+        /// Waits for exit and returns the exit code.
+        pub(crate) fn exit_code(&mut self) -> u32 {
+            // SAFETY: the owned process handle is valid for the wait.
+            let waited = unsafe { WaitForSingleObject(self.process.as_raw_handle(), INFINITE) };
+            assert_eq!(waited, WAIT_OBJECT_0, "waiting for the process failed");
+            self.armed = false;
+            let mut code = 0_u32;
+            // SAFETY: the owned process handle is valid and `code` is writable.
+            let queried = unsafe { GetExitCodeProcess(self.process.as_raw_handle(), &mut code) };
+            assert_ne!(queried, 0, "GetExitCodeProcess failed");
+            code
+        }
+    }
+
+    impl Drop for ProcessExitGuard {
+        fn drop(&mut self) {
+            if self.armed {
+                // SAFETY: the duplicate has the source handle's access.
+                let _ = unsafe { TerminateProcess(self.process.as_raw_handle(), 1) };
+                // SAFETY: the same handle is valid for the wait.
+                let _ = unsafe { WaitForSingleObject(self.process.as_raw_handle(), INFINITE) };
+            }
+        }
+    }
 }
 
 pub(crate) fn exit_status(process: BorrowedHandle<'_>) -> io::Result<ExitStatus> {
@@ -856,9 +933,14 @@ mod tests {
         let inheritable = duplicate_local(writable_null.as_handle(), true)?;
         drop((private, inheritable));
 
-        let mut host = std::process::Command::new("cmd.exe")
-            .args(["/D", "/C", "ping -n 5 127.0.0.1 >nul"])
-            .spawn()?;
+        let mut host_command = crate::Command::new("cmd.exe");
+        host_command
+            .args(["/D", "/C", "exit /b 0"])
+            .stdin(crate::Stdio::null())
+            .stdout(crate::Stdio::null())
+            .stderr(crate::Stdio::null());
+        let host = host_command.spawn_suspended()?;
+        let _host_guard = test_support::ProcessExitGuard::watch(host.as_handle());
         let target = open_parent_process(host.id())?;
         drop(target);
         let before = process_handle_count(host.as_handle())?;
@@ -869,8 +951,7 @@ mod tests {
         drop(remote);
         assert_eq!(process_handle_count(host.as_handle())?, before);
         assert_eq!(process_handle_count(current_process())?, local_before);
-        let _ = host.kill();
-        let _ = host.wait();
+        drop(host);
         Ok(())
     }
 
