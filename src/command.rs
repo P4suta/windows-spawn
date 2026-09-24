@@ -219,6 +219,35 @@ impl Command {
         self.cwd.as_deref()
     }
 
+    /// Renders the command line for a launcher that accepts only a command line, such as WMI `Win32_Process.Create`.
+    ///
+    /// The first token is the quoted absolute path of the executable [`Self::spawn`] would run.
+    /// Arguments are encoded as for a spawn.
+    /// The environment, working directory, standard I/O, and [`crate::SpawnOptions`] are not represented.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use windows_spawn::Command;
+    ///
+    /// let mut command = Command::new("cmd.exe");
+    /// command.args(["/D", "/C", "echo two words"]);
+    ///
+    /// let line = command.to_command_line()?;
+    /// let line = line.to_string_lossy();
+    /// assert!(line.starts_with('"'));
+    /// assert!(line.ends_with(r#"\cmd.exe" /D /C "echo two words""#));
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidInput` for input a spawn rejects, for a handle argument, and for a `PATH` set from a handle.
+    /// Returns `NotFound` if the program is not found.
+    pub fn to_command_line(&self) -> io::Result<OsString> {
+        crate::transaction::broker_command_line(self)
+    }
+
     /// Spawns with default options.
     ///
     /// # Errors

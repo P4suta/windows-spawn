@@ -67,6 +67,8 @@ impl AsHandle for ChildStderr {
 }
 
 /// A running or exited process whose handle is owned exactly once.
+///
+/// The handle from [`AsHandle`] has full access, including `SYNCHRONIZE`, and stays valid while this value lives.
 #[derive(Debug)]
 pub struct Child {
     // Declared first so kill-on-close takes effect before pipe and process
@@ -233,6 +235,7 @@ fn join_readers(
 /// A process whose primary thread has not yet been resumed.
 ///
 /// Dropping this value without resuming always terminates the process.
+/// The process is already in every Job requested through [`crate::SpawnOptions`].
 /// The consuming transition makes a second resume unrepresentable:
 ///
 /// ```compile_fail

@@ -65,13 +65,12 @@ helper process because that would change parent identity and failure semantics.
 See
 [ADR 0005](https://github.com/P4suta/windows-spawn/blob/main/docs/adr/0005-handle-transfer-and-reverse-race.md).
 
-[`SpawnOptions`] borrows one-spawn capabilities such as Jobs, an alternate
-parent, or a pseudoconsole. A borrowed `ConPTY` remains owned by the terminal
-library implementing [`AsPseudoConsole`]. That library defines when terminal
-pipes close and when terminal EOF occurs. Pseudoconsole process creation sets
-`STARTF_USESTDHANDLES` with all three standard-handle slots null and does not
-put standard handles in the inheritance list. This prevents a hosted child
-from falling back to redirected standard handles owned by the parent.
+[`SpawnOptions`] borrows one-spawn capabilities such as Jobs, an alternate parent, or a pseudoconsole.
+Jobs are attached during creation, before the child runs any code; a [`SuspendedChild`] is already in every requested Job.
+A borrowed `ConPTY` remains owned by the terminal library implementing [`AsPseudoConsole`].
+That library defines when terminal pipes close and when terminal EOF occurs.
+Pseudoconsole process creation sets `STARTF_USESTDHANDLES` with all three standard-handle slots null and does not put standard handles in the inheritance list.
+This prevents a hosted child from falling back to redirected standard handles owned by the parent.
 
 # Drop, wait, and EOF contract
 
@@ -90,6 +89,15 @@ from falling back to redirected standard handles owned by the parent.
   is unrepresentable. The transition requires the primary thread's previous
   suspend count to be exactly one; external changes are rejected and rolled
   back.
+- [`Child`] and [`SuspendedChild`] expose their process handle through `AsHandle`.
+  It has full access, including `SYNCHRONIZE`, and stays valid while the value lives, so it can be waited on with other objects.
+  The crate has no timed waits.
+
+# Launch brokers
+
+Some launchers accept only a command line, such as WMI `Win32_Process.Create`.
+[`Command::to_command_line`] renders one whose first token is the absolute path of the executable a spawn would run.
+The crate does not drive brokers; see [ADR 0009](https://github.com/P4suta/windows-spawn/blob/main/docs/adr/0009-launch-brokers-stay-outside-the-transaction.md).
 
 # Transaction and security boundary
 

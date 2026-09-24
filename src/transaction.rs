@@ -7,7 +7,7 @@ use std::ffi::{OsStr, OsString};
 use std::io;
 use std::iter;
 use std::marker::PhantomData;
-use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 
@@ -16,7 +16,8 @@ use crate::command::{Arg, Command, EnvOp, EnvValue};
 use crate::handles::{Job, StdioInner};
 use crate::options::DropPolicy;
 use crate::plan::{
-    Running, SpawnPlan, SpawnState, StandardHandles, StandardIo, StdioSpec, Suspended,
+    validate_command, Running, SpawnPlan, SpawnState, StandardHandles, StandardIo, StdioSpec,
+    Suspended,
 };
 use crate::sys::{self, NullAccess, StandardStream};
 
@@ -419,14 +420,89 @@ fn build_environment(
     })
 }
 
+/// Returns the `PATH` that [`build_environment`] would produce, without lowering handles.
+fn child_path(command: &Command) -> io::Result<Option<OsString>> {
+    if !command.env_clear && command.env_ops.is_empty() {
+        return Ok(None);
+    }
+    let path_key = EnvKey::new(OsString::from("PATH"));
+    let mut path = None;
+    if !command.env_clear {
+        for (key, value) in sys::environment_strings()? {
+            if EnvKey::new(key) == path_key {
+                path = Some(value);
+            }
+        }
+    }
+    for operation in &command.env_ops {
+        match operation {
+            EnvOp::Set(key, value) => {
+                if EnvKey::new(key.clone()) == path_key {
+                    path = match value {
+                        EnvValue::Text(value) => Some(value.clone()),
+                        EnvValue::Handle(_) => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "a PATH set from a handle has a value only inside a spawn",
+                            ))
+                        }
+                    };
+                }
+            }
+            EnvOp::Remove(key) => {
+                if EnvKey::new(key.clone()) == path_key {
+                    path = None;
+                }
+            }
+        }
+    }
+    Ok(path)
+}
+
+/// Implements [`Command::to_command_line`].
+pub(crate) fn broker_command_line(command: &Command) -> io::Result<OsString> {
+    validate_command(command)?;
+    let mut arguments = Vec::new();
+    for argument in &command.args {
+        arguments.push(SPACE);
+        match argument {
+            Arg::Text(text) => append_regular_arg(&mut arguments, text),
+            Arg::Raw(text) => arguments.extend(text.encode_wide()),
+            Arg::Handle(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a handle argument has a value only inside a spawn",
+                ))
+            }
+        }
+    }
+    let path = child_path(command)?;
+    let application = resolve_executable(&command.program, path.as_deref())?;
+    let absolute = sys::full_path(&application)?;
+    if absolute.contains(&QUOTE) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "resolved program path contains a double quote",
+        ));
+    }
+    let mut line = Vec::new();
+    append_program(&mut line, absolute);
+    line.extend(arguments);
+    Ok(OsString::from_wide(&line))
+}
+
+fn append_program(line: &mut Vec<u16>, program: impl IntoIterator<Item = u16>) {
+    line.push(QUOTE);
+    line.extend(program);
+    line.push(QUOTE);
+}
+
 fn build_command_line(
     command: &Command,
     transfer: &mut HandleTransfer<'_>,
 ) -> io::Result<Vec<u16>> {
     let mut result = Vec::new();
-    result.push(QUOTE);
-    result.extend(command.program.encode_wide());
-    result.push(QUOTE);
+    append_program(&mut result, command.program.encode_wide());
     for argument in &command.args {
         result.push(SPACE);
         match argument {
@@ -671,6 +747,88 @@ mod tests {
         let mut transfer = HandleTransfer::new(None);
         let line = decode(&build_command_line(&command, &mut transfer).unwrap());
         assert_eq!(line, r#""program.exe" "" "C:\path with spaces\\""#);
+    }
+
+    #[test]
+    fn broker_command_line_names_the_resolved_program_and_encodes_like_a_spawn() {
+        let mut command = Command::new("cmd");
+        command
+            .arg("")
+            .arg(r"C:\path with spaces\")
+            .arg("embedded\"quote")
+            .raw_arg("/D /C");
+        let line = broker_command_line(&command).unwrap();
+        let program = PathBuf::from(sys::system_directory().unwrap()).join("cmd.exe");
+
+        let mut transfer = HandleTransfer::new(None);
+        let spawned = decode(&build_command_line(&command, &mut transfer).unwrap());
+        let arguments = spawned.strip_prefix(r#""cmd""#).unwrap();
+        assert_eq!(
+            line,
+            OsString::from(format!("\"{}\"{arguments}", program.display()))
+        );
+    }
+
+    #[test]
+    fn broker_command_line_makes_a_relative_program_absolute() {
+        let command = Command::new(r"nested\tool.exe");
+        let expected = env::current_dir().unwrap().join(r"nested\tool.exe");
+        assert_eq!(
+            broker_command_line(&command).unwrap(),
+            OsString::from(format!("\"{}\"", expected.display()))
+        );
+    }
+
+    #[test]
+    fn broker_command_line_rejects_what_only_a_spawn_can_carry() {
+        let file = File::open("NUL").unwrap();
+
+        let mut handle_argument = Command::new("cmd.exe");
+        handle_argument.arg_handle(&file).unwrap();
+        let mut handle_path = Command::new("cmd.exe");
+        handle_path.env_handle("Path", &file).unwrap();
+        let mut batch = Command::new("script.cmd");
+        batch.arg("value");
+        for command in [handle_argument, handle_path, batch] {
+            assert_eq!(
+                broker_command_line(&command).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+
+        let mut other_handle = Command::new("cmd.exe");
+        other_handle
+            .env_handle("WINDOWS_SPAWN_HANDLE", &file)
+            .unwrap();
+        assert!(broker_command_line(&other_handle).is_ok());
+
+        let mut missing = Command::new("windows-spawn-missing-program");
+        missing.env_clear();
+        assert_eq!(
+            broker_command_line(&missing).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn child_path_reads_path_exactly_as_the_environment_block_does() {
+        let mut inherited = Command::new("cmd.exe");
+        inherited.env("WINDOWS_SPAWN_OTHER", "value");
+        let mut replaced = Command::new("cmd.exe");
+        replaced.env("Path", "first").env("PATH", "second");
+        let mut removed = Command::new("cmd.exe");
+        removed.env("PATH", "value").env_remove("path");
+        let mut cleared = Command::new("cmd.exe");
+        cleared.env("PATH", "before").env_clear();
+        let mut cleared_then_set = Command::new("cmd.exe");
+        cleared_then_set.env_clear().env("pAtH", "after");
+
+        assert_eq!(child_path(&Command::new("cmd.exe")).unwrap(), None);
+        for command in [inherited, replaced, removed, cleared, cleared_then_set] {
+            let mut transfer = HandleTransfer::new(None);
+            let environment = build_environment(&command, &mut transfer).unwrap();
+            assert_eq!(child_path(&command).unwrap(), environment.path);
+        }
     }
 
     #[test]

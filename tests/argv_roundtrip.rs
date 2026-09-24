@@ -5,9 +5,17 @@ mod windows {
     use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::io;
+    use std::mem::size_of;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+    use std::ptr;
 
     use windows_spawn::Command;
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessW, GetExitCodeProcess, WaitForSingleObject, INFINITE, PROCESS_INFORMATION,
+        STARTUPINFOW,
+    };
 
     const OUTPUT: &str = "WINDOWS_SPAWN_ROUNDTRIP_OUTPUT";
     const VALUE: &str = "WINDOWS_SPAWN_ROUNDTRIP_VALUE";
@@ -25,13 +33,8 @@ mod windows {
 
     fn child() -> io::Result<()> {
         let output = std::env::var_os(OUTPUT).expect("parent supplies output path");
-        let mut encoded = Vec::new();
         let arguments: Vec<OsString> = std::env::args_os().skip(2).collect();
-        let count = u32::try_from(arguments.len()).expect("test corpus fits in a DWORD");
-        encoded.extend_from_slice(&count.to_le_bytes());
-        for argument in &arguments {
-            append_os(&mut encoded, argument);
-        }
+        let mut encoded = encode_arguments(&arguments);
         append_os(
             &mut encoded,
             &std::env::var_os(VALUE).expect("parent supplies environment value"),
@@ -42,6 +45,94 @@ mod windows {
         );
         encoded.push(u8::from(std::env::var_os(REMOVE).is_some()));
         fs::write(output, encoded)
+    }
+
+    fn encode_arguments(arguments: &[OsString]) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        let count = u32::try_from(arguments.len()).expect("test corpus fits in a DWORD");
+        encoded.extend_from_slice(&count.to_le_bytes());
+        for argument in arguments {
+            append_os(&mut encoded, argument);
+        }
+        encoded
+    }
+
+    fn broker_child() -> io::Result<()> {
+        let mut arguments = std::env::args_os().skip(2);
+        let output = arguments.next().expect("parent supplies output path");
+        let arguments: Vec<OsString> = arguments.collect();
+        fs::write(output, encode_arguments(&arguments))
+    }
+
+    /// Starts `line` with a null application name, as a launch broker does.
+    fn launch_like_a_broker(line: &OsStr) -> io::Result<u32> {
+        let mut wide: Vec<u16> = line.encode_wide().chain(Some(0)).collect();
+        let startup = STARTUPINFOW {
+            cb: u32::try_from(size_of::<STARTUPINFOW>()).expect("STARTUPINFOW fits in a DWORD"),
+            ..STARTUPINFOW::default()
+        };
+        let mut information = PROCESS_INFORMATION::default();
+        // SAFETY: `wide` is a writable NUL-terminated buffer, no handles are inherited, and `startup` and `information` outlive the call.
+        let created = unsafe {
+            CreateProcessW(
+                ptr::null(),
+                wide.as_mut_ptr(),
+                ptr::null(),
+                ptr::null(),
+                0,
+                0,
+                ptr::null(),
+                ptr::null(),
+                &startup,
+                &mut information,
+            )
+        };
+        if created == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: CreateProcessW succeeded, so both handles are new and owned here.
+        let (process, _thread) = unsafe {
+            (
+                OwnedHandle::from_raw_handle(information.hProcess as RawHandle),
+                OwnedHandle::from_raw_handle(information.hThread as RawHandle),
+            )
+        };
+        // SAFETY: the owned process handle stays open for the wait.
+        if unsafe { WaitForSingleObject(process.as_raw_handle(), INFINITE) } != WAIT_OBJECT_0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut code = 0_u32;
+        // SAFETY: the owned process handle is valid and `code` is writable.
+        if unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut code) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(code)
+    }
+
+    fn broker_parent() -> io::Result<()> {
+        let arguments = corpus();
+        let output = std::env::temp_dir().join(format!(
+            "windows-spawn-broker-roundtrip-{}-{}.bin",
+            std::process::id(),
+            arguments.len()
+        ));
+        let mut command = Command::new(std::env::current_exe()?);
+        command.arg("--broker-child").arg(&output).args(&arguments);
+        let code = launch_like_a_broker(&command.to_command_line()?)?;
+        if code != 0 {
+            return Err(io::Error::other(format!(
+                "broker round-trip child failed with exit code {code}"
+            )));
+        }
+
+        let actual = fs::read(&output)?;
+        fs::remove_file(output)?;
+        if actual != encode_arguments(&arguments) {
+            return Err(io::Error::other(
+                "a broker-launched command line decoded to different arguments",
+            ));
+        }
+        Ok(())
     }
 
     fn corpus() -> Vec<OsString> {
@@ -100,12 +191,7 @@ mod windows {
             )));
         }
 
-        let mut expected = Vec::new();
-        let count = u32::try_from(arguments.len()).expect("test corpus fits in a DWORD");
-        expected.extend_from_slice(&count.to_le_bytes());
-        for argument in &arguments {
-            append_os(&mut expected, argument);
-        }
+        let mut expected = encode_arguments(&arguments);
         append_os(&mut expected, &environment);
         append_os(&mut expected, &mixed);
         expected.push(0);
@@ -123,10 +209,13 @@ mod windows {
     }
 
     pub(super) fn main() -> io::Result<()> {
-        if std::env::args_os().nth(1).as_deref() == Some(OsStr::new("--child")) {
-            child()
-        } else {
-            parent()
+        match std::env::args_os().nth(1) {
+            Some(mode) if mode == "--child" => child(),
+            Some(mode) if mode == "--broker-child" => broker_child(),
+            Some(_) | None => {
+                parent()?;
+                broker_parent()
+            }
         }
     }
 }

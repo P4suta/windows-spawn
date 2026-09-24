@@ -156,6 +156,8 @@ impl<'a> SpawnOptions<'a> {
     }
 
     /// Appends a Job, preserving root-to-inner ordering.
+    ///
+    /// Jobs are attached during creation, before the child runs any code.
     #[must_use]
     pub fn job(mut self, job: &'a Job) -> Self {
         self.jobs.push(job);

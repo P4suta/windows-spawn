@@ -148,7 +148,7 @@ fn configured_or<'a>(value: Option<&'a Stdio>, default: StdioSpec<'a>) -> StdioS
     value.map_or(default, StdioSpec::Configured)
 }
 
-fn validate_command(command: &Command) -> io::Result<()> {
+pub(crate) fn validate_command(command: &Command) -> io::Result<()> {
     if command.program.is_empty() {
         return Err(invalid("program must not be empty"));
     }
