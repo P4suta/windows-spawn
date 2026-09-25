@@ -2,24 +2,23 @@
 #
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
+# release-plz only proposes the release pull request.
+# The maintainer's signed tag starts release.yml, which publishes after an approved deployment.
 [workspace]
 allow_dirty = false
 changelog_update = true
 dependencies_update = false
-# `release_always` keeps its default, true.
-# With false, a manually bumped version could never be released: no release pull request is proposed for it, and only such a pull request releases.
-git_tag_enable = true
+git_tag_enable = false
 git_tag_name = "v{{ version }}"
-# release-finalize.yml creates the GitHub release, after attaching the crate, SBOM, and attestations.
 git_release_enable = false
-publish = true
+publish = false
+pr_draft = true
+pr_name = "chore(release): v{{ version }}"
 semver_check = true
 
 [[package]]
 name = "xtask"
 release = false
-# The workspace `publish = true` also applies to xtask, and release-plz rejects a mismatch with its `publish = false` manifest.
-publish = false
 
 [changelog]
 protect_breaking_commits = true
