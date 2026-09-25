@@ -43,9 +43,6 @@ pub(crate) enum Task {
         tag: String,
         github_output: bool,
     },
-    CratesIoAuthMode {
-        github_output: bool,
-    },
     Help,
 }
 
@@ -79,8 +76,6 @@ pub(crate) fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Task,
         "mutation" => parse_mutation(&rest),
         "draft-release" => parse_tag_and_github_output(&rest)
             .map(|(tag, github_output)| Task::DraftRelease { tag, github_output }),
-        "crates-io-auth-mode" => parse_single_flag(&rest, "--github-output")
-            .map(|github_output| Task::CratesIoAuthMode { github_output }),
         "help" | "-h" | "--help" => no_arguments(&rest, Task::Help),
         _ => Err(format!("unknown xtask command: {command}")),
     }

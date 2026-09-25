@@ -106,7 +106,6 @@ pub(crate) fn execute(task: Task) -> Result<i32> {
         Task::DraftRelease { tag, github_output } => {
             draft_release(&root, &tag, github_output)?;
         }
-        Task::CratesIoAuthMode { github_output } => crates_io_auth_mode(github_output)?,
         Task::Help => print_help(),
     }
     Ok(0)
@@ -124,8 +123,7 @@ Repository tasks:
   cargo xtask release-candidate [--allow-dirty] [--github-output]
   cargo xtask verify-release-tag TAG
   cargo xtask mutation [-- rust-mutants run arguments]
-  cargo xtask draft-release TAG [--github-output]
-  cargo xtask crates-io-auth-mode [--github-output]"
+  cargo xtask draft-release TAG [--github-output]"
     );
 }
 
@@ -695,6 +693,18 @@ fn verify_release_tag(root: &Path, tag: &str) -> Result<()> {
             "tag {tag} does not resolve to checked-out commit {head_commit}"
         ));
     }
+    let mut on_main = Command::new("git");
+    on_main.current_dir(root).args([
+        "merge-base",
+        "--is-ancestor",
+        head_commit,
+        "refs/remotes/origin/main",
+    ]);
+    if !on_main.status()?.success() {
+        return fail(format!(
+            "tag {tag} names {head_commit}, which origin/main does not contain"
+        ));
+    }
     let package = root_package(root)?;
     if package.version != version {
         return fail(format!(
@@ -739,15 +749,6 @@ fn draft_release(root: &Path, tag: &str, github_output: bool) -> Result<()> {
     println!("{url}");
     if github_output {
         write_github_output_value("url", url)?;
-    }
-    Ok(())
-}
-
-fn crates_io_auth_mode(github_output: bool) -> Result<()> {
-    let bootstrap = env::var_os("CRATES_IO_BOOTSTRAP_TOKEN").is_some_and(|value| !value.is_empty());
-    println!("bootstrap={bootstrap}");
-    if github_output {
-        write_github_output_value("bootstrap", &bootstrap.to_string())?;
     }
     Ok(())
 }
