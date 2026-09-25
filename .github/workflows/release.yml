@@ -5,7 +5,8 @@
 
 # Publishes the version a maintainer's signed `vX.Y.Z` tag names.
 #
-#   * The tag ruleset admits only the maintainer's signed tags, so no workflow and no token of this repository can start a release.
+#   * The tag rulesets let only the maintainer create a `v*` tag, and `candidate` refuses one that is not annotated and verified as signed.
+#     This file runs as the tagged commit has it, so those checks are defence in depth; the creation rule and the approval are the gates.
 #   * `publish` deploys to the `crates-io` environment, which waits for the maintainer's approval.
 #     crates.io's trusted publisher admits only that environment of this workflow, so nothing else can mint a publish token.
 #   * Windows runners, because `cargo publish` verifies by building, and the `cfg(windows)` dependencies do not build on Linux.
@@ -44,13 +45,30 @@ jobs:
         with:
           tool: cargo-cyclonedx@0.5.9
       - run: python -m pip install "reuse[charset-normalizer]==6.2.0"
+      - name: Require an annotated tag whose signature GitHub verified
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}")"
+          if [ "$(jq -r .object.type <<<"${ref}")" != tag ]; then
+            echo "::error::${TAG} is a lightweight tag; a release tag is annotated and signed"
+            exit 1
+          fi
+          tag="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/$(jq -r .object.sha <<<"${ref}")")"
+          if [ "$(jq -r .verification.verified <<<"${tag}")" != true ]; then
+            echo "::error::GitHub did not verify the signature on ${TAG}: $(jq -r .verification.reason <<<"${tag}")"
+            exit 1
+          fi
       - name: Verify the tag, its commit on main, and the Cargo version
         run: cargo xtask verify-release-tag "$env:GITHUB_REF_NAME"
       - name: Build and verify the release candidate
         id: candidate
         run: cargo xtask release-candidate --github-output
       - name: Attest SLSA v1 provenance
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d  # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
         with:
           subject-path: |
             target/release-candidate/*.crate
@@ -58,7 +76,7 @@ jobs:
             target/release-candidate/*.reuse.spdx
             target/release-candidate/SHA256SUMS
       - name: Attest CycloneDX SBOM
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d  # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
         with:
           subject-path: target/release-candidate/*.crate
           sbom-path: ${{ steps.candidate.outputs.sbom }}

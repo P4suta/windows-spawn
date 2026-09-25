@@ -23,9 +23,12 @@ It writes `target/release-candidate/SHA256SUMS`.
 - The `release` environment deploys from `main` only.
   It holds the `RELEASE_PLZ_APP_CLIENT_ID` variable and the `RELEASE_PLZ_APP_PRIVATE_KEY` secret of the `p4suta-release-plz` App, which needs **Contents** and **Pull requests** read/write.
   The App token is needed because a pull request opened with `GITHUB_TOKEN` starts no CI.
-- The `crates-io` environment deploys from `v*` tags only, and requires the maintainer's review.
+- The `crates-io` environment deploys from `v*` tags only, requires the maintainer's review, and lets no administrator bypass it.
 - The crate's trusted publisher on crates.io is this repository, `release.yml`, and the `crates-io` environment, and the crate accepts trusted publishing only.
-- The `v*` tag ruleset lets only the maintainer create a tag, requires it to be signed, and forbids moving or deleting one.
+- Two rulesets guard `v*` tags, because a bypass actor skips every rule of its ruleset.
+  One restricts creation, and only the maintainer bypasses it.
+  The other forbids moving or deleting a tag and requires signatures, and nobody bypasses it.
+- `release.yml` also refuses a tag that is not annotated and verified as signed, but it runs as the tagged commit has it, so the creation rule and the approval are what guard a release.
 
 Every action is pinned to a full commit SHA.
 
@@ -43,9 +46,9 @@ Every action is pinned to a full commit SHA.
    git push origin v0.2.0
    ```
 
-4. `release.yml` verifies that the tag names a commit on `main` whose Cargo version it matches.
+4. `release.yml` verifies that the tag is annotated and signed, and names a commit on `main` whose Cargo version it matches.
    It builds the release candidate, attests SLSA v1 provenance and the CycloneDX SBOM, and waits in the `crates-io` environment.
-5. Approve the deployment.
+5. Check that the run is for the tag you pushed, on the commit `main` holds, and that `candidate` passed; then approve the deployment.
    The job takes a short-lived crates.io token through OpenID Connect, and publishes only if the archive `cargo package` makes is the attested candidate.
    It then requires crates.io to serve that same archive.
 6. The last job uploads the crate, SBOMs, and checksums to a draft GitHub release, and publishes it.
