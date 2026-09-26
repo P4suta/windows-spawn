@@ -4,6 +4,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follo
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/P4suta/windows-spawn/compare/v0.1.0...v0.1.1) - 2026-09-26
+
+### Added
+
+- render the command line for launch brokers ([#17](https://github.com/P4suta/windows-spawn/pull/17))
+
+### Other
+
+- add the required aggregate job ([#29](https://github.com/P4suta/windows-spawn/pull/29))
+- release only from a signed tag and an approved deployment ([#27](https://github.com/P4suta/windows-spawn/pull/27))
+- *(deps)* move dependency updates from Dependabot to Renovate ([#25](https://github.com/P4suta/windows-spawn/pull/25))
+- enforce the repository laws mechanically ([#24](https://github.com/P4suta/windows-spawn/pull/24))
+- inject Win32 failures to cover every error path ([#23](https://github.com/P4suta/windows-spawn/pull/23))
+- run mutation testing on rust-mutants ([#22](https://github.com/P4suta/windows-spawn/pull/22))
+- drain ConPTY output continuously and ban time in code ([#21](https://github.com/P4suta/windows-spawn/pull/21))
+- prove lifecycle properties by events, not time ([#20](https://github.com/P4suta/windows-spawn/pull/20))
+- make all prose terse and one sentence per line ([#18](https://github.com/P4suta/windows-spawn/pull/18))
+
 ## [0.1.0] - 2026-08-03
 
 Initial release.
