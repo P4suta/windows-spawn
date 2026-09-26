@@ -3,115 +3,33 @@
 #
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-# The upstream release-plz workflow, with documented deviations:
+# Proposes the next release as a draft pull request, and never publishes; release.yml does, from a signed tag.
 #
-#   * A GitHub App token, because GITHUB_TOKEN cannot trigger CI on the release pull request.
-#   * `environment: release` on both jobs, which holds the App and crates.io credentials.
-#   * Windows runners, because `cargo publish` verifies by building, and the `cfg(windows)` windows-sys dependency does not build on Linux.
-name: Release-plz
+#   * A GitHub App token, because a pull request opened with GITHUB_TOKEN starts no CI.
+#   * `environment: release` holds the App's credentials, and deploys from main only.
+#   * A Windows runner, because `semver_check` builds the crate, and its `cfg(windows)` dependencies do not build on Linux.
+name: Release PR
 
 "on":
   push:
     branches: [main]
-  # Manual dispatch retries a failed release; it still publishes only when the manifest version is ahead of the registry.
   workflow_dispatch:
 
 permissions: {}
 
 concurrency:
-  group: release-plz-${{ github.ref }}
+  group: release-plz-pr-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Release-plz release
-    if: github.repository == 'P4suta/windows-spawn'
-    runs-on: windows-2022
-    timeout-minutes: 45
-    environment:
-      name: release
-    permissions:
-      contents: write
-      id-token: write
-    outputs:
-      released: ${{ steps.run.outputs.releases_created }}
-      tag: ${{ steps.released.outputs.tag }}
-      version: ${{ steps.released.outputs.version }}
-    steps:
-      - name: Mint the release GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
-        with:
-          client-id: ${{ vars.RELEASE_PLZ_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_PLZ_APP_PRIVATE_KEY }}
-          permission-contents: write
-          permission-pull-requests: read
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
-        with:
-          toolchain: stable
-      # The bootstrap token published 0.1.0; once a trusted publisher is registered, delete it and OpenID Connect takes over.
-      - name: Select the crates.io credential
-        id: auth-mode
-        env:
-          CRATES_IO_BOOTSTRAP_TOKEN: ${{ secrets.CRATES_IO_BOOTSTRAP_TOKEN }}
-        run: cargo xtask crates-io-auth-mode --github-output
-      - name: Authenticate with crates.io trusted publishing
-        id: crates-auth
-        if: steps.auth-mode.outputs.bootstrap == 'false'
-        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18  # v1.0.5
-      - name: Run release-plz
-        id: run
-        uses: release-plz/action@2eb1d8bcb770b4c48ccfaad919734b38b51958c9  # v0.5.131
-        with:
-          command: release
-          version: 0.3.160
-        env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-          CARGO_REGISTRY_TOKEN: >-
-            ${{ steps.crates-auth.outputs.token
-            || secrets.CRATES_IO_BOOTSTRAP_TOKEN }}
-      - name: Read the released tag and version
-        id: released
-        if: steps.run.outputs.releases_created == 'true'
-        shell: bash
-        env:
-          RELEASES: ${{ steps.run.outputs.releases }}
-        run: |
-          set -euo pipefail
-          jq -r '.[0] | "tag=\(.tag)", "version=\(.version)"' <<< "$RELEASES" >> "$GITHUB_OUTPUT"
-
-  # Creates the GitHub release with the crate, SBOM, checksums, and attestations attached.
-  finalize:
-    name: Attest and publish the release
-    needs: release
-    if: needs.release.outputs.released == 'true'
-    permissions:
-      artifact-metadata: write
-      attestations: write
-      contents: write
-      id-token: write
-    uses: ./.github/workflows/release-finalize.yml
-    with:
-      tag: ${{ needs.release.outputs.tag }}
-      version: ${{ needs.release.outputs.version }}
-
   release-pr:
     name: Release-plz PR
-    # Runs after `release` so no release pull request opens for a version this run publishes.
-    needs: release
-    if: always() && github.repository == 'P4suta/windows-spawn'
+    if: github.repository == 'P4suta/windows-spawn'
     runs-on: windows-2022
     timeout-minutes: 30
     environment:
       name: release
     permissions: {}
-    concurrency:
-      group: release-plz-pr-${{ github.ref }}
-      cancel-in-progress: false
     steps:
       - name: Mint the release GitHub App token
         id: app-token

@@ -1,0 +1,175 @@
+---
+# SPDX-FileCopyrightText: 2026 Yasunobu Sakashita
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Publishes the version a maintainer's signed `vX.Y.Z` tag names.
+#
+#   * The tag rulesets let only the maintainer create a `v*` tag, and `candidate` refuses one that is not annotated and verified as signed.
+#     This file runs as the tagged commit has it, so those checks are defence in depth; the creation rule and the approval are the gates.
+#   * `publish` deploys to the `crates-io` environment, which waits for the maintainer's approval.
+#     crates.io's trusted publisher admits only that environment of this workflow, so nothing else can mint a publish token.
+#   * Windows runners, because `cargo publish` verifies by building, and the `cfg(windows)` dependencies do not build on Linux.
+name: Release
+
+"on":
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    name: Verify the tag and attest the release candidate
+    if: github.repository == 'P4suta/windows-spawn'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf  # v2.85.5
+        with:
+          tool: cargo-cyclonedx@0.5.9
+      - run: python -m pip install "reuse[charset-normalizer]==6.2.0"
+      - name: Require an annotated tag whose signature GitHub verified
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}")"
+          if [ "$(jq -r .object.type <<<"${ref}")" != tag ]; then
+            echo "::error::${TAG} is a lightweight tag; a release tag is annotated and signed"
+            exit 1
+          fi
+          tag="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/$(jq -r .object.sha <<<"${ref}")")"
+          if [ "$(jq -r .verification.verified <<<"${tag}")" != true ]; then
+            echo "::error::GitHub did not verify the signature on ${TAG}: $(jq -r .verification.reason <<<"${tag}")"
+            exit 1
+          fi
+      - name: Verify the tag, its commit on main, and the Cargo version
+        run: cargo xtask verify-release-tag "$env:GITHUB_REF_NAME"
+      - name: Build and verify the release candidate
+        id: candidate
+        run: cargo xtask release-candidate --github-output
+      - name: Attest SLSA v1 provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-path: |
+            target/release-candidate/*.crate
+            target/release-candidate/*.cdx.json
+            target/release-candidate/*.reuse.spdx
+            target/release-candidate/SHA256SUMS
+      - name: Attest CycloneDX SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-path: target/release-candidate/*.crate
+          sbom-path: ${{ steps.candidate.outputs.sbom }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: release-candidate
+          path: target/release-candidate/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to crates.io
+    needs: candidate
+    runs-on: windows-latest
+    timeout-minutes: 30
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/windows-spawn
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
+        with:
+          toolchain: stable
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: release-candidate
+          path: ${{ runner.temp }}/release-candidate
+      # The attestations cover the candidate, so the archive `cargo publish` uploads must be that very file.
+      # `cargo package` is deterministic for a source tree; a mismatch stops the release before anything is published.
+      - name: Require the archive to publish to be the attested candidate
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $name = "windows-spawn-$version.crate"
+          cargo package --locked
+          if ($LASTEXITCODE -ne 0) { throw "cargo package exited $LASTEXITCODE" }
+          $packaged = (Get-FileHash "target/package/$name" -Algorithm SHA256).Hash
+          $candidate = (Get-FileHash "$env:RUNNER_TEMP/release-candidate/$name" -Algorithm SHA256).Hash
+          if ($packaged -ne $candidate) {
+            throw "packaged $name is $packaged, but the attested candidate is $candidate"
+          }
+          "packaged archive matches the attested candidate: $packaged" | Write-Output
+      - name: Authenticate with crates.io trusted publishing
+        id: crates-auth
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18  # v1.0.5
+      - name: Publish the crate
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
+      - name: Require crates.io to serve the attested candidate
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $name = "windows-spawn-$version.crate"
+          $candidate = (Get-FileHash "$env:RUNNER_TEMP/release-candidate/$name" -Algorithm SHA256).Hash
+          $uri = "https://crates.io/api/v1/crates/windows-spawn/$version/download"
+          $probe = Join-Path $env:RUNNER_TEMP 'published.crate'
+          Invoke-WebRequest -Uri $uri -OutFile $probe -TimeoutSec 60 `
+            -Headers @{ 'User-Agent' = 'windows-spawn-release' }
+          $published = (Get-FileHash $probe -Algorithm SHA256).Hash
+          if ($published -ne $candidate) {
+            throw "crates.io serves $published, but the attested candidate is $candidate"
+          }
+          "crates.io serves the attested candidate: $published" | Write-Output
+
+  github-release:
+    name: Publish the GitHub release
+    needs: publish
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
+        with:
+          toolchain: stable
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: release-candidate
+          path: target/release-candidate
+      # Assets go onto a draft first, because a published release cannot gain them without being seen half-built.
+      - name: Create the draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: cargo xtask draft-release "$env:GITHUB_REF_NAME" --github-output
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$env:GITHUB_REF_NAME" --draft=false --latest
