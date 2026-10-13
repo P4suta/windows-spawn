@@ -7,6 +7,7 @@ use std::thread;
 
 use crate::error::{Operation, Phase, Result, SpawnError};
 use crate::handles::{windows, Job, Stdio};
+use crate::resource::{Borrowed, Owned, Pipe, Process, Thread};
 use crate::sys;
 
 /// The writable parent end of a child's standard-input pipe.
@@ -14,12 +15,12 @@ use crate::sys;
 /// Like the output ends, it converts into [`Stdio`] and into [`OwnedHandle`].
 #[derive(Debug)]
 pub struct ChildStdin {
-    handle: OwnedHandle,
+    handle: Owned<Pipe>,
 }
 
 impl Write for ChildStdin {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        sys::write_handle(self.handle.as_handle(), buffer)
+        sys::write_handle(self.handle.borrow(), buffer)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -29,7 +30,7 @@ impl Write for ChildStdin {
 
 impl Write for &ChildStdin {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        sys::write_handle(self.handle.as_handle(), buffer)
+        sys::write_handle(self.handle.borrow(), buffer)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -69,12 +70,12 @@ impl AsRawHandle for ChildStdin {
 /// ```
 #[derive(Debug)]
 pub struct ChildStdout {
-    handle: OwnedHandle,
+    handle: Owned<Pipe>,
 }
 
 impl Read for ChildStdout {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        sys::read_handle(self.handle.as_handle(), buffer)
+        sys::read_handle(self.handle.borrow(), buffer)
     }
 }
 
@@ -93,12 +94,12 @@ impl AsRawHandle for ChildStdout {
 /// The readable parent end of a child's standard-error pipe.
 #[derive(Debug)]
 pub struct ChildStderr {
-    handle: OwnedHandle,
+    handle: Owned<Pipe>,
 }
 
 impl Read for ChildStderr {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        sys::read_handle(self.handle.as_handle(), buffer)
+        sys::read_handle(self.handle.borrow(), buffer)
     }
 }
 
@@ -116,37 +117,79 @@ impl AsRawHandle for ChildStderr {
 
 impl From<ChildStdin> for OwnedHandle {
     fn from(stream: ChildStdin) -> Self {
-        stream.handle
+        stream.handle.into_inner()
     }
 }
 
 impl From<ChildStdout> for OwnedHandle {
     fn from(stream: ChildStdout) -> Self {
-        stream.handle
+        stream.handle.into_inner()
     }
 }
 
 impl From<ChildStderr> for OwnedHandle {
     fn from(stream: ChildStderr) -> Self {
-        stream.handle
+        stream.handle.into_inner()
     }
 }
 
 impl From<ChildStdin> for Stdio {
     fn from(stream: ChildStdin) -> Self {
-        Self::from(stream.handle)
+        Self::from(OwnedHandle::from(stream))
     }
 }
 
 impl From<ChildStdout> for Stdio {
     fn from(stream: ChildStdout) -> Self {
-        Self::from(stream.handle)
+        Self::from(OwnedHandle::from(stream))
     }
 }
 
 impl From<ChildStderr> for Stdio {
     fn from(stream: ChildStderr) -> Self {
-        Self::from(stream.handle)
+        Self::from(OwnedHandle::from(stream))
+    }
+}
+
+/// The crate's handle to a process it created.
+///
+/// Until the main thread has run, dropping the handle terminates the process, so a spawn that fails, or a suspended child that is dropped, leaves nothing running.
+#[derive(Debug)]
+pub(crate) struct ProcessHandle {
+    handle: Owned<Process>,
+    unstarted: bool,
+}
+
+impl ProcessHandle {
+    /// Owns a process whose main thread hasn't run.
+    pub(crate) const fn unstarted(handle: Owned<Process>) -> Self {
+        Self {
+            handle,
+            unstarted: true,
+        }
+    }
+
+    /// Records that the main thread runs, so dropping the handle leaves the process running.
+    pub(crate) fn mark_started(&mut self) {
+        self.unstarted = false;
+    }
+
+    pub(crate) fn borrow(&self) -> Borrowed<'_, Process> {
+        self.handle.borrow()
+    }
+}
+
+impl Drop for ProcessHandle {
+    fn drop(&mut self) {
+        if self.unstarted {
+            drop(sys::terminate_process(self.handle.borrow(), 1));
+        }
+    }
+}
+
+impl AsHandle for ProcessHandle {
+    fn as_handle(&self) -> BorrowedHandle<'_> {
+        self.handle.as_handle()
     }
 }
 
@@ -157,7 +200,9 @@ impl From<ChildStderr> for Stdio {
 /// Dropping the value leaves the process running, unless [`crate::Command::own_process_tree`] made it the owner of the tree.
 #[derive(Debug)]
 pub struct Child {
-    /// Declared first so kill-on-close runs before the pipe and process handles drop.
+    /// Declared first, so a process that never ran ends with the exit code of a termination before its Job closes.
+    process: ProcessHandle,
+    /// Declared before the pipes, so closing the Job ends the tree while the pipes still hold their ends.
     kill_job: Option<Job>,
     /// A pipe connected to the child's standard input, when requested.
     pub stdin: Option<ChildStdin>,
@@ -165,26 +210,25 @@ pub struct Child {
     pub stdout: Option<ChildStdout>,
     /// A pipe connected to the child's standard error, when requested.
     pub stderr: Option<ChildStderr>,
-    process: OwnedHandle,
     pid: u32,
     exit: Option<ExitStatus>,
 }
 
 impl Child {
     pub(crate) fn new(
-        process: OwnedHandle,
+        process: ProcessHandle,
         pid: u32,
         kill_job: Option<Job>,
-        stdin: Option<OwnedHandle>,
-        stdout: Option<OwnedHandle>,
-        stderr: Option<OwnedHandle>,
+        stdin: Option<Owned<Pipe>>,
+        stdout: Option<Owned<Pipe>>,
+        stderr: Option<Owned<Pipe>>,
     ) -> Self {
         Self {
+            process,
             kill_job,
             stdin: stdin.map(|handle| ChildStdin { handle }),
             stdout: stdout.map(|handle| ChildStdout { handle }),
             stderr: stderr.map(|handle| ChildStderr { handle }),
-            process,
             pid,
             exit: None,
         }
@@ -212,10 +256,10 @@ impl Child {
         if self.exit.is_some() {
             return Ok(());
         }
-        let Err(error) = sys::terminate_process(self.process.as_handle(), 1) else {
+        let Err(error) = sys::terminate_process(self.process.borrow(), 1) else {
             return Ok(());
         };
-        if matches!(sys::try_wait_process(self.process.as_handle()), Ok(true)) {
+        if matches!(sys::try_wait_process(self.process.borrow()), Ok(true)) {
             return Ok(());
         }
         Err(SpawnError::windows(
@@ -238,7 +282,7 @@ impl Child {
         windows(
             Phase::Runtime,
             Operation::WaitProcess,
-            sys::wait_process(self.process.as_handle()),
+            sys::wait_process(self.process.borrow()),
         )?;
         let status = self.exit_status()?;
         self.exit = Some(status);
@@ -257,7 +301,7 @@ impl Child {
         let exited = windows(
             Phase::Runtime,
             Operation::WaitProcess,
-            sys::try_wait_process(self.process.as_handle()),
+            sys::try_wait_process(self.process.borrow()),
         )?;
         if !exited {
             return Ok(None);
@@ -271,7 +315,7 @@ impl Child {
         windows(
             Phase::Runtime,
             Operation::QueryExitCode,
-            sys::exit_status(self.process.as_handle()),
+            sys::exit_status(self.process.borrow()),
         )
     }
 
@@ -291,14 +335,14 @@ impl Child {
                 let ids = windows(
                     Phase::Runtime,
                     Operation::QueryJob,
-                    sys::job_process_ids(job.as_handle()),
+                    sys::job_process_ids(job.borrow()),
                 )?;
                 let mut members = Vec::with_capacity(ids.len());
                 for id in ids {
                     members.extend(windows(
                         Phase::Runtime,
                         Operation::OpenProcess,
-                        sys::open_job_process(id, job.as_handle()),
+                        sys::open_job_process(id, job.borrow()),
                     )?);
                 }
                 drop(self.stdin.take());
@@ -309,7 +353,7 @@ impl Child {
                     windows(
                         Phase::Runtime,
                         Operation::WaitProcess,
-                        sys::wait_process(member.as_handle()),
+                        sys::wait_process(member.borrow()),
                     )?;
                 }
             }
@@ -331,11 +375,11 @@ impl Child {
         let stdout_reader = self
             .stdout
             .take()
-            .map(|stream| thread::spawn(move || drain_output(stream.handle.as_handle())));
+            .map(|stream| thread::spawn(move || drain_output(stream.handle.borrow())));
         let stderr_reader = self
             .stderr
             .take()
-            .map(|stream| thread::spawn(move || drain_output(stream.handle.as_handle())));
+            .map(|stream| thread::spawn(move || drain_output(stream.handle.borrow())));
 
         let status = self.wait();
         let termination = self
@@ -361,11 +405,11 @@ impl AsHandle for Child {
 
 impl AsRawHandle for Child {
     fn as_raw_handle(&self) -> RawHandle {
-        self.process.as_raw_handle()
+        self.process.as_handle().as_raw_handle()
     }
 }
 
-fn drain_output(handle: BorrowedHandle<'_>) -> Result<Vec<u8>> {
+fn drain_output(handle: Borrowed<'_, Pipe>) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 8_192];
     loop {
@@ -420,24 +464,19 @@ fn join_readers(stdout: Option<Reader>, stderr: Option<Reader>) -> Result<(Vec<u
 #[derive(Debug)]
 #[must_use = "dropping a suspended child terminates it"]
 pub struct SuspendedChild {
-    pid: u32,
-    child: Option<Child>,
-    main_thread: OwnedHandle,
+    child: Child,
+    main_thread: Owned<Thread>,
 }
 
 impl SuspendedChild {
-    pub(crate) const fn new(child: Child, main_thread: OwnedHandle) -> Self {
-        Self {
-            pid: child.id(),
-            child: Some(child),
-            main_thread,
-        }
+    pub(crate) const fn new(child: Child, main_thread: Owned<Thread>) -> Self {
+        Self { child, main_thread }
     }
 
     /// Returns the process identifier captured at creation.
     #[must_use]
     pub const fn id(&self) -> u32 {
-        self.pid
+        self.child.id()
     }
 
     /// Borrows the suspended process's main thread handle.
@@ -455,46 +494,33 @@ impl SuspendedChild {
     /// Returns a Windows error if the main thread can't be resumed,
     /// and one of kind [`io::ErrorKind::InvalidData`] if another thread suspended it again, so its suspend count was not one.
     /// The process is terminated in both cases.
-    pub fn resume(mut self) -> Result<Child> {
+    pub fn resume(self) -> Result<Child> {
+        let Self {
+            mut child,
+            main_thread,
+        } = self;
         let previous = windows(
             Phase::Resume,
             Operation::ResumeThread,
-            sys::resume_thread(self.main_thread.as_handle()),
+            sys::resume_thread(main_thread.borrow()),
         )?;
         if previous != 1 {
             return Err(SpawnError::unexpected_suspend_count(previous));
         }
-        self.child.take().ok_or_else(|| {
-            SpawnError::windows(
-                Phase::Resume,
-                Operation::ResumeThread,
-                io::Error::other("suspended child lost its process"),
-            )
-        })
+        child.process.mark_started();
+        Ok(child)
     }
 }
 
 impl AsHandle for SuspendedChild {
-    #[allow(clippy::expect_used)]
     fn as_handle(&self) -> BorrowedHandle<'_> {
-        self.child
-            .as_ref()
-            .expect("a suspended child owns its process until resume")
-            .as_handle()
+        self.child.as_handle()
     }
 }
 
 impl AsRawHandle for SuspendedChild {
     fn as_raw_handle(&self) -> RawHandle {
-        self.as_handle().as_raw_handle()
-    }
-}
-
-impl Drop for SuspendedChild {
-    fn drop(&mut self) {
-        if let Some(child) = &mut self.child {
-            drop(child.kill());
-        }
+        self.child.as_raw_handle()
     }
 }
 
@@ -566,25 +592,52 @@ mod tests {
         assert!(alone.wait_tree().unwrap().code().is_some());
 
         let mut owner = command.own_process_tree().spawn().unwrap();
-        let job = owner.kill_job.as_ref().unwrap().as_handle();
+        let job = owner.kill_job.as_ref().unwrap().borrow();
         let ids = sys::job_process_ids(job).unwrap();
         assert_eq!(ids, [usize::try_from(owner.id()).unwrap()]);
         let member = sys::open_job_process(ids[0], job).unwrap().unwrap();
-        assert!(!sys::try_wait_process(member.as_handle()).unwrap());
+        assert!(!sys::try_wait_process(member.borrow()).unwrap());
         let outsider = usize::try_from(std::process::id()).unwrap();
         assert!(sys::open_job_process(outsider, job).unwrap().is_none());
         assert!(sys::open_job_process(0, job).unwrap().is_none());
         assert!(owner.wait_tree().unwrap().code().is_some());
         assert_eq!(
-            sys::job_process_ids(owner.kill_job.as_ref().unwrap().as_handle()).unwrap(),
+            sys::job_process_ids(owner.kill_job.as_ref().unwrap().borrow()).unwrap(),
             Vec::<usize>::new()
         );
+    }
+
+    /// A process that survives its handle reads the end of its input and exits 5, and a terminated one exits 1.
+    #[test]
+    fn only_a_process_that_never_ran_ends_when_its_handle_drops() {
+        let mut command = crate::Command::new("cmd.exe");
+        command
+            .args(["/D", "/S", "/C"])
+            .raw_arg("set /p x=&exit /b 5")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let suspended = command.spawn_suspended().unwrap();
+        let mut unstarted = sys::test_support::ProcessExitGuard::watch(suspended.as_handle());
+        let thread = sys::test_support::duplicate(suspended.main_thread_handle());
+        drop(suspended);
+        sys::test_support::tempt_resume(thread.as_handle());
+        assert_eq!(unstarted.exit_code(), 1);
+
+        for child in [
+            command.spawn().unwrap(),
+            command.spawn_suspended().unwrap().resume().unwrap(),
+        ] {
+            let mut started = sys::test_support::ProcessExitGuard::watch(child.as_handle());
+            drop(child);
+            assert_eq!(started.exit_code(), 5);
+        }
     }
 
     #[test]
     fn reader_errors_reach_the_caller() {
         let (reader, writer) = sys::test_support::pipe();
-        assert!(drain_output(writer.as_handle()).is_err());
+        assert!(drain_output(Borrowed::adopt(writer.as_handle())).is_err());
         drop(reader);
 
         let mut exited = crate::Command::new("cmd.exe");
@@ -595,12 +648,16 @@ mod tests {
             .stderr(Stdio::null());
         let source = exited.spawn().unwrap();
         let (unreadable_reader, unreadable) = sys::test_support::pipe();
+        let mut process = ProcessHandle::unstarted(Owned::adopt(sys::test_support::duplicate(
+            source.as_handle(),
+        )));
+        process.mark_started();
         let child = Child::new(
-            sys::test_support::duplicate(source.as_handle()),
+            process,
             source.id(),
             None,
             None,
-            Some(unreadable),
+            Some(Owned::adopt(unreadable)),
             None,
         );
         assert!(child.wait_with_output().is_err());

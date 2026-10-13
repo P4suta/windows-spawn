@@ -878,8 +878,6 @@ pub fn windows_spawn::SuspendedChild::main_thread_handle(&self) -> std::os::wind
 pub fn windows_spawn::SuspendedChild::resume(self) -> windows_spawn::Result<windows_spawn::Child>
 impl core::fmt::Debug for windows_spawn::SuspendedChild
 pub fn windows_spawn::SuspendedChild::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::ops::drop::Drop for windows_spawn::SuspendedChild
-pub fn windows_spawn::SuspendedChild::drop(&mut self)
 impl std::os::windows::io::handle::AsHandle for windows_spawn::SuspendedChild
 pub fn windows_spawn::SuspendedChild::as_handle(&self) -> std::os::windows::io::handle::BorrowedHandle<'_>
 impl std::os::windows::io::raw::AsRawHandle for windows_spawn::SuspendedChild

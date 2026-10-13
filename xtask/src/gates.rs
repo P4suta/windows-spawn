@@ -34,25 +34,6 @@ const EXCEPTIONS: &[Exception] = &[
         reason: "dword_const is evaluated in constants, where an oversized value fails the build",
     },
     Exception {
-        file: "src/child.rs",
-        lint: "clippy::expect_used",
-        count: 1,
-        reason: "a SuspendedChild owns its process until resume consumes it",
-    },
-    Exception {
-        file: "src/transaction.rs",
-        lint: "clippy::expect_used",
-        count: 1,
-        reason: "an uncommitted transaction owns its process until commit consumes it",
-    },
-    Exception {
-        file: "src/transaction.rs",
-        lint: "clippy::too_many_lines",
-        count: 1,
-        reason:
-            "one function acquires every creation resource, so rollback has one owner (ADR 0007)",
-    },
-    Exception {
         file: "tests/support/mod.rs",
         lint: "clippy::disallowed_methods",
         count: 1,

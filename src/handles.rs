@@ -7,6 +7,7 @@ use std::marker::PhantomData;
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle, RawHandle};
 
 use crate::error::{Operation, Phase, Result, SpawnError};
+use crate::resource::{Borrowed, JobObject, Owned, Process, Stream};
 use crate::sys;
 
 /// Runs one Windows operation and types its failure with the phase and operation.
@@ -26,7 +27,7 @@ pub(crate) enum StdioInner {
     Inherit,
     Null,
     Piped,
-    Owned(OwnedHandle),
+    Owned(Owned<Stream>),
     /// The caller's standard output, in whichever slot the child receives it.
     CallerStdout,
     /// The caller's standard error, in whichever slot the child receives it.
@@ -83,16 +84,16 @@ impl Stdio {
         windows(
             Phase::Preparation,
             Operation::DuplicateLocalHandle,
-            sys::duplicate_local(source.as_handle(), false),
+            sys::duplicate_local(Borrowed::foreign(source), false),
         )
-        .map(Self::from)
+        .map(|duplicate| Self::from(duplicate.into_inner()))
     }
 }
 
 impl From<OwnedHandle> for Stdio {
     fn from(handle: OwnedHandle) -> Self {
         Self {
-            inner: StdioInner::Owned(handle),
+            inner: StdioInner::Owned(Owned::adopt(handle)),
         }
     }
 }
@@ -124,7 +125,7 @@ impl From<io::Stderr> for Stdio {
 /// A process handle validated for use as `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`.
 #[derive(Debug)]
 pub struct ParentProcess {
-    handle: OwnedHandle,
+    handle: Owned<Process>,
 }
 
 impl ParentProcess {
@@ -151,9 +152,15 @@ impl ParentProcess {
         windows(
             Phase::Preparation,
             Operation::OpenProcess,
-            sys::validate_process_handle(handle.as_handle()),
+            sys::validate_process_handle(Borrowed::foreign(&handle)),
         )?;
-        Ok(Self { handle })
+        Ok(Self {
+            handle: Owned::adopt(handle),
+        })
+    }
+
+    pub(crate) fn borrow(&self) -> Borrowed<'_, Process> {
+        self.handle.borrow()
     }
 }
 
@@ -171,14 +178,14 @@ impl AsRawHandle for ParentProcess {
 
 impl From<ParentProcess> for OwnedHandle {
     fn from(parent: ParentProcess) -> Self {
-        parent.handle
+        parent.handle.into_inner()
     }
 }
 
 /// An owned Windows Job object.
 #[derive(Debug)]
 pub struct Job {
-    handle: OwnedHandle,
+    handle: Owned<JobObject>,
 }
 
 impl Job {
@@ -201,9 +208,11 @@ impl Job {
         windows(
             Phase::Preparation,
             Operation::QueryJob,
-            sys::validate_job_handle(handle.as_handle()),
+            sys::validate_job_handle(Borrowed::foreign(&handle)),
         )?;
-        Ok(Self { handle })
+        Ok(Self {
+            handle: Owned::adopt(handle),
+        })
     }
 
     /// Creates an independent duplicate of this Job handle.
@@ -215,7 +224,7 @@ impl Job {
         windows(
             Phase::Preparation,
             Operation::DuplicateLocalHandle,
-            sys::duplicate_local(self.handle.as_handle(), false),
+            sys::duplicate_local(self.handle.borrow(), false),
         )
         .map(|handle| Self { handle })
     }
@@ -231,7 +240,7 @@ impl Job {
         windows(
             Phase::Runtime,
             Operation::AssignJob,
-            sys::assign_job(self.handle.as_handle(), process.as_handle()),
+            sys::assign_job(self.handle.borrow(), Borrowed::foreign(process)),
         )
     }
 
@@ -244,7 +253,7 @@ impl Job {
         windows(
             Phase::Runtime,
             Operation::TerminateJob,
-            sys::terminate_job(self.handle.as_handle(), exit_code),
+            sys::terminate_job(self.handle.borrow(), exit_code),
         )
     }
 
@@ -259,8 +268,12 @@ impl Job {
         windows(
             Phase::Preparation,
             Operation::ConfigureJob,
-            sys::set_job_kill_on_close(self.handle.as_handle(), kill),
+            sys::set_job_kill_on_close(self.handle.borrow(), kill),
         )
+    }
+
+    pub(crate) fn borrow(&self) -> Borrowed<'_, JobObject> {
+        self.handle.borrow()
     }
 }
 
@@ -278,7 +291,7 @@ impl AsRawHandle for Job {
 
 impl From<Job> for OwnedHandle {
     fn from(job: Job) -> Self {
-        job.handle
+        job.handle.into_inner()
     }
 }
 
@@ -330,6 +343,13 @@ mod tests {
 
     const ACCESS_DENIED: i32 = 5;
 
+    /// A private duplicate of a handle whose kind the crate doesn't know.
+    fn duplicate<T: AsHandle>(source: &T) -> OwnedHandle {
+        sys::duplicate_local(Borrowed::foreign(source), false)
+            .unwrap()
+            .into_inner()
+    }
+
     #[test]
     fn stored_duplicates_are_private() -> Result<()> {
         use crate::sys::test_support::is_inheritable;
@@ -374,25 +394,20 @@ mod tests {
         let _host_guard = sys::test_support::ProcessExitGuard::watch(host.as_handle());
         let parent = ParentProcess::open(host.id()).unwrap();
         assert!(format!("{parent:?}").contains("ParentProcess"));
-        let adopted_parent =
-            ParentProcess::from_handle(sys::duplicate_local(host.as_handle(), false).unwrap())
-                .unwrap();
+        let adopted_parent = ParentProcess::from_handle(duplicate(&host)).unwrap();
         assert_ne!(
             adopted_parent.as_handle().as_raw_handle(),
             std::ptr::null_mut()
         );
 
         let job = Job::create().unwrap();
-        let duplicate = job.duplicate().unwrap();
-        let adopted_job = Job::from_handle(duplicate.handle).unwrap();
+        let adopted_job = Job::from_handle(OwnedHandle::from(job.duplicate().unwrap())).unwrap();
         adopted_job.set_kill_on_close(true).unwrap();
         adopted_job.set_kill_on_close(false).unwrap();
 
         let file = File::open("NUL").unwrap();
-        let not_process = sys::duplicate_local(file.as_handle(), false).unwrap();
-        assert!(ParentProcess::from_handle(not_process).is_err());
-        let not_job = sys::duplicate_local(file.as_handle(), false).unwrap();
-        assert!(Job::from_handle(not_job).is_err());
+        assert!(ParentProcess::from_handle(duplicate(&file)).is_err());
+        assert!(Job::from_handle(duplicate(&file)).is_err());
         drop(host);
     }
 }

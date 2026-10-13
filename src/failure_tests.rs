@@ -60,13 +60,15 @@ fn pipe<T>(operation: crate::Operation, outcome: io::Result<T>) -> Result<T> {
 
 /// A private duplicate, typed as the crate types its own duplicates.
 fn duplicate(handle: &impl AsHandle) -> Result<OwnedHandle> {
-    crate::sys::duplicate_local(handle.as_handle(), false).map_err(|error| {
-        SpawnError::windows(
-            Phase::Preparation,
-            crate::Operation::DuplicateLocalHandle,
-            error,
-        )
-    })
+    crate::sys::duplicate_local(crate::resource::Borrowed::foreign(handle), false)
+        .map(crate::resource::Owned::into_inner)
+        .map_err(|error| {
+            SpawnError::windows(
+                Phase::Preparation,
+                crate::Operation::DuplicateLocalHandle,
+                error,
+            )
+        })
 }
 
 /// Returns true if `error` holds the injected failure, as the failure itself or as one that a release met.

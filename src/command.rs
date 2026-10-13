@@ -2,7 +2,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::os::windows::io::{AsHandle, OwnedHandle};
+use std::os::windows::io::AsHandle;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output};
 
@@ -13,6 +13,7 @@ use crate::handles::Stdio;
 use crate::mitigation::MitigationPolicy;
 use crate::options::{ConsoleMode, Creation, PriorityClass, SpawnOptions};
 use crate::plan::{IoMode, SpawnPlan};
+use crate::resource::{Borrowed, Foreign, Owned};
 use crate::sys;
 use crate::transaction::SpawnTransaction;
 
@@ -20,7 +21,7 @@ use crate::transaction::SpawnTransaction;
 pub(crate) enum Arg {
     Text(OsString),
     Raw(OsString),
-    Handle(OwnedHandle),
+    Handle(Owned<Foreign>),
 }
 
 #[derive(Debug)]
@@ -32,7 +33,7 @@ pub(crate) enum EnvOp {
 #[derive(Debug)]
 pub(crate) enum EnvValue {
     Text(OsString),
-    Handle(OwnedHandle),
+    Handle(Owned<Foreign>),
 }
 
 /// A reusable description of a Windows process launch, with the API of [`std::process::Command`].
@@ -434,8 +435,8 @@ impl Command {
 }
 
 /// A private, non-inheritable duplicate that the command owns until a spawn lowers it.
-fn private_duplicate<T: AsHandle>(handle: &T) -> Result<OwnedHandle> {
-    sys::duplicate_local(handle.as_handle(), false).map_err(|error| {
+fn private_duplicate<T: AsHandle>(handle: &T) -> Result<Owned<Foreign>> {
+    sys::duplicate_local(Borrowed::foreign(handle), false).map_err(|error| {
         SpawnError::windows(Phase::Preparation, Operation::DuplicateLocalHandle, error)
     })
 }

@@ -3,6 +3,7 @@
 use std::cmp::Ordering;
 use std::ffi::{c_void, OsString};
 use std::io;
+use std::marker::PhantomData;
 use std::mem::{size_of, size_of_val, ManuallyDrop};
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
@@ -49,6 +50,9 @@ use crate::domain::attribute_rules::{self, SizeFault};
 use crate::domain::creation_flag_rules::{creation_word, ConsoleFlag, PriorityFlag};
 use crate::domain::environment_rules;
 use crate::handles::BorrowedPseudoConsole;
+use crate::resource::{
+    Borrowed, Creator, Foreign, Inheritor, JobObject, Owned, Pipe, Process, Stream, Thread, Value,
+};
 
 pub(crate) const INVALID_RAW_HANDLE: isize = -1;
 
@@ -94,21 +98,23 @@ pub(crate) enum NullAccess {
     Write,
 }
 
-pub(crate) fn duplicate_local(
-    source: BorrowedHandle<'_>,
+/// Duplicates a handle in the current process, keeping its kind.
+pub(crate) fn duplicate_local<K>(
+    source: Borrowed<'_, K>,
     inheritable: bool,
-) -> io::Result<OwnedHandle> {
+) -> io::Result<Owned<K>> {
     #[cfg(test)]
     fault::check(fault::Call::DuplicateLocal)?;
     // SAFETY: `GetCurrentProcess` cannot fail and returns a pseudo-handle that stays valid and is never closed.
     let current = unsafe { GetCurrentProcess() };
     duplicate_between(
         current,
-        raw(source),
+        raw(source.untyped()),
         current,
         inheritable,
         DUPLICATE_SAME_ACCESS,
     )
+    .map(Owned::adopt)
 }
 
 fn duplicate_between(
@@ -137,15 +143,15 @@ fn duplicate_between(
     owned(duplicate)
 }
 
-#[derive(Debug)]
+/// A duplicate in an alternate parent's table, which this process closes there.
 pub(crate) struct RemoteHandle<'a> {
-    process: BorrowedHandle<'a>,
+    process: Borrowed<'a, Process>,
     value: HANDLE,
 }
 
 impl RemoteHandle<'_> {
-    pub(crate) fn value(&self) -> isize {
-        handle_value(self.value)
+    pub(crate) fn value(&self) -> Value<Inheritor> {
+        Value::in_parent(handle_value(self.value))
     }
 
     /// Closes the remote value and reports a failure, which the drop would discard.
@@ -160,13 +166,22 @@ impl RemoteHandle<'_> {
         // SAFETY: `GetCurrentProcess` cannot fail and returns a pseudo-handle that stays valid and is never closed.
         let current = unsafe { GetCurrentProcess() };
         duplicate_between(
-            raw(self.process),
+            raw(self.process.untyped()),
             self.value,
             current,
             false,
             DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE,
         )
         .map(drop)
+    }
+}
+
+impl std::fmt::Debug for RemoteHandle<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("RemoteHandle")
+            .field(&handle_value(self.value))
+            .finish()
     }
 }
 
@@ -177,9 +192,9 @@ impl Drop for RemoteHandle<'_> {
     }
 }
 
-pub(crate) fn duplicate_remote<'a>(
-    source: BorrowedHandle<'_>,
-    target_process: BorrowedHandle<'a>,
+pub(crate) fn duplicate_remote<'a, K>(
+    source: Borrowed<'_, K>,
+    target_process: Borrowed<'a, Process>,
     inheritable: bool,
 ) -> io::Result<RemoteHandle<'a>> {
     #[cfg(test)]
@@ -189,8 +204,8 @@ pub(crate) fn duplicate_remote<'a>(
     if unsafe {
         DuplicateHandle(
             GetCurrentProcess(),
-            raw(source),
-            raw(target_process),
+            raw(source.untyped()),
+            raw(target_process.untyped()),
             &mut value,
             0,
             i32::from(inheritable),
@@ -206,7 +221,7 @@ pub(crate) fn duplicate_remote<'a>(
     })
 }
 
-pub(crate) fn standard_handle(stream: StandardStream) -> io::Result<Option<OwnedHandle>> {
+pub(crate) fn standard_handle(stream: StandardStream) -> io::Result<Option<Owned<Stream>>> {
     #[cfg(test)]
     fault::check(fault::Call::StandardHandle)?;
     let id = match stream {
@@ -221,10 +236,10 @@ pub(crate) fn standard_handle(stream: StandardStream) -> io::Result<Option<Owned
     }
     // SAFETY: GetStdHandle returned a live handle; it is borrowed only for DuplicateHandle and never closed.
     let borrowed = unsafe { BorrowedHandle::borrow_raw(handle) };
-    duplicate_local(borrowed, false).map(Some)
+    duplicate_local(Borrowed::<Stream>::adopt(borrowed), false).map(Some)
 }
 
-pub(crate) fn null_handle(access: NullAccess) -> io::Result<OwnedHandle> {
+pub(crate) fn null_handle(access: NullAccess) -> io::Result<Owned<Stream>> {
     #[cfg(test)]
     fault::check(fault::Call::NullHandle)?;
     let name = [u16::from(b'N'), u16::from(b'U'), u16::from(b'L'), 0];
@@ -244,7 +259,7 @@ pub(crate) fn null_handle(access: NullAccess) -> io::Result<OwnedHandle> {
             ptr::null_mut(),
         )
     };
-    owned(handle)
+    owned(handle).map(Owned::adopt)
 }
 
 fn null_share_mode() -> u32 {
@@ -253,12 +268,13 @@ fn null_share_mode() -> u32 {
         .fold(0, std::ops::BitOr::bitor)
 }
 
-pub(crate) struct Pipe {
-    pub(crate) parent: OwnedHandle,
-    pub(crate) child: OwnedHandle,
+/// The two ends of an anonymous pipe: the caller's, and the one the child receives.
+pub(crate) struct PipeEnds {
+    pub(crate) parent: Owned<Pipe>,
+    pub(crate) child: Owned<Pipe>,
 }
 
-pub(crate) fn create_pipe(parent_reads: bool) -> io::Result<Pipe> {
+pub(crate) fn create_pipe(parent_reads: bool) -> io::Result<PipeEnds> {
     #[cfg(test)]
     fault::check(fault::Call::CreatePipe)?;
     let mut read = ptr::null_mut();
@@ -270,56 +286,59 @@ pub(crate) fn create_pipe(parent_reads: bool) -> io::Result<Pipe> {
     // SAFETY: CreatePipe succeeded, so both handles are valid and distinct; they are adopted together.
     let (read, write) = unsafe {
         (
-            OwnedHandle::from_raw_handle(read),
-            OwnedHandle::from_raw_handle(write),
+            Owned::adopt(OwnedHandle::from_raw_handle(read)),
+            Owned::adopt(OwnedHandle::from_raw_handle(write)),
         )
     };
     if parent_reads {
-        Ok(Pipe {
+        Ok(PipeEnds {
             parent: read,
             child: write,
         })
     } else {
-        Ok(Pipe {
+        Ok(PipeEnds {
             parent: write,
             child: read,
         })
     }
 }
 
-pub(crate) fn open_parent_process(pid: u32) -> io::Result<OwnedHandle> {
+pub(crate) fn open_parent_process(pid: u32) -> io::Result<Owned<Process>> {
     #[cfg(test)]
     fault::check(fault::Call::OpenProcess)?;
     // SAFETY: OpenProcess has no pointer preconditions.
     let handle = unsafe { OpenProcess(PROCESS_CREATE_PROCESS | PROCESS_DUP_HANDLE, 0, pid) };
-    owned(handle)
+    owned(handle).map(Owned::adopt)
 }
 
-pub(crate) fn validate_process_handle(handle: BorrowedHandle<'_>) -> io::Result<()> {
+/// Checks with a process API that a caller's handle names a process.
+pub(crate) fn validate_process_handle(handle: Borrowed<'_, Foreign>) -> io::Result<()> {
     #[cfg(test)]
     fault::check(fault::Call::ValidateProcess)?;
     // SAFETY: the borrowed handle is valid for the query.
-    if unsafe { GetProcessId(raw(handle)) } == 0 {
+    if unsafe { GetProcessId(raw(handle.untyped())) } == 0 {
         Err(io::Error::last_os_error())
     } else {
         Ok(())
     }
 }
 
-pub(crate) fn create_job() -> io::Result<OwnedHandle> {
+pub(crate) fn create_job() -> io::Result<Owned<JobObject>> {
     #[cfg(test)]
     fault::check(fault::Call::CreateJob)?;
     // SAFETY: null arguments request an unnamed Job with default security.
-    owned(unsafe { CreateJobObjectW(ptr::null(), ptr::null()) })
+    owned(unsafe { CreateJobObjectW(ptr::null(), ptr::null()) }).map(Owned::adopt)
 }
 
-pub(crate) fn validate_job_handle(handle: BorrowedHandle<'_>) -> io::Result<()> {
-    query_job_limits(handle).map(drop)
+/// Checks with a Job API that a caller's handle names a Job.
+pub(crate) fn validate_job_handle(handle: Borrowed<'_, Foreign>) -> io::Result<()> {
+    query_job_limits(handle.untyped()).map(drop)
 }
 
-pub(crate) fn set_job_kill_on_close(handle: BorrowedHandle<'_>, enable: bool) -> io::Result<()> {
+pub(crate) fn set_job_kill_on_close(job: Borrowed<'_, JobObject>, enable: bool) -> io::Result<()> {
     #[cfg(test)]
     fault::check(fault::Call::SetJob)?;
+    let handle = job.untyped();
     let mut limits = query_job_limits(handle)?;
     if enable {
         limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -365,18 +384,22 @@ fn query_job_limits(
     }
 }
 
-pub(crate) fn assign_job(job: BorrowedHandle<'_>, process: BorrowedHandle<'_>) -> io::Result<()> {
+/// Assigns a process the caller supplied, whose kind `AssignProcessToJobObject` checks.
+pub(crate) fn assign_job(
+    job: Borrowed<'_, JobObject>,
+    process: Borrowed<'_, Foreign>,
+) -> io::Result<()> {
     #[cfg(test)]
     fault::check(fault::Call::AssignJob)?;
     // SAFETY: both handles are valid for the call.
-    bool_result(unsafe { AssignProcessToJobObject(raw(job), raw(process)) })
+    bool_result(unsafe { AssignProcessToJobObject(raw(job.untyped()), raw(process.untyped())) })
 }
 
-pub(crate) fn terminate_job(job: BorrowedHandle<'_>, exit_code: u32) -> io::Result<()> {
+pub(crate) fn terminate_job(job: Borrowed<'_, JobObject>, exit_code: u32) -> io::Result<()> {
     #[cfg(test)]
     fault::check(fault::Call::TerminateJob)?;
     // SAFETY: the Job handle is valid for the call.
-    bool_result(unsafe { TerminateJobObject(raw(job), exit_code) })
+    bool_result(unsafe { TerminateJobObject(raw(job.untyped()), exit_code) })
 }
 
 /// The `usize` slots of the two-`DWORD` header that `JOBOBJECT_BASIC_PROCESS_ID_LIST` puts before its identifiers.
@@ -395,7 +418,7 @@ const _: () = assert!(
 /// The identifiers of the Job's processes whose exit the Job hasn't recorded.
 ///
 /// A process leaves the list before its handle is signaled, so an empty list means that no process of the Job still runs.
-pub(crate) fn job_process_ids(job: BorrowedHandle<'_>) -> io::Result<Vec<usize>> {
+pub(crate) fn job_process_ids(job: Borrowed<'_, JobObject>) -> io::Result<Vec<usize>> {
     #[cfg(test)]
     fault::check(fault::Call::ListJob)?;
     let mut room = PROCESS_ID_LIST_ROOM;
@@ -406,7 +429,7 @@ pub(crate) fn job_process_ids(job: BorrowedHandle<'_>) -> io::Result<Vec<usize>>
         // SAFETY: `buffer` is writable for `bytes` bytes and aligned for JOBOBJECT_BASIC_PROCESS_ID_LIST, and the returned-size pointer is null.
         let listed = unsafe {
             QueryInformationJobObject(
-                raw(job),
+                raw(job.untyped()),
                 JobObjectBasicProcessIdList,
                 buffer.as_mut_ptr().cast(),
                 bytes,
@@ -441,8 +464,8 @@ pub(crate) fn job_process_ids(job: BorrowedHandle<'_>) -> io::Result<Vec<usize>>
 /// Opens a process of the Job to wait for it, or returns `None` if it has exited or its identifier now names a process outside the Job.
 pub(crate) fn open_job_process(
     id: usize,
-    job: BorrowedHandle<'_>,
-) -> io::Result<Option<OwnedHandle>> {
+    job: Borrowed<'_, JobObject>,
+) -> io::Result<Option<Owned<Process>>> {
     #[cfg(test)]
     fault::check(fault::Call::OpenJobProcess)?;
     let id =
@@ -462,12 +485,18 @@ pub(crate) fn open_job_process(
     };
     let mut member = 0;
     // SAFETY: both handles are valid for the query and `member` is writable.
-    bool_result(unsafe { IsProcessInJob(process.as_raw_handle(), raw(job), &mut member) })?;
-    Ok((member != 0).then_some(process))
+    bool_result(unsafe {
+        IsProcessInJob(process.as_raw_handle(), raw(job.untyped()), &mut member)
+    })?;
+    Ok((member != 0).then_some(Owned::adopt(process)))
 }
 
-pub(crate) struct AttributeList {
+/// A `PROC_THREAD_ATTRIBUTE_LIST` whose attributes point into values that live for `'a`.
+///
+/// Windows reads those values until `DeleteProcThreadAttributeList` runs, so the borrows keep them alive and in place for as long as the list exists.
+pub(crate) struct AttributeList<'a> {
     storage: Box<[usize]>,
+    values: PhantomData<&'a ()>,
 }
 
 /// Zeroed storage of `words` words, or `OutOfMemory` when no allocation holds them.
@@ -482,7 +511,7 @@ fn zeroed_words(words: usize) -> io::Result<Box<[usize]>> {
     Ok(storage.into_boxed_slice())
 }
 
-impl AttributeList {
+impl<'a> AttributeList<'a> {
     pub(crate) fn new(count: u32) -> io::Result<Self> {
         #[cfg(test)]
         fault::check(fault::Call::AttributeList)?;
@@ -510,10 +539,14 @@ impl AttributeList {
         if unsafe { InitializeProcThreadAttributeList(pointer, count, 0, &mut actual) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { storage })
+        Ok(Self {
+            storage,
+            values: PhantomData,
+        })
     }
 
-    pub(crate) fn set_handle_list(&mut self, handles: &[isize]) -> io::Result<()> {
+    /// Lists the handles the child inherits, by their values in the inheritor's table.
+    pub(crate) fn set_handle_list(&mut self, handles: &'a [Value<Inheritor>]) -> io::Result<()> {
         self.update(
             PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
             handles.as_ptr().cast(),
@@ -521,15 +554,16 @@ impl AttributeList {
         )
     }
 
-    pub(crate) fn set_parent(&mut self, parent: &isize) -> io::Result<()> {
+    /// Names the alternate parent by the value of its handle in the creator's table.
+    pub(crate) fn set_parent(&mut self, parent: &'a Value<Creator>) -> io::Result<()> {
         self.update(
             PROC_THREAD_ATTRIBUTE_PARENT_PROCESS,
             ptr::addr_of!(*parent).cast(),
-            size_of::<isize>(),
+            size_of::<Value<Creator>>(),
         )
     }
 
-    pub(crate) fn set_mitigation(&mut self, words: &[u64; 2]) -> io::Result<()> {
+    pub(crate) fn set_mitigation(&mut self, words: &'a [u64; 2]) -> io::Result<()> {
         self.update(
             PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
             words.as_ptr().cast(),
@@ -537,7 +571,8 @@ impl AttributeList {
         )
     }
 
-    pub(crate) fn set_jobs(&mut self, jobs: &[isize]) -> io::Result<()> {
+    /// Names the Jobs by the values of their handles in the creator's table.
+    pub(crate) fn set_jobs(&mut self, jobs: &'a [Value<Creator>]) -> io::Result<()> {
         self.update(
             PROC_THREAD_ATTRIBUTE_JOB_LIST,
             jobs.as_ptr().cast(),
@@ -548,7 +583,7 @@ impl AttributeList {
     /// Unlike the other attributes, `lpValue` is the `HPCON` value itself, not its address.
     pub(crate) fn set_pseudoconsole(
         &mut self,
-        pseudoconsole: BorrowedPseudoConsole<'_>,
+        pseudoconsole: BorrowedPseudoConsole<'a>,
     ) -> io::Result<()> {
         self.update(
             PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
@@ -561,7 +596,7 @@ impl AttributeList {
         #[cfg(test)]
         fault::check(fault::Call::UpdateAttribute)?;
         let attribute = widen(attribute);
-        // SAFETY: the list is initialized, `value` points to `bytes` readable bytes or is the `HPCON` value, and the transaction keeps every backing allocation stable until CreateProcessW returns.
+        // SAFETY: the list is initialized, and `value` is the `HPCON` value or points to `bytes` readable bytes that the setter borrowed for `'a`, so they stay alive and in place until the drop deletes the list.
         if unsafe {
             UpdateProcThreadAttribute(
                 self.pointer(),
@@ -585,7 +620,7 @@ impl AttributeList {
     }
 }
 
-impl Drop for AttributeList {
+impl Drop for AttributeList<'_> {
     fn drop(&mut self) {
         #[cfg(test)]
         ATTRIBUTE_LIST_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -606,16 +641,17 @@ impl BorrowedPseudoConsole<'_> {
     pub const unsafe fn borrow_raw(raw: isize) -> Self {
         Self {
             raw,
-            owner: std::marker::PhantomData,
+            owner: PhantomData,
         }
     }
 }
 
+/// The standard handles of a child, by their values in the inheritor's table.
 #[derive(Clone, Copy)]
 pub(crate) struct StandardHandles {
-    pub(crate) stdin: isize,
-    pub(crate) stdout: isize,
-    pub(crate) stderr: isize,
+    pub(crate) stdin: Value<Inheritor>,
+    pub(crate) stdout: Value<Inheritor>,
+    pub(crate) stderr: Value<Inheritor>,
 }
 
 #[derive(Clone, Copy)]
@@ -635,12 +671,12 @@ pub(crate) struct ProcessRequest<'a> {
     pub(crate) policy: u32,
     pub(crate) console: ConsoleFlag,
     pub(crate) priority: PriorityFlag,
-    pub(crate) attributes: Option<&'a AttributeList>,
+    pub(crate) attributes: Option<&'a AttributeList<'a>>,
 }
 
 pub(crate) struct CreatedProcess {
-    pub(crate) process: OwnedHandle,
-    pub(crate) thread: OwnedHandle,
+    pub(crate) process: Owned<Process>,
+    pub(crate) thread: Owned<Thread>,
     pub(crate) pid: u32,
 }
 
@@ -690,8 +726,8 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
     // SAFETY: CreateProcessW succeeded, so both handles are valid; they are adopted together so neither can leak.
     let (process, thread) = unsafe {
         (
-            OwnedHandle::from_raw_handle(information.hProcess),
-            OwnedHandle::from_raw_handle(information.hThread),
+            Owned::adopt(OwnedHandle::from_raw_handle(information.hProcess)),
+            Owned::adopt(OwnedHandle::from_raw_handle(information.hThread)),
         )
     };
     Ok(CreatedProcess {
@@ -704,27 +740,27 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
 fn set_standard_handles(startup: &mut STARTUPINFOEXW, stdio: StartupStdio) {
     startup.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
     if let StartupStdio::Ordinary(handles) = stdio {
-        startup.StartupInfo.hStdInput = handle_from_value(handles.stdin);
-        startup.StartupInfo.hStdOutput = handle_from_value(handles.stdout);
-        startup.StartupInfo.hStdError = handle_from_value(handles.stderr);
+        startup.StartupInfo.hStdInput = handle_from_value(handles.stdin.as_raw());
+        startup.StartupInfo.hStdOutput = handle_from_value(handles.stdout.as_raw());
+        startup.StartupInfo.hStdError = handle_from_value(handles.stderr.as_raw());
     }
 }
 
-pub(crate) fn wait_process(process: BorrowedHandle<'_>) -> io::Result<()> {
+pub(crate) fn wait_process(process: Borrowed<'_, Process>) -> io::Result<()> {
     #[cfg(test)]
     fault::check(fault::Call::WaitProcess)?;
     // SAFETY: the process handle is valid for the wait.
-    match unsafe { WaitForSingleObject(raw(process), INFINITE) } {
+    match unsafe { WaitForSingleObject(raw(process.untyped()), INFINITE) } {
         WAIT_OBJECT_0 => Ok(()),
         _ => Err(io::Error::last_os_error()),
     }
 }
 
-pub(crate) fn try_wait_process(process: BorrowedHandle<'_>) -> io::Result<bool> {
+pub(crate) fn try_wait_process(process: Borrowed<'_, Process>) -> io::Result<bool> {
     #[cfg(test)]
     fault::check(fault::Call::TryWaitProcess)?;
     // SAFETY: the process handle is valid for the query.
-    match unsafe { WaitForSingleObject(raw(process), 0) } {
+    match unsafe { WaitForSingleObject(raw(process.untyped()), 0) } {
         WAIT_OBJECT_0 => Ok(true),
         WAIT_TIMEOUT => Ok(false),
         _ => Err(io::Error::last_os_error()),
@@ -1112,7 +1148,7 @@ pub(crate) mod test_support {
     }
 }
 
-pub(crate) fn exit_status(process: BorrowedHandle<'_>) -> io::Result<ExitStatus> {
+pub(crate) fn exit_status(process: Borrowed<'_, Process>) -> io::Result<ExitStatus> {
     use std::os::windows::process::ExitStatusExt;
 
     #[cfg(test)]
@@ -1120,25 +1156,25 @@ pub(crate) fn exit_status(process: BorrowedHandle<'_>) -> io::Result<ExitStatus>
 
     let mut code = 0_u32;
     // SAFETY: `code` is writable and the process handle is valid.
-    if unsafe { GetExitCodeProcess(raw(process), &mut code) } == 0 {
+    if unsafe { GetExitCodeProcess(raw(process.untyped()), &mut code) } == 0 {
         Err(io::Error::last_os_error())
     } else {
         Ok(ExitStatus::from_raw(code))
     }
 }
 
-pub(crate) fn terminate_process(process: BorrowedHandle<'_>, exit_code: u32) -> io::Result<()> {
+pub(crate) fn terminate_process(process: Borrowed<'_, Process>, exit_code: u32) -> io::Result<()> {
     #[cfg(test)]
     fault::check(fault::Call::TerminateProcess)?;
     // SAFETY: the process handle is valid for the call.
-    bool_result(unsafe { TerminateProcess(raw(process), exit_code) })
+    bool_result(unsafe { TerminateProcess(raw(process.untyped()), exit_code) })
 }
 
-pub(crate) fn resume_thread(thread: BorrowedHandle<'_>) -> io::Result<u32> {
+pub(crate) fn resume_thread(thread: Borrowed<'_, Thread>) -> io::Result<u32> {
     #[cfg(test)]
     fault::check(fault::Call::ResumeThread)?;
     // SAFETY: the thread handle is valid for the call.
-    let previous = unsafe { ResumeThread(raw(thread)) };
+    let previous = unsafe { ResumeThread(raw(thread.untyped())) };
     if previous == u32::MAX {
         Err(io::Error::last_os_error())
     } else {
@@ -1146,7 +1182,7 @@ pub(crate) fn resume_thread(thread: BorrowedHandle<'_>) -> io::Result<u32> {
     }
 }
 
-pub(crate) fn read_handle(handle: BorrowedHandle<'_>, buffer: &mut [u8]) -> io::Result<usize> {
+pub(crate) fn read_handle(handle: Borrowed<'_, Pipe>, buffer: &mut [u8]) -> io::Result<usize> {
     #[cfg(test)]
     fault::check(fault::Call::ReadHandle)?;
     if buffer.is_empty() {
@@ -1157,7 +1193,7 @@ pub(crate) fn read_handle(handle: BorrowedHandle<'_>, buffer: &mut [u8]) -> io::
     // SAFETY: `buffer` is writable for `length` bytes, the handle is valid, and a null OVERLAPPED requests synchronous I/O.
     if unsafe {
         ReadFile(
-            raw(handle),
+            raw(handle.untyped()),
             buffer.as_mut_ptr(),
             length,
             &mut read,
@@ -1176,7 +1212,7 @@ pub(crate) fn read_handle(handle: BorrowedHandle<'_>, buffer: &mut [u8]) -> io::
     }
 }
 
-pub(crate) fn write_handle(handle: BorrowedHandle<'_>, buffer: &[u8]) -> io::Result<usize> {
+pub(crate) fn write_handle(handle: Borrowed<'_, Pipe>, buffer: &[u8]) -> io::Result<usize> {
     #[cfg(test)]
     fault::check(fault::Call::WriteHandle)?;
     if buffer.is_empty() {
@@ -1187,7 +1223,7 @@ pub(crate) fn write_handle(handle: BorrowedHandle<'_>, buffer: &[u8]) -> io::Res
     // SAFETY: `buffer` is readable for `length` bytes, the handle is valid, and a null OVERLAPPED requests synchronous I/O.
     if unsafe {
         WriteFile(
-            raw(handle),
+            raw(handle.untyped()),
             buffer.as_ptr(),
             length,
             &mut written,
@@ -1362,6 +1398,7 @@ fn bool_result(result: i32) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use std::fs::File;
+    use std::io::{Read, Write};
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::{AsHandle, AsRawHandle};
     use std::path::PathBuf;
@@ -1381,23 +1418,27 @@ mod tests {
         );
         let readable_null = null_handle(NullAccess::Read)?;
         let writable_null = null_handle(NullAccess::Write)?;
-        assert_eq!(read_handle(readable_null.as_handle(), &mut [])?, 0);
-        assert_eq!(write_handle(writable_null.as_handle(), &[])?, 0);
-        assert_eq!(write_handle(writable_null.as_handle(), b"discard")?, 7);
+        let mut unread = [0_u8; 1];
+        assert_eq!(File::from(readable_null.into_inner()).read(&mut unread)?, 0);
+        let mut discard = File::from(duplicate_local(writable_null.borrow(), false)?.into_inner());
+        assert_eq!(discard.write(b"discard")?, 7);
+        drop(discard);
 
         let parent_reads = create_pipe(true)?;
-        assert_eq!(write_handle(parent_reads.child.as_handle(), b"a")?, 1);
+        assert_eq!(read_handle(parent_reads.parent.borrow(), &mut [])?, 0);
+        assert_eq!(write_handle(parent_reads.child.borrow(), &[])?, 0);
+        assert_eq!(write_handle(parent_reads.child.borrow(), b"a")?, 1);
         let mut byte = [0_u8; 1];
-        assert_eq!(read_handle(parent_reads.parent.as_handle(), &mut byte)?, 1);
+        assert_eq!(read_handle(parent_reads.parent.borrow(), &mut byte)?, 1);
         assert_eq!(byte, [b'a']);
 
         let parent_writes = create_pipe(false)?;
-        assert_eq!(write_handle(parent_writes.parent.as_handle(), b"b")?, 1);
-        assert_eq!(read_handle(parent_writes.child.as_handle(), &mut byte)?, 1);
+        assert_eq!(write_handle(parent_writes.parent.borrow(), b"b")?, 1);
+        assert_eq!(read_handle(parent_writes.child.borrow(), &mut byte)?, 1);
         assert_eq!(byte, [b'b']);
 
-        let private = duplicate_local(writable_null.as_handle(), false)?;
-        let inheritable = duplicate_local(writable_null.as_handle(), true)?;
+        let private = duplicate_local(writable_null.borrow(), false)?;
+        let inheritable = duplicate_local(writable_null.borrow(), true)?;
         drop((private, inheritable));
 
         let mut host_command = crate::Command::new("cmd.exe");
@@ -1412,8 +1453,12 @@ mod tests {
         drop(target);
         let before = process_handle_count(host.as_handle())?;
         let local_before = process_handle_count(current_process())?;
-        let remote = duplicate_remote(writable_null.as_handle(), host.as_handle(), true)?;
-        assert_ne!(remote.value(), 0);
+        let remote = duplicate_remote(
+            writable_null.borrow(),
+            Borrowed::adopt(host.as_handle()),
+            true,
+        )?;
+        assert_ne!(remote.value().as_raw(), 0);
         assert!(process_handle_count(host.as_handle())? > before);
         drop(remote);
         assert_eq!(process_handle_count(host.as_handle())?, before);
@@ -1426,8 +1471,8 @@ mod tests {
     fn jobs_attributes_and_standard_handles_cover_all_ffi_shapes() -> io::Result<()> {
         let drops_before = ATTRIBUTE_LIST_DROPS.load(std::sync::atomic::Ordering::Relaxed);
         let job = create_job()?;
-        validate_job_handle(job.as_handle())?;
-        set_job_kill_on_close(job.as_handle(), true)?;
+        validate_job_handle(Borrowed::foreign(&job))?;
+        set_job_kill_on_close(job.borrow(), true)?;
         assert_ne!(
             query_job_limits(job.as_handle())?
                 .BasicLimitInformation
@@ -1435,7 +1480,7 @@ mod tests {
                 & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             0
         );
-        set_job_kill_on_close(job.as_handle(), false)?;
+        set_job_kill_on_close(job.borrow(), false)?;
         assert_eq!(
             query_job_limits(job.as_handle())?
                 .BasicLimitInformation
@@ -1444,10 +1489,10 @@ mod tests {
             0
         );
         let process = open_parent_process(std::process::id())?;
-        let inherited = duplicate_local(job.as_handle(), true)?;
-        let handles = [handle_value(inherited.as_raw_handle())];
-        let jobs = [handle_value(job.as_raw_handle())];
-        let parent = handle_value(process.as_raw_handle());
+        let inherited = duplicate_local(job.borrow(), true)?;
+        let handles = [Value::<Creator>::of(inherited.as_handle()).inherited()];
+        let jobs = [Value::<Creator>::of(job.as_handle())];
+        let parent = Value::<Creator>::of(process.as_handle());
         let words = [1_u64, 0_u64];
         let mut attributes = AttributeList::new(4)?;
         attributes.set_handle_list(&handles)?;
@@ -1484,9 +1529,9 @@ mod tests {
         set_standard_handles(
             &mut ordinary,
             StartupStdio::Ordinary(StandardHandles {
-                stdin: 1,
-                stdout: 2,
-                stderr: 3,
+                stdin: Value::in_parent(1),
+                stdout: Value::in_parent(2),
+                stderr: Value::in_parent(3),
             }),
         );
         assert_ne!(ordinary.StartupInfo.dwFlags & STARTF_USESTDHANDLES, 0);
@@ -1544,8 +1589,8 @@ mod tests {
         assert!(is_valid_handle(file.as_raw_handle()));
         assert!(!is_valid_handle(ptr::null_mut()));
         assert!(!is_valid_handle(INVALID_HANDLE_VALUE));
-        assert!(validate_process_handle(file.as_handle()).is_err());
-        assert!(validate_job_handle(file.as_handle()).is_err());
+        assert!(validate_process_handle(Borrowed::foreign(&file)).is_err());
+        assert!(validate_job_handle(Borrowed::foreign(&file)).is_err());
         Ok(())
     }
 
@@ -1562,30 +1607,30 @@ mod tests {
             current_process(),
             PROCESS_QUERY_LIMITED_INFORMATION,
         );
-        assert!(wait_process(unwaitable.as_handle()).is_err());
-        assert!(try_wait_process(unwaitable.as_handle()).is_err());
+        assert!(wait_process(Borrowed::adopt(unwaitable.as_handle())).is_err());
+        assert!(try_wait_process(Borrowed::adopt(unwaitable.as_handle())).is_err());
         let unqueryable =
             test_support::duplicate_with_access(current_process(), PROCESS_SYNCHRONIZE);
-        assert!(exit_status(unqueryable.as_handle()).is_err());
+        assert!(exit_status(Borrowed::adopt(unqueryable.as_handle())).is_err());
 
         // SAFETY: `GetCurrentThread` cannot fail and returns a pseudo-handle valid for this call.
         let thread = unsafe { BorrowedHandle::borrow_raw(GetCurrentThread()) };
         let unresumable = test_support::duplicate_with_access(thread, PROCESS_SYNCHRONIZE);
-        assert!(resume_thread(unresumable.as_handle()).is_err());
+        assert!(resume_thread(Borrowed::adopt(unresumable.as_handle())).is_err());
 
         let (reader, writer) = test_support::pipe();
-        assert!(read_handle(writer.as_handle(), &mut [0_u8; 1]).is_err());
-        assert!(write_handle(reader.as_handle(), b"x").is_err());
+        assert!(read_handle(Borrowed::adopt(writer.as_handle()), &mut [0_u8; 1]).is_err());
+        assert!(write_handle(Borrowed::adopt(reader.as_handle()), b"x").is_err());
 
         let job = create_job()?;
         let query_only = test_support::duplicate_with_access(job.as_handle(), JOB_OBJECT_QUERY);
-        assert!(set_job_kill_on_close(query_only.as_handle(), true).is_err());
+        assert!(set_job_kill_on_close(Borrowed::adopt(query_only.as_handle()), true).is_err());
 
         assert!(AttributeList::new(u32::MAX).is_err());
-        let mut full = AttributeList::new(1)?;
-        let jobs = [handle_value(job.as_raw_handle())];
-        full.set_jobs(&jobs)?;
+        let jobs = [Value::<Creator>::of(job.as_handle())];
         let words = [1_u64, 0_u64];
+        let mut full = AttributeList::new(1)?;
+        full.set_jobs(&jobs)?;
         assert!(full.set_mitigation(&words).is_err());
 
         assert_eq!(

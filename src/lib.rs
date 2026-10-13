@@ -26,6 +26,8 @@ mod options;
 #[cfg(windows)]
 mod plan;
 #[cfg(windows)]
+mod resource;
+#[cfg(windows)]
 #[allow(unsafe_code)]
 mod sys;
 #[cfg(windows)]

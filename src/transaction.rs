@@ -7,28 +7,32 @@ use std::ffi::{OsStr, OsString};
 use std::io;
 use std::marker::PhantomData;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
-use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle};
+#[cfg(test)]
+use std::os::windows::io::BorrowedHandle;
+use std::os::windows::io::{AsHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 
-use crate::child::{Child, SuspendedChild};
+use crate::child::{Child, ProcessHandle, SuspendedChild};
 use crate::command::{Arg, Command, EnvOp, EnvValue};
 use crate::domain::attribute_rules;
 use crate::domain::command_line_rules::{append_argument, append_program, NUL, QUOTE, SPACE};
 use crate::domain::environment_rules;
 use crate::error::{InputField, Operation, Phase, Releases, Result, SpawnError, ValidationError};
-use crate::handles::{windows, Job, Stdio, StdioInner};
+use crate::handles::{windows, BorrowedPseudoConsole, Job, ParentProcess, Stdio, StdioInner};
 use crate::plan::{validate_command, Running, Source, SpawnPlan, StandardIo, Streams, Suspended};
+use crate::resource::{Borrowed, Creator, Inheritor, Owned, Pipe, Process, Thread, Value};
 use crate::sys::{self, NullAccess, StandardStream};
 
 /// The UTF-16 units `CreateProcessW` accepts in `lpCommandLine`, its terminator included.
 const COMMAND_LINE_CAPACITY: usize = 32_767;
 
 /// Owns the suspended process between its creation and an explicit commit.
-/// Dropping before commit terminates the process, which never ran.
+///
+/// The child's process handle terminates the process when it drops before a commit resumes the main thread,
+/// so dropping an uncommitted transaction ends a process that never ran.
 pub(crate) struct SpawnTransaction<M> {
-    created: Option<sys::CreatedProcess>,
-    kill_job: Option<Job>,
-    stdio: Streams<Option<OwnedHandle>>,
+    child: Child,
+    main_thread: Owned<Thread>,
     state: PhantomData<M>,
 }
 
@@ -36,11 +40,7 @@ impl<M> SpawnTransaction<M> {
     /// Borrows the created process's main thread.
     #[cfg(test)]
     pub(crate) fn main_thread(&self) -> BorrowedHandle<'_> {
-        self.created
-            .as_ref()
-            .expect("an uncommitted transaction owns its process")
-            .thread
-            .as_handle()
+        self.main_thread.as_handle()
     }
 }
 
@@ -51,9 +51,8 @@ impl<M> SpawnTransaction<M> {
     ///
     /// Returns the first failure, together with the failures of the releases that followed it.
     /// A release that fails after the creation terminates the process, which never ran.
-    pub(crate) fn new<'options>(plan: &SpawnPlan<'_, 'options, M>) -> Result<Self> {
-        let parent: Option<BorrowedHandle<'options>> = plan.options.parent.map(AsHandle::as_handle);
-        let mut transfer = HandleTransfer::new(parent);
+    pub(crate) fn new(plan: &SpawnPlan<'_, '_, M>) -> Result<Self> {
+        let mut transfer = HandleTransfer::new(plan.options.parent.map(ParentProcess::borrow));
         let created = Self::create(plan, &mut transfer);
         let mut releases = Releases::default();
         transfer.reclaim(&mut releases);
@@ -63,155 +62,60 @@ impl<M> SpawnTransaction<M> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn create<'options>(
-        plan: &SpawnPlan<'_, 'options, M>,
-        transfer: &mut HandleTransfer<'options>,
-    ) -> Result<Self> {
-        let (stdio_values, stdio) = match &plan.stdio {
-            StandardIo::Ordinary(specs) => {
-                let prepared = prepare_standard_handles(specs, transfer)?;
-                let values = sys::StartupStdio::Ordinary(sys::StandardHandles {
-                    stdin: prepared.stdin.child,
-                    stdout: prepared.stdout.child,
-                    stderr: prepared.stderr.child,
-                });
-                let owners = Streams {
-                    stdin: prepared.stdin.parent,
-                    stdout: prepared.stdout.parent,
-                    stderr: prepared.stderr.parent,
-                };
-                (values, owners)
-            }
-            StandardIo::PseudoConsole => (
-                sys::StartupStdio::PseudoConsole,
-                Streams {
-                    stdin: None,
-                    stdout: None,
-                    stderr: None,
-                },
-            ),
-        };
+    fn create(plan: &SpawnPlan<'_, '_, M>, transfer: &mut HandleTransfer<'_>) -> Result<Self> {
+        let (stdio, pipes) = prepare_standard_io(&plan.stdio, transfer)?;
         let creation = &plan.command.creation;
-        let kill_job = if creation.owns_tree {
-            let job = Job::create()?;
-            job.set_kill_on_close(true)?;
-            Some(job)
-        } else {
-            None
-        };
-        let mut job_values: Vec<isize> = plan
-            .options
-            .jobs
-            .iter()
-            .map(|job| sys::handle_value(job.as_handle().as_raw_handle()))
-            .collect();
-        if let Some(job) = &kill_job {
-            job_values.push(sys::handle_value(job.as_handle().as_raw_handle()));
-        }
-
-        let command_line = build_command_line(plan.command, transfer)?;
+        let kill_job = tree_job(creation.owns_tree)?;
+        let jobs = job_values(&plan.options.jobs, kill_job.as_ref());
+        let mut command_line = build_command_line(plan.command, transfer)?;
         let environment = build_environment(plan.command, transfer)?;
-        let child_path = environment.path.as_deref();
         let application = windows(
             Phase::Preparation,
             Operation::ResolveExecutable,
-            resolve_executable(&plan.command.program, child_path),
+            resolve_executable(&plan.command.program, environment.path.as_deref()),
         )?;
-        let current_dir = plan
-            .command
-            .cwd
-            .as_ref()
-            .map(|path| wide_nul(path.as_os_str()))
-            .transpose()
-            .map_err(|_nul| {
-                SpawnError::from(ValidationError::InteriorNul {
-                    field: InputField::CurrentDirectory,
-                })
-            })?;
+        let current_dir = current_directory(plan.command)?;
 
-        let inherited_values = transfer.inherited_values().to_vec().into_boxed_slice();
-        let parent_value = transfer
-            .parent()
-            .map(|handle| Box::new(sys::handle_value(handle.as_raw_handle())));
-        let mitigation_words = creation.mitigation.words();
-        let mitigation_value = (mitigation_words != [0, 0]).then(|| Box::new(mitigation_words));
-        let job_values = job_values.into_boxed_slice();
-        let pseudoconsole = plan.options.pseudoconsole;
-
-        let attribute_count = attribute_rules::count(&[
-            !inherited_values.is_empty(),
-            parent_value.is_some(),
-            mitigation_value.is_some(),
-            !job_values.is_empty(),
-            pseudoconsole.is_some(),
-        ]);
-        let mut attributes = if attribute_count == 0 {
-            None
-        } else {
-            Some(configure(sys::AttributeList::new(attribute_count))?)
-        };
-        if let Some(list) = &mut attributes {
-            if !inherited_values.is_empty() {
-                configure(list.set_handle_list(&inherited_values))?;
-            }
-            if let Some(value) = &parent_value {
-                configure(list.set_parent(value))?;
-            }
-            if let Some(value) = &mitigation_value {
-                configure(list.set_mitigation(value))?;
-            }
-            if !job_values.is_empty() {
-                configure(list.set_jobs(&job_values))?;
-            }
-            if let Some(value) = pseudoconsole {
-                configure(list.set_pseudoconsole(value))?;
-            }
-        }
-
-        let mut command_line = command_line;
-        let mut request = sys::ProcessRequest {
-            application: &application,
-            command_line: &mut command_line,
-            environment: environment.block.as_deref(),
-            current_dir: current_dir.as_deref(),
-            stdio: stdio_values,
-            inherit_handles: !inherited_values.is_empty(),
-            policy: creation.policy(),
-            console: creation.console_flag(),
-            priority: creation.priority_flag(),
-            attributes: attributes.as_ref(),
-        };
+        let parent = transfer.parent_value();
+        let mitigation = creation.mitigation.words();
+        let inherited = transfer.inherited_values();
+        let attributes = attribute_list(&AttributeValues {
+            inherited,
+            parent: parent.as_ref(),
+            mitigation: (mitigation != [0, 0]).then_some(&mitigation),
+            jobs: &jobs,
+            pseudoconsole: plan.options.pseudoconsole,
+        })?;
         let created = windows(
             Phase::Creation,
             Operation::CreateProcess,
-            sys::create_process(&mut request),
+            sys::create_process(&mut sys::ProcessRequest {
+                application: &application,
+                command_line: &mut command_line,
+                environment: environment.block.as_deref(),
+                current_dir: current_dir.as_deref(),
+                stdio,
+                inherit_handles: !inherited.is_empty(),
+                policy: creation.policy(),
+                console: creation.console_flag(),
+                priority: creation.priority_flag(),
+                attributes: attributes.as_ref(),
+            }),
         )?;
         drop(attributes);
 
         Ok(Self {
-            created: Some(created),
-            kill_job,
-            stdio,
+            child: Child::new(
+                ProcessHandle::unstarted(created.process),
+                created.pid,
+                kill_job,
+                pipes.stdin,
+                pipes.stdout,
+                pipes.stderr,
+            ),
+            main_thread: created.thread,
             state: PhantomData,
         })
-    }
-
-    #[allow(clippy::expect_used)]
-    fn commit_parts(mut self) -> (Child, OwnedHandle) {
-        let created = self
-            .created
-            .take()
-            .expect("an uncommitted transaction owns its process");
-        let child = Child::new(
-            created.process,
-            created.pid,
-            self.kill_job.take(),
-            self.stdio.stdin.take(),
-            self.stdio.stdout.take(),
-            self.stdio.stderr.take(),
-        );
-        (child, created.thread)
     }
 }
 
@@ -222,41 +126,125 @@ impl SpawnTransaction<Running> {
     ///
     /// Returns a failed resume, or a suspend count other than one; the process is terminated then.
     pub(crate) fn commit_child(self) -> Result<Child> {
-        if let Some(created) = &self.created {
-            let previous = windows(
-                Phase::Resume,
-                Operation::ResumeThread,
-                sys::resume_thread(created.thread.as_handle()),
-            )?;
-            if previous != 1 {
-                return Err(SpawnError::unexpected_suspend_count(previous));
-            }
-        }
-        let (child, thread) = self.commit_parts();
-        drop(thread);
-        Ok(child)
+        SuspendedChild::new(self.child, self.main_thread).resume()
     }
 }
 
 impl SpawnTransaction<Suspended> {
     pub(crate) fn commit_suspended(self) -> SuspendedChild {
-        let (child, thread) = self.commit_parts();
-        SuspendedChild::new(child, thread)
+        SuspendedChild::new(self.child, self.main_thread)
     }
 }
 
-impl<M> Drop for SpawnTransaction<M> {
-    fn drop(&mut self) {
-        if let Some(created) = &self.created {
-            drop(sys::terminate_process(created.process.as_handle(), 1));
+/// The private Job of a child that owns its tree, which ends the tree when its last handle closes.
+fn tree_job(owns_tree: bool) -> Result<Option<Job>> {
+    if !owns_tree {
+        return Ok(None);
+    }
+    let job = Job::create()?;
+    job.set_kill_on_close(true)?;
+    Ok(Some(job))
+}
+
+/// The values, in the creator's table, of the Jobs the child joins: the caller's, then its private one.
+fn job_values(jobs: &[&Job], kill_job: Option<&Job>) -> Vec<Value<Creator>> {
+    jobs.iter()
+        .copied()
+        .chain(kill_job)
+        .map(|job| Value::<Creator>::of(job.as_handle()))
+        .collect()
+}
+
+/// The child's working directory as a terminated wide string, when the command sets one.
+fn current_directory(command: &Command) -> Result<Option<Vec<u16>>> {
+    command
+        .cwd
+        .as_ref()
+        .map(|path| wide_nul(path.as_os_str()))
+        .transpose()
+        .map_err(|_nul| {
+            SpawnError::from(ValidationError::InteriorNul {
+                field: InputField::CurrentDirectory,
+            })
+        })
+}
+
+/// What the attributes of a spawn point to.
+///
+/// The attribute list borrows each value, so every one outlives the list.
+struct AttributeValues<'a> {
+    inherited: &'a [Value<Inheritor>],
+    parent: Option<&'a Value<Creator>>,
+    mitigation: Option<&'a [u64; 2]>,
+    jobs: &'a [Value<Creator>],
+    pseudoconsole: Option<BorrowedPseudoConsole<'a>>,
+}
+
+/// Builds the attribute list of `values`, or returns `None` when the spawn sets no attribute.
+fn attribute_list<'a>(values: &AttributeValues<'a>) -> Result<Option<sys::AttributeList<'a>>> {
+    let count = attribute_rules::count(&[
+        !values.inherited.is_empty(),
+        values.parent.is_some(),
+        values.mitigation.is_some(),
+        !values.jobs.is_empty(),
+        values.pseudoconsole.is_some(),
+    ]);
+    if count == 0 {
+        return Ok(None);
+    }
+    let mut list = configure(sys::AttributeList::new(count))?;
+    if !values.inherited.is_empty() {
+        configure(list.set_handle_list(values.inherited))?;
+    }
+    if let Some(parent) = values.parent {
+        configure(list.set_parent(parent))?;
+    }
+    if let Some(words) = values.mitigation {
+        configure(list.set_mitigation(words))?;
+    }
+    if !values.jobs.is_empty() {
+        configure(list.set_jobs(values.jobs))?;
+    }
+    if let Some(pseudoconsole) = values.pseudoconsole {
+        configure(list.set_pseudoconsole(pseudoconsole))?;
+    }
+    Ok(Some(list))
+}
+
+/// Lowers the child's standard handles, and returns them with the caller's ends of the child's pipes.
+fn prepare_standard_io(
+    stdio: &StandardIo<&Stdio>,
+    transfer: &mut HandleTransfer<'_>,
+) -> Result<(sys::StartupStdio, Streams<Option<Owned<Pipe>>>)> {
+    match stdio {
+        StandardIo::Ordinary(specs) => {
+            let prepared = prepare_standard_handles(specs, transfer)?;
+            let values = sys::StartupStdio::Ordinary(sys::StandardHandles {
+                stdin: prepared.stdin.child,
+                stdout: prepared.stdout.child,
+                stderr: prepared.stderr.child,
+            });
+            let pipes = Streams {
+                stdin: prepared.stdin.parent,
+                stdout: prepared.stdout.parent,
+                stderr: prepared.stderr.parent,
+            };
+            Ok((values, pipes))
         }
-        drop(self.kill_job.take());
+        StandardIo::PseudoConsole => Ok((
+            sys::StartupStdio::PseudoConsole,
+            Streams {
+                stdin: None,
+                stdout: None,
+                stderr: None,
+            },
+        )),
     }
 }
 
 struct PreparedStdio {
-    child: isize,
-    parent: Option<OwnedHandle>,
+    child: Value<Inheritor>,
+    parent: Option<Owned<Pipe>>,
 }
 
 fn prepare_standard_handles(
@@ -286,7 +274,7 @@ fn prepare_stdio(
             StdioInner::Null => prepare_null(stream, transfer),
             StdioInner::Piped => prepare_pipe(stream, transfer),
             StdioInner::Owned(handle) => Ok(PreparedStdio {
-                child: transfer.lower(handle.as_handle())?,
+                child: transfer.lower(handle.borrow())?,
                 parent: None,
             }),
         },
@@ -304,11 +292,11 @@ fn prepare_inherit(
     )?;
     match standard {
         Some(handle) => Ok(PreparedStdio {
-            child: transfer.lower(handle.as_handle())?,
+            child: transfer.lower(handle.borrow())?,
             parent: None,
         }),
         None => Ok(PreparedStdio {
-            child: sys::INVALID_RAW_HANDLE,
+            child: Value::INVALID,
             parent: None,
         }),
     }
@@ -328,7 +316,7 @@ fn prepare_null(
         sys::null_handle(access),
     )?;
     Ok(PreparedStdio {
-        child: transfer.lower(handle.as_handle())?,
+        child: transfer.lower(handle.borrow())?,
         parent: None,
     })
 }
@@ -342,22 +330,24 @@ fn prepare_pipe(
         Operation::CreatePipe,
         sys::create_pipe(!matches!(stream, StandardStream::Input)),
     )?;
-    let child = transfer.lower(pipe.child.as_handle())?;
+    let child = transfer.lower(pipe.child.borrow())?;
     Ok(PreparedStdio {
         child,
         parent: Some(pipe.parent),
     })
 }
 
+/// The inheritable duplicates of one spawn, in the table the child inherits from, and their values.
 struct HandleTransfer<'a> {
-    parent: Option<BorrowedHandle<'a>>,
+    parent: Option<Borrowed<'a, Process>>,
+    /// Duplicates in the creator's table, which closes them when dropped.
     local: Vec<OwnedHandle>,
     remote: Vec<sys::RemoteHandle<'a>>,
-    inherited: Vec<isize>,
+    inherited: Vec<Value<Inheritor>>,
 }
 
 impl<'a> HandleTransfer<'a> {
-    const fn new(parent: Option<BorrowedHandle<'a>>) -> Self {
+    const fn new(parent: Option<Borrowed<'a, Process>>) -> Self {
         Self {
             parent,
             local: Vec::new(),
@@ -366,7 +356,8 @@ impl<'a> HandleTransfer<'a> {
         }
     }
 
-    fn lower(&mut self, source: BorrowedHandle<'_>) -> Result<isize> {
+    /// Duplicates `source` inheritably into the inheritor's table, and returns the duplicate's value there.
+    fn lower<K>(&mut self, source: Borrowed<'_, K>) -> Result<Value<Inheritor>> {
         let value = if let Some(parent) = self.parent {
             let handle = windows(
                 Phase::Preparation,
@@ -382,8 +373,8 @@ impl<'a> HandleTransfer<'a> {
                 Operation::DuplicateLocalHandle,
                 sys::duplicate_local(source, true),
             )?;
-            let value = sys::handle_value(handle.as_raw_handle());
-            self.local.push(handle);
+            let value = Value::<Creator>::of(handle.as_handle()).inherited();
+            self.local.push(handle.into_inner());
             value
         };
         self.inherited.push(value);
@@ -402,11 +393,13 @@ impl<'a> HandleTransfer<'a> {
         drop(self.local);
     }
 
-    const fn parent(&self) -> Option<BorrowedHandle<'a>> {
+    /// The alternate parent's value in the creator's table, when the spawn names one.
+    fn parent_value(&self) -> Option<Value<Creator>> {
         self.parent
+            .map(|parent| Value::<Creator>::of(parent.untyped()))
     }
 
-    fn inherited_values(&self) -> &[isize] {
+    fn inherited_values(&self) -> &[Value<Inheritor>] {
         &self.inherited
     }
 }
@@ -476,7 +469,7 @@ fn build_environment(command: &Command, transfer: &mut HandleTransfer<'_>) -> Re
                 let value = match value {
                     EnvValue::Text(value) => value.clone(),
                     EnvValue::Handle(handle) => {
-                        OsString::from(transfer.lower(handle.as_handle())?.to_string())
+                        OsString::from(transfer.lower(handle.borrow())?.to_string())
                     }
                 };
                 match map.entry(EnvKey::new(key)) {
@@ -587,7 +580,7 @@ fn build_command_line(command: &Command, transfer: &mut HandleTransfer<'_>) -> R
             Arg::Text(text) => append_argument(&mut result, &wide(text)),
             Arg::Raw(text) => result.extend(text.encode_wide()),
             Arg::Handle(handle) => {
-                let value = transfer.lower(handle.as_handle())?.to_string();
+                let value = transfer.lower(handle.borrow())?.to_string();
                 append_argument(&mut result, &wide(OsStr::new(&value)));
             }
         }
@@ -1194,10 +1187,9 @@ mod tests {
         )
         .unwrap();
         let transaction = SpawnTransaction::new(&plan).unwrap();
-        let created = transaction.created.as_ref().unwrap();
-        let mut process = ProcessExitGuard::watch(created.process.as_handle());
+        let mut process = ProcessExitGuard::watch(transaction.child.as_handle());
         assert_eq!(
-            suspend_count(created.thread.as_handle()),
+            suspend_count(transaction.main_thread()),
             1,
             "a running spawn stays suspended until its commit"
         );
@@ -1225,9 +1217,8 @@ mod tests {
         )
         .unwrap();
         let transaction = SpawnTransaction::new(&plan).unwrap();
-        let created = transaction.created.as_ref().unwrap();
-        let mut process = ProcessExitGuard::watch(created.process.as_handle());
-        let thread = duplicate(created.thread.as_handle());
+        let mut process = ProcessExitGuard::watch(transaction.child.as_handle());
+        let thread = duplicate(transaction.main_thread());
         drop(transaction);
         tempt_resume(thread.as_handle());
         assert_eq!(
@@ -1248,9 +1239,8 @@ mod tests {
         )
         .unwrap();
         let transaction = SpawnTransaction::new(&plan).unwrap();
-        let created = transaction.created.as_ref().unwrap();
-        let mut process = ProcessExitGuard::watch(created.process.as_handle());
-        let thread = duplicate(created.thread.as_handle());
+        let mut process = ProcessExitGuard::watch(transaction.child.as_handle());
+        let thread = duplicate(transaction.main_thread());
         drop(transaction.commit_suspended());
         tempt_resume(thread.as_handle());
         assert_eq!(
