@@ -46,6 +46,22 @@ On Windows, `just verifier` runs every test under `appverif.exe`, which stops a 
 It needs an administrator and the `appverif.exe` of the Windows SDK, which the hosted Windows runners of CI also have.
 Three tests misuse a handle on purpose, and each must stop, which shows the verifier watches the run.
 
+Deeper checks need no change to the code, and ADR 0017 says what each covers:
+
+```powershell
+$env:WINDOWS_SPAWN_STRESS_CASES = "1300"
+cargo test --test windows_spawn spawn_cleanup_stress -- --ignored --exact
+cargo +nightly careful test --workspace --all-targets -- --test-threads=1
+```
+
+```sh
+cargo +nightly miri test --package windows-spawn --lib
+cargo +nightly fuzz run command-line -- -max_total_time=600 -max_len=16384
+cargo +nightly fuzz run environment-block -- -max_total_time=600 -max_len=16384
+```
+
+`WINDOWS_SPAWN_RANDOM_SCALE` multiplies the number of random command lines and environments, which the nightly workflow raises to fifty times.
+
 ## Expectations
 
 - Keep the documented ownership and cleanup behavior, including on errors.
