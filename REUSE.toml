@@ -19,6 +19,7 @@ path = [
   "docs/**",
   "examples/**",
   "justfile",
+  "proofs/**",
   "public-api/**",
   "src/**",
   "tests/**",
@@ -29,7 +30,7 @@ SPDX-FileCopyrightText = "2026 Yasunobu Sakashita"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
 [[annotations]]
-path = "Cargo.lock"
+path = ["Cargo.lock", "proofs/quint/package-lock.json"]
 precedence = "override"
 SPDX-FileCopyrightText = "NONE"
 SPDX-License-Identifier = "CC0-1.0"

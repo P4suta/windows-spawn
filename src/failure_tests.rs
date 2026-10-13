@@ -2,19 +2,19 @@
 
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::windows::io::{AsHandle, AsRawHandle, OwnedHandle};
-use std::thread;
-
-use windows_sys::Win32::System::Console::{ClosePseudoConsole, CreatePseudoConsole, COORD, HPCON};
+use std::os::windows::io::AsHandle;
 
 use crate::sys::fault::{self, Call};
 use crate::sys::test_support::{
-    current_process, isolated, pipe, process_handle_count, ProcessExitGuard,
+    current_process, isolated, process_handle_count, ProcessExitGuard, TestConsole,
 };
 use crate::{
-    AsPseudoConsole, Command, DropPolicy, Job, Mitigation, MitigationPolicy, ParentProcess,
-    SpawnOptions, Stdio, SuspendedChild,
+    Command, DropPolicy, Job, Mitigation, MitigationPolicy, ParentProcess, SpawnOptions, Stdio,
+    SuspendedChild,
 };
+
+/// The exit code the Job of `JobAssignAndTerminate` gives its process.
+const JOB_EXIT_CODE: u32 = 7;
 
 /// An operation whose every Win32 call is failed in turn.
 #[derive(Clone, Copy, Debug)]
@@ -182,7 +182,7 @@ impl Fixture {
         let mut child = gated_command().spawn()?;
         let terminated = duplicate
             .assign(&child)
-            .and_then(|()| duplicate.terminate(7));
+            .and_then(|()| duplicate.terminate(JOB_EXIT_CODE));
         if terminated.is_err() {
             child.kill()?;
         }
@@ -298,6 +298,7 @@ fn every_win32_failure_propagates_as_the_same_error() -> io::Result<()> {
         Call::AssignJob,
         Call::TerminateJob,
         Call::AttributeList,
+        Call::AllocateAttributes,
         Call::UpdateAttribute,
         Call::CreateProcess,
         Call::WaitProcess,
@@ -333,58 +334,4 @@ fn failed_operations_release_their_handles() -> io::Result<()> {
     let after = process_handle_count(current_process())?;
     assert_eq!(before, after, "failed operations leaked handles");
     Ok(())
-}
-
-/// A pseudoconsole created with raw Win32 calls, outside any recorded plan.
-struct TestConsole {
-    value: HPCON,
-    input: Option<OwnedHandle>,
-}
-
-impl TestConsole {
-    fn create() -> Self {
-        let (input_reader, input_writer) = pipe();
-        let (output_reader, output_writer) = pipe();
-        let mut value = 0;
-        // SAFETY: both pipe ends are valid for the call and `value` is writable; this type owns the HPCON.
-        let created = unsafe {
-            CreatePseudoConsole(
-                COORD { X: 80, Y: 25 },
-                input_reader.as_raw_handle(),
-                output_writer.as_raw_handle(),
-                0,
-                &mut value,
-            )
-        };
-        assert!(created >= 0, "CreatePseudoConsole failed with {created:#x}");
-        drop((input_reader, output_writer));
-        let mut output = File::from(output_reader);
-        drop(thread::spawn(move || {
-            let mut buffer = [0_u8; 4096];
-            while matches!(output.read(&mut buffer), Ok(read) if read > 0) {}
-        }));
-        Self {
-            value,
-            input: Some(input_writer),
-        }
-    }
-}
-
-/// The close runs on a detached thread because some Windows Server 2022 builds block in it.
-impl Drop for TestConsole {
-    fn drop(&mut self) {
-        drop(self.input.take());
-        let value = self.value;
-        drop(thread::spawn(move || {
-            // SAFETY: this type uniquely owns the HPCON.
-            unsafe { ClosePseudoConsole(value) };
-        }));
-    }
-}
-
-// SAFETY: TestConsole owns a live HPCON for every borrow and keeps ownership.
-unsafe impl AsPseudoConsole for TestConsole {
-    fn raw_pseudoconsole(&self) -> isize {
-        self.value
-    }
 }

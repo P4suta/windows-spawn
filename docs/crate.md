@@ -78,8 +78,16 @@ The plan and transaction are typed by running or suspended state, so a mismatche
 The crate is not a sandbox, a cross-platform facade, an async runtime, or a supervisor.
 Tokens, ACLs, `AppContainer`, LPAC, capability SIDs, and async supervision are out of scope; callers building an isolation boundary must supply and audit them.
 
+# Verification
+
+Kani proves the command-line encoder, the environment block, the creation flags, the standard I/O plan, the attribute-list size, and the mitigation layout.
+Lean and Verus prove, for arguments of every length, that the C runtime parsers read back every command line the crate writes.
+Models in `TLA+`, Quint, and Alloy check output draining, the child lifecycle, and the handle transfer, and Windows tests replay the models' traces through the crate.
+See [the verification layers](https://github.com/P4suta/windows-spawn/blob/main/proofs/README.md).
+
 # Further reading
 
 - [Examples](https://github.com/P4suta/windows-spawn/tree/main/examples)
 - [Architecture decisions](https://github.com/P4suta/windows-spawn/tree/main/docs/adr)
+- [Verification layers](https://github.com/P4suta/windows-spawn/blob/main/proofs/README.md)
 - [Security policy](https://github.com/P4suta/windows-spawn/security/policy)

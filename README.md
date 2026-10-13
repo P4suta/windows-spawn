@@ -38,6 +38,7 @@ assert!(output.status.success());
 - [API and contracts](https://docs.rs/windows-spawn)
 - [Examples](https://github.com/P4suta/windows-spawn/tree/main/examples)
 - [Architecture decisions](https://github.com/P4suta/windows-spawn/tree/main/docs/adr)
+- [Verification layers](https://github.com/P4suta/windows-spawn/blob/main/proofs/README.md)
 - [Security policy](https://github.com/P4suta/windows-spawn/security/policy)
 
 ## License

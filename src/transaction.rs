@@ -5,7 +5,6 @@ use std::collections::btree_map::{BTreeMap, Entry};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::io;
-use std::iter;
 use std::marker::PhantomData;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle};
@@ -13,24 +12,22 @@ use std::path::{Path, PathBuf};
 
 use crate::child::{Child, SuspendedChild};
 use crate::command::{Arg, Command, EnvOp, EnvValue};
-use crate::handles::{Job, StdioInner};
+use crate::domain::attribute_rules;
+use crate::domain::command_line_rules::{append_argument, append_program, NUL, QUOTE, SPACE};
+use crate::domain::environment_rules;
+use crate::handles::{Job, Stdio, StdioInner};
 use crate::options::DropPolicy;
 use crate::plan::{
-    validate_command, Running, SpawnPlan, SpawnState, StandardHandles, StandardIo, StdioSpec,
-    Suspended,
+    validate_command, Running, Source, SpawnPlan, SpawnState, StandardIo, Streams, Suspended,
 };
 use crate::sys::{self, NullAccess, StandardStream};
-
-const QUOTE: u16 = 0x22;
-const BACKSLASH: u16 = 0x5c;
-const SPACE: u16 = 0x20;
 
 /// Owns the process between `CreateProcessW` success and an explicit commit.
 /// Dropping before commit terminates the partially-created process.
 pub(crate) struct SpawnTransaction<M> {
     created: Option<sys::CreatedProcess>,
     kill_job: Option<Job>,
-    stdio: StandardHandles<Option<OwnedHandle>>,
+    stdio: Streams<Option<OwnedHandle>>,
     state: PhantomData<M>,
 }
 
@@ -59,7 +56,7 @@ impl<M: SpawnState> SpawnTransaction<M> {
                     stdout: prepared.stdout.child,
                     stderr: prepared.stderr.child,
                 });
-                let owners = StandardHandles {
+                let owners = Streams {
                     stdin: prepared.stdin.parent,
                     stdout: prepared.stdout.parent,
                     stderr: prepared.stderr.parent,
@@ -68,7 +65,7 @@ impl<M: SpawnState> SpawnTransaction<M> {
             }
             StandardIo::PseudoConsole => (
                 sys::StartupStdio::PseudoConsole,
-                StandardHandles {
+                Streams {
                     stdin: None,
                     stdout: None,
                     stderr: None,
@@ -112,16 +109,13 @@ impl<M: SpawnState> SpawnTransaction<M> {
         let job_values = job_values.into_boxed_slice();
         let pseudoconsole = plan.options.pseudoconsole_raw();
 
-        let attribute_count: u32 = [
+        let attribute_count = attribute_rules::count(&[
             !inherited_values.is_empty(),
             parent_value.is_some(),
             mitigation_value.is_some(),
             !job_values.is_empty(),
             pseudoconsole.is_some(),
-        ]
-        .into_iter()
-        .map(u32::from)
-        .sum();
+        ]);
         let mut attributes = if attribute_count == 0 {
             None
         } else {
@@ -218,10 +212,10 @@ struct PreparedStdio {
 }
 
 fn prepare_standard_handles(
-    specs: &StandardHandles<StdioSpec<'_>>,
+    specs: &Streams<Source<&Stdio>>,
     transfer: &mut HandleTransfer<'_>,
-) -> io::Result<StandardHandles<PreparedStdio>> {
-    Ok(StandardHandles {
+) -> io::Result<Streams<PreparedStdio>> {
+    Ok(Streams {
         stdin: prepare_stdio(specs.stdin, StandardStream::Input, transfer)?,
         stdout: prepare_stdio(specs.stdout, StandardStream::Output, transfer)?,
         stderr: prepare_stdio(specs.stderr, StandardStream::Error, transfer)?,
@@ -229,15 +223,15 @@ fn prepare_standard_handles(
 }
 
 fn prepare_stdio(
-    spec: StdioSpec<'_>,
+    spec: Source<&Stdio>,
     stream: StandardStream,
     transfer: &mut HandleTransfer<'_>,
 ) -> io::Result<PreparedStdio> {
     match spec {
-        StdioSpec::Inherit => prepare_inherit(stream, transfer),
-        StdioSpec::Null => prepare_null(stream, transfer),
-        StdioSpec::Piped => prepare_pipe(stream, transfer),
-        StdioSpec::Configured(stdio) => match &stdio.inner {
+        Source::Inherit => prepare_inherit(stream, transfer),
+        Source::Null => prepare_null(stream, transfer),
+        Source::Piped => prepare_pipe(stream, transfer),
+        Source::Configured(stdio) => match &stdio.inner {
             StdioInner::Inherit => prepare_inherit(stream, transfer),
             StdioInner::Null => prepare_null(stream, transfer),
             StdioInner::Piped => prepare_pipe(stream, transfer),
@@ -341,14 +335,12 @@ struct Environment {
 
 #[derive(Debug)]
 struct EnvKey {
-    text: OsString,
     wide: Vec<u16>,
 }
 
 impl EnvKey {
-    fn new(text: OsString) -> Self {
-        let wide = text.encode_wide().collect();
-        Self { text, wide }
+    fn new(text: &OsStr) -> Self {
+        Self { wide: wide(text) }
     }
 }
 
@@ -386,7 +378,7 @@ fn build_environment(
     let mut map: BTreeMap<EnvKey, OsString> = BTreeMap::new();
     if !command.env_clear {
         for (key, value) in sys::environment_strings()? {
-            map.insert(EnvKey::new(key), value);
+            map.insert(EnvKey::new(&key), value);
         }
     }
     for operation in &command.env_ops {
@@ -398,7 +390,7 @@ fn build_environment(
                         OsString::from(transfer.lower(handle.as_handle())?.to_string())
                     }
                 };
-                match map.entry(EnvKey::new(key.clone())) {
+                match map.entry(EnvKey::new(key)) {
                     Entry::Occupied(mut entry) => {
                         entry.insert(value);
                     }
@@ -408,23 +400,18 @@ fn build_environment(
                 }
             }
             EnvOp::Remove(key) => {
-                map.remove(&EnvKey::new(key.clone()));
+                map.remove(&EnvKey::new(key));
             }
         }
     }
 
-    let path = map.get(&EnvKey::new(OsString::from("PATH"))).cloned();
+    let path = map.get(&EnvKey::new(OsStr::new("PATH"))).cloned();
     let mut block = Vec::new();
     for (key, value) in map {
-        block.extend(key.text.encode_wide());
-        block.push(u16::from(b'='));
-        block.extend(value.encode_wide());
-        block.push(0);
+        let value: Vec<u16> = value.encode_wide().collect();
+        environment_rules::append_entry(&mut block, &key.wide, &value);
     }
-    if block.is_empty() {
-        block.push(0);
-    }
-    block.push(0);
+    environment_rules::finish(&mut block);
     Ok(Environment {
         block: Some(block),
         path,
@@ -432,42 +419,44 @@ fn build_environment(
 }
 
 /// Returns the `PATH` that [`build_environment`] would produce, without lowering handles.
+///
+/// A `PATH` that a later operation replaces or removes does not matter, so only a final value set from a handle, which exists only inside a spawn, is an error.
 fn child_path(command: &Command) -> io::Result<Option<OsString>> {
     if !command.env_clear && command.env_ops.is_empty() {
         return Ok(None);
     }
-    let path_key = EnvKey::new(OsString::from("PATH"));
-    let mut path = None;
+    let path_key = EnvKey::new(OsStr::new("PATH"));
+    let mut path: Option<Result<OsString, ()>> = None;
     if !command.env_clear {
         for (key, value) in sys::environment_strings()? {
-            if EnvKey::new(key) == path_key {
-                path = Some(value);
+            if EnvKey::new(&key) == path_key {
+                path = Some(Ok(value));
             }
         }
     }
     for operation in &command.env_ops {
         match operation {
             EnvOp::Set(key, value) => {
-                if EnvKey::new(key.clone()) == path_key {
-                    path = match value {
-                        EnvValue::Text(value) => Some(value.clone()),
-                        EnvValue::Handle(_) => {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidInput,
-                                "a PATH set from a handle has a value only inside a spawn",
-                            ))
-                        }
-                    };
+                if EnvKey::new(key) == path_key {
+                    path = Some(match value {
+                        EnvValue::Text(value) => Ok(value.clone()),
+                        EnvValue::Handle(_) => Err(()),
+                    });
                 }
             }
             EnvOp::Remove(key) => {
-                if EnvKey::new(key.clone()) == path_key {
+                if EnvKey::new(key) == path_key {
                     path = None;
                 }
             }
         }
     }
-    Ok(path)
+    path.transpose().map_err(|()| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a PATH set from a handle has a value only inside a spawn",
+        )
+    })
 }
 
 /// Implements [`Command::to_command_line`].
@@ -477,7 +466,7 @@ pub(crate) fn broker_command_line(command: &Command) -> io::Result<OsString> {
     for argument in &command.args {
         arguments.push(SPACE);
         match argument {
-            Arg::Text(text) => append_regular_arg(&mut arguments, text),
+            Arg::Text(text) => append_argument(&mut arguments, &wide(text)),
             Arg::Raw(text) => arguments.extend(text.encode_wide()),
             Arg::Handle(_) => {
                 return Err(io::Error::new(
@@ -497,15 +486,9 @@ pub(crate) fn broker_command_line(command: &Command) -> io::Result<OsString> {
         ));
     }
     let mut line = Vec::new();
-    append_program(&mut line, absolute);
+    append_program(&mut line, &absolute);
     line.extend(arguments);
     Ok(OsString::from_wide(&line))
-}
-
-fn append_program(line: &mut Vec<u16>, program: impl IntoIterator<Item = u16>) {
-    line.push(QUOTE);
-    line.extend(program);
-    line.push(QUOTE);
 }
 
 fn build_command_line(
@@ -513,55 +496,84 @@ fn build_command_line(
     transfer: &mut HandleTransfer<'_>,
 ) -> io::Result<Vec<u16>> {
     let mut result = Vec::new();
-    append_program(&mut result, command.program.encode_wide());
+    append_program(&mut result, &wide(&command.program));
     for argument in &command.args {
         result.push(SPACE);
         match argument {
-            Arg::Text(text) => append_regular_arg(&mut result, text),
+            Arg::Text(text) => append_argument(&mut result, &wide(text)),
             Arg::Raw(text) => result.extend(text.encode_wide()),
             Arg::Handle(handle) => {
-                let text = OsString::from(transfer.lower(handle.as_handle())?.to_string());
-                append_regular_arg(&mut result, &text);
+                let value = transfer.lower(handle.as_handle())?.to_string();
+                append_argument(&mut result, &wide(OsStr::new(&value)));
             }
         }
     }
-    result.push(0);
+    result.push(NUL);
     Ok(result)
 }
 
-fn append_regular_arg(command: &mut Vec<u16>, argument: &OsStr) {
-    let bytes = argument.as_encoded_bytes();
-    let quote = bytes.is_empty()
-        || bytes
-            .iter()
-            .any(|byte| matches!(*byte, b' ' | b'\t' | b'"' | b'|'));
-    if quote {
-        command.push(QUOTE);
+fn wide(text: &OsStr) -> Vec<u16> {
+    text.encode_wide().collect()
+}
+
+/// What executable resolution reads from the system, so a test can stand in for the file system and the process.
+trait SearchHost {
+    /// Returns true if a file or directory exists at `path`, a NUL-terminated wide path.
+    fn exists(&self, path: &[u16]) -> bool;
+    /// The directory of this process's executable.
+    fn application_directory(&self) -> Option<PathBuf>;
+    fn system_directory(&self) -> io::Result<OsString>;
+    fn windows_directory(&self) -> io::Result<OsString>;
+    /// This process's PATH.
+    fn parent_path(&self) -> Option<OsString>;
+}
+
+/// The running system.
+struct System;
+
+impl SearchHost for System {
+    fn exists(&self, path: &[u16]) -> bool {
+        sys::program_exists(path)
     }
-    let mut backslashes = 0_usize;
-    for unit in argument.encode_wide() {
-        if unit == BACKSLASH {
-            backslashes = backslashes.saturating_add(1);
-        } else {
-            if unit == QUOTE {
-                command.extend(iter::repeat(BACKSLASH).take(backslashes.saturating_add(1)));
-            }
-            backslashes = 0;
-        }
-        command.push(unit);
+
+    fn application_directory(&self) -> Option<PathBuf> {
+        env::current_exe().ok().map(|mut application| {
+            application.pop();
+            application
+        })
     }
-    if quote {
-        command.extend(iter::repeat(BACKSLASH).take(backslashes));
-        command.push(QUOTE);
+
+    fn system_directory(&self) -> io::Result<OsString> {
+        sys::system_directory()
+    }
+
+    fn windows_directory(&self) -> io::Result<OsString> {
+        sys::windows_directory()
+    }
+
+    fn parent_path(&self) -> Option<OsString> {
+        env::var_os("PATH")
     }
 }
 
 fn resolve_executable(program: &OsStr, child_path: Option<&OsStr>) -> io::Result<Vec<u16>> {
+    resolve_executable_in(&System, program, child_path)
+}
+
+/// The extension a program found by name gains, and that a path keeps as it is.
+const EXE_SUFFIX: &[u8] = b".exe";
+
+/// Finds `program` as Rust's standard library does on Windows; `proofs/prolog` states that search.
+fn resolve_executable_in(
+    host: &impl SearchHost,
+    program: &OsStr,
+    child_path: Option<&OsStr>,
+) -> io::Result<Vec<u16>> {
     let program_path = Path::new(program);
     let has_exe_suffix = program
         .as_encoded_bytes()
-        .get(program.len().saturating_sub(4)..)
-        .is_some_and(|suffix| suffix.eq_ignore_ascii_case(b".exe"));
+        .get(program.len().saturating_sub(EXE_SUFFIX.len())..)
+        .is_some_and(|suffix| suffix.eq_ignore_ascii_case(EXE_SUFFIX));
     let is_file_name = program_path.file_name() == Some(program);
 
     if !is_file_name {
@@ -571,7 +583,7 @@ fn resolve_executable(program: &OsStr, child_path: Option<&OsStr>) -> io::Result
         let mut appended = program.to_os_string();
         appended.push(".exe");
         let appended_wide = wide_nul(&appended)?;
-        if sys::program_exists(&appended_wide) {
+        if host.exists(&appended_wide) {
             return Ok(appended_wide);
         }
         return wide_nul(program);
@@ -584,7 +596,7 @@ fn resolve_executable(program: &OsStr, child_path: Option<&OsStr>) -> io::Result
             directory.set_extension("exe");
         }
         let wide = wide_nul(directory.as_os_str()).ok()?;
-        sys::program_exists(&wide).then_some(wide)
+        host.exists(&wide).then_some(wide)
     };
 
     if let Some(paths) = child_path {
@@ -594,19 +606,18 @@ fn resolve_executable(program: &OsStr, child_path: Option<&OsStr>) -> io::Result
             }
         }
     }
-    if let Ok(mut application) = env::current_exe() {
-        application.pop();
+    if let Some(application) = host.application_directory() {
         if let Some(found) = search(application) {
             return Ok(found);
         }
     }
-    if let Some(found) = search(PathBuf::from(sys::system_directory()?)) {
+    if let Some(found) = search(PathBuf::from(host.system_directory()?)) {
         return Ok(found);
     }
-    if let Some(found) = search(PathBuf::from(sys::windows_directory()?)) {
+    if let Some(found) = search(PathBuf::from(host.windows_directory()?)) {
         return Ok(found);
     }
-    if let Some(paths) = env::var_os("PATH") {
+    if let Some(paths) = host.parent_path() {
         for directory in env::split_paths(&paths).filter(|entry| !entry.as_os_str().is_empty()) {
             if let Some(found) = search(directory) {
                 return Ok(found);
@@ -642,6 +653,98 @@ mod tests {
 
     fn decode(value: &[u16]) -> String {
         String::from_utf16_lossy(value.strip_suffix(&[0]).unwrap_or(value))
+    }
+
+    /// A file system and process that hold only what a vector row lists.
+    #[cfg(windows_spawn_vectors)]
+    struct Scenario {
+        files: Vec<String>,
+        application: PathBuf,
+        system: OsString,
+        windows: OsString,
+        parent: Option<OsString>,
+    }
+
+    /// A path as the file system matches it: in any case, and with a slash read as a backslash.
+    #[cfg(windows_spawn_vectors)]
+    fn normal(path: &str) -> String {
+        path.to_ascii_lowercase().replace('/', "\\")
+    }
+
+    #[cfg(windows_spawn_vectors)]
+    impl SearchHost for Scenario {
+        fn exists(&self, path: &[u16]) -> bool {
+            self.files.contains(&normal(&decode(path)))
+        }
+
+        fn application_directory(&self) -> Option<PathBuf> {
+            Some(self.application.clone())
+        }
+
+        fn system_directory(&self) -> io::Result<OsString> {
+            Ok(self.system.clone())
+        }
+
+        fn windows_directory(&self) -> io::Result<OsString> {
+            Ok(self.windows.clone())
+        }
+
+        fn parent_path(&self) -> Option<OsString> {
+            self.parent.clone()
+        }
+    }
+
+    /// Reads a PATH field of the vectors: `-` when unset, `=` and the text when set.
+    #[cfg(windows_spawn_vectors)]
+    fn path_field(field: &str) -> Option<OsString> {
+        field.strip_prefix('=').map(OsString::from)
+    }
+
+    /// `proofs/prolog/vectors/executable_search.tsv` holds the search Rust's standard library documents,
+    /// which `proofs/prolog/executable_search.pl` states apart from this code.
+    #[cfg(windows_spawn_vectors)]
+    #[test]
+    fn executable_search_follows_the_prolog_model() {
+        const VECTORS: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/proofs/prolog/vectors/executable_search.tsv"
+        ));
+        const ROWS: usize = 4672;
+        let mut rows = VECTORS.lines();
+        let host: Vec<&str> = rows.next().unwrap().split('\t').collect();
+        let ["#host", application, system, windows] = host[..] else {
+            panic!("the vectors start with the host row: {host:?}");
+        };
+        let mut checked = 0;
+        for row in rows {
+            let fields: Vec<&str> = row.split('\t').collect();
+            let [program, child, parent, files, expected] = fields[..] else {
+                panic!("a row has five fields: {row:?}");
+            };
+            assert!(child == "-" || child.starts_with('='), "{row:?}");
+            assert!(parent == "-" || parent.starts_with('='), "{row:?}");
+            let scenario = Scenario {
+                files: files
+                    .split('|')
+                    .filter(|file| !file.is_empty())
+                    .map(normal)
+                    .collect(),
+                application: PathBuf::from(application),
+                system: OsString::from(system),
+                windows: OsString::from(windows),
+                parent: path_field(parent),
+            };
+            let child = path_field(child);
+            let actual =
+                match resolve_executable_in(&scenario, OsStr::new(program), child.as_deref()) {
+                    Ok(path) => format!("path={}", decode(&path)),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => "not_found".to_owned(),
+                    Err(error) => panic!("{row:?}: {error}"),
+                };
+            assert_eq!(actual, expected, "{row:?}");
+            checked += 1;
+        }
+        assert_eq!(checked, ROWS);
     }
 
     #[test]
@@ -684,11 +787,11 @@ mod tests {
         assert!(!text.contains("first"));
         assert!(!text.contains("REMOVE_ME"));
 
-        let lower = EnvKey::new(OsString::from("alpha"));
-        let upper = EnvKey::new(OsString::from("ALPHA"));
+        let lower = EnvKey::new(OsStr::new("alpha"));
+        let upper = EnvKey::new(OsStr::new("ALPHA"));
         assert_eq!(lower, upper);
         assert_eq!(lower.partial_cmp(&upper), Some(Ordering::Equal));
-        assert_ne!(lower, EnvKey::new(OsString::from("beta")));
+        assert_ne!(lower, EnvKey::new(OsStr::new("beta")));
     }
 
     #[test]
@@ -715,14 +818,8 @@ mod tests {
         for expected in ["S=latin-s", "ſ=long-s", "Μ=greek-mu", "µ=micro-sign"] {
             assert!(entries.iter().any(|entry| entry == expected));
         }
-        assert_ne!(
-            EnvKey::new(OsString::from("S")),
-            EnvKey::new(OsString::from("ſ"))
-        );
-        assert_ne!(
-            EnvKey::new(OsString::from("Μ")),
-            EnvKey::new(OsString::from("µ"))
-        );
+        assert_ne!(EnvKey::new(OsStr::new("S")), EnvKey::new(OsStr::new("ſ")));
+        assert_ne!(EnvKey::new(OsStr::new("Μ")), EnvKey::new(OsStr::new("µ")));
     }
 
     #[test]
@@ -811,11 +908,26 @@ mod tests {
         set_then_other_removed
             .env("PATH", "kept")
             .env_remove("WINDOWS_SPAWN_OTHER");
+        let file = File::open("NUL").unwrap();
+        let mut handle_then_replaced = Command::new("cmd.exe");
+        handle_then_replaced
+            .env_handle("PATH", &file)
+            .unwrap()
+            .env("Path", "replaced");
+        let mut handle_then_removed = Command::new("cmd.exe");
+        handle_then_removed
+            .env_handle("PATH", &file)
+            .unwrap()
+            .env_remove("path");
 
         assert_eq!(child_path(&Command::new("cmd.exe")).unwrap(), None);
         assert_eq!(
             child_path(&set_then_other_removed).unwrap(),
             Some(OsString::from("kept"))
+        );
+        assert_eq!(
+            child_path(&handle_then_replaced).unwrap(),
+            Some(OsString::from("replaced"))
         );
         for command in [
             inherited,
@@ -824,6 +936,8 @@ mod tests {
             cleared,
             cleared_then_set,
             set_then_other_removed,
+            handle_then_replaced,
+            handle_then_removed,
         ] {
             let mut transfer = HandleTransfer::new(None);
             let environment = build_environment(&command, &mut transfer).unwrap();

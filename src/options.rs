@@ -6,12 +6,30 @@ use std::ops::{BitOr, BitOrAssign};
 
 use windows_sys::Win32::System::Threading::{
     CREATE_BREAKAWAY_FROM_JOB, CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE,
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_PRESERVE_CODE_AUTHZ_LEVEL, DETACHED_PROCESS,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_PRESERVE_CODE_AUTHZ_LEVEL, CREATE_SUSPENDED,
+    CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS, EXTENDED_STARTUPINFO_PRESENT,
     INHERIT_PARENT_AFFINITY,
 };
 
+use crate::domain::creation_flag_rules as flags;
 use crate::handles::{AsPseudoConsole, Job, ParentProcess};
 use crate::mitigation::MitigationPolicy;
+
+/// The flag words the proofs reason about are the SDK's.
+const _: () = assert!(
+    flags::DETACHED_PROCESS == DETACHED_PROCESS
+        && flags::NEW_CONSOLE == CREATE_NEW_CONSOLE
+        && flags::NEW_PROCESS_GROUP == CREATE_NEW_PROCESS_GROUP
+        && flags::INHERIT_PARENT_AFFINITY == INHERIT_PARENT_AFFINITY
+        && flags::BREAKAWAY_FROM_JOB == CREATE_BREAKAWAY_FROM_JOB
+        && flags::PRESERVE_CODE_AUTHZ_LEVEL == CREATE_PRESERVE_CODE_AUTHZ_LEVEL
+        && flags::DEFAULT_ERROR_MODE == CREATE_DEFAULT_ERROR_MODE
+        && flags::NO_WINDOW == CREATE_NO_WINDOW
+        && flags::SUSPENDED == CREATE_SUSPENDED
+        && flags::UNICODE_ENVIRONMENT == CREATE_UNICODE_ENVIRONMENT
+        && flags::EXTENDED_STARTUPINFO == EXTENDED_STARTUPINFO_PRESENT,
+    "a creation flag differs from windows-sys"
+);
 
 /// What dropping a live [`crate::Child`] does to its process tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -44,28 +62,24 @@ impl CreationFlags {
     }
 
     /// Creates a process without inheriting a console.
-    pub const DETACHED_PROCESS: Self = Self(DETACHED_PROCESS);
+    pub const DETACHED_PROCESS: Self = Self(flags::DETACHED_PROCESS);
     /// Gives the child a new console.
-    pub const NEW_CONSOLE: Self = Self(CREATE_NEW_CONSOLE);
+    pub const NEW_CONSOLE: Self = Self(flags::NEW_CONSOLE);
     /// Makes the child the root of a new process group.
-    pub const NEW_PROCESS_GROUP: Self = Self(CREATE_NEW_PROCESS_GROUP);
+    pub const NEW_PROCESS_GROUP: Self = Self(flags::NEW_PROCESS_GROUP);
     /// Inherits the parent's processor affinity.
-    pub const INHERIT_PARENT_AFFINITY: Self = Self(INHERIT_PARENT_AFFINITY);
+    pub const INHERIT_PARENT_AFFINITY: Self = Self(flags::INHERIT_PARENT_AFFINITY);
     /// Allows the child to break away from the caller's Job when permitted.
-    pub const BREAKAWAY_FROM_JOB: Self = Self(CREATE_BREAKAWAY_FROM_JOB);
+    pub const BREAKAWAY_FROM_JOB: Self = Self(flags::BREAKAWAY_FROM_JOB);
     /// Preserves the caller's code-authorization level.
-    pub const PRESERVE_CODE_AUTHZ_LEVEL: Self = Self(CREATE_PRESERVE_CODE_AUTHZ_LEVEL);
+    pub const PRESERVE_CODE_AUTHZ_LEVEL: Self = Self(flags::PRESERVE_CODE_AUTHZ_LEVEL);
     /// Prevents the child from inheriting the caller's hard-error mode.
-    pub const DEFAULT_ERROR_MODE: Self = Self(CREATE_DEFAULT_ERROR_MODE);
+    pub const DEFAULT_ERROR_MODE: Self = Self(flags::DEFAULT_ERROR_MODE);
     /// Runs a console application without creating a console window.
-    pub const NO_WINDOW: Self = Self(CREATE_NO_WINDOW);
+    pub const NO_WINDOW: Self = Self(flags::NO_WINDOW);
 
     pub(crate) const fn bits(self) -> u32 {
         self.0
-    }
-
-    pub(crate) const fn contains(self, other: Self) -> bool {
-        self.0 & other.0 == other.0
     }
 }
 
@@ -211,20 +225,11 @@ impl<'a> SpawnOptions<'a> {
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 mod tests {
     use std::cell::Cell;
 
     use super::*;
-
-    struct TestPseudoConsole(Cell<isize>);
-
-    // SAFETY: tests use the value only as a snapshot and never pass it to Win32.
-    unsafe impl AsPseudoConsole for TestPseudoConsole {
-        fn raw_pseudoconsole(&self) -> isize {
-            self.0.get()
-        }
-    }
+    use crate::sys::test_support::ChangingPseudoConsole;
 
     #[test]
     fn creation_flags_combine_idempotently_and_options_keep_job_order() {
@@ -258,7 +263,7 @@ mod tests {
 
     #[test]
     fn pseudoconsole_builder_snapshots_the_raw_value() {
-        let pseudoconsole = TestPseudoConsole(Cell::new(42));
+        let pseudoconsole = ChangingPseudoConsole(Cell::new(42));
         let options = SpawnOptions::new().pseudoconsole(&pseudoconsole);
         pseudoconsole.0.set(99);
         assert_eq!(options.pseudoconsole_raw(), Some(42));

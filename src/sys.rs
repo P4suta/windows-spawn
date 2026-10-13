@@ -36,13 +36,16 @@ use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWind
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess, GetExitCodeProcess,
     GetProcessId, InitializeProcThreadAttributeList, OpenProcess, ResumeThread, TerminateProcess,
-    UpdateProcThreadAttribute, WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
-    EXTENDED_STARTUPINFO_PRESENT, INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_CREATE_PROCESS,
-    PROCESS_DUP_HANDLE, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-    PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
-    PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
+    UpdateProcThreadAttribute, WaitForSingleObject, INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST,
+    PROCESS_CREATE_PROCESS, PROCESS_DUP_HANDLE, PROCESS_INFORMATION,
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
+    PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS,
+    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
 };
+
+use crate::domain::attribute_rules::{self, SizeFault};
+use crate::domain::creation_flag_rules::creation_word;
+use crate::domain::environment_rules;
 
 pub(crate) const INVALID_RAW_HANDLE: isize = -1;
 
@@ -364,17 +367,40 @@ pub(crate) struct AttributeList {
     storage: Box<[usize]>,
 }
 
+/// Zeroed storage of `words` words, or `OutOfMemory` when no allocation holds them.
+fn zeroed_words(words: usize) -> io::Result<Box<[usize]>> {
+    #[cfg(test)]
+    fault::check(fault::Call::AllocateAttributes)?;
+    let mut storage = Vec::new();
+    storage
+        .try_reserve_exact(words)
+        .map_err(|reserve| io::Error::new(io::ErrorKind::OutOfMemory, reserve))?;
+    storage.resize(words, 0_usize);
+    Ok(storage.into_boxed_slice())
+}
+
 impl AttributeList {
     pub(crate) fn new(count: u32) -> io::Result<Self> {
         #[cfg(test)]
         fault::check(fault::Call::AttributeList)?;
         let mut bytes = 0_usize;
         // SAFETY: the documented size query passes a null list.
-        let probe =
+        let probed =
             unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), count, 0, &mut bytes) };
-        let bytes = probed_size(probe, io::Error::last_os_error(), bytes)?;
-        let words = storage_words(bytes);
-        let mut storage = vec![0_usize; words].into_boxed_slice();
+        let error = io::Error::last_os_error();
+        let probe = attribute_rules::probe(
+            probed != 0,
+            is_win32_error(&error, ERROR_INSUFFICIENT_BUFFER),
+            bytes,
+        );
+        let words = attribute_rules::storage_words(probe).map_err(|fault| match fault {
+            SizeFault::UnexpectedSuccess => {
+                io::Error::other("attribute-list size probe unexpectedly succeeded")
+            }
+            SizeFault::Failed => error,
+            SizeFault::TooLarge => io::Error::other("attribute-list size exceeds an allocation"),
+        })?;
+        let mut storage = zeroed_words(words)?;
         let pointer = storage.as_mut_ptr().cast();
         let mut actual = size_of_val(&*storage);
         // SAFETY: the `Box<[usize]>` is word-aligned, stable, at least `bytes` long, and owned by the returned `AttributeList`.
@@ -453,24 +479,6 @@ impl AttributeList {
     }
 }
 
-/// Returns the size a null-list size probe reported, or why the probe is unusable.
-fn probed_size(probe: i32, error: io::Error, bytes: usize) -> io::Result<usize> {
-    if probe != 0 {
-        return Err(io::Error::other(
-            "attribute-list size probe unexpectedly succeeded",
-        ));
-    }
-    if !is_win32_error(&error, ERROR_INSUFFICIENT_BUFFER) || bytes == 0 {
-        return Err(error);
-    }
-    Ok(bytes)
-}
-
-/// Returns how many words hold `bytes`.
-const fn storage_words(bytes: usize) -> usize {
-    bytes.div_ceil(size_of::<usize>())
-}
-
 impl Drop for AttributeList {
     fn drop(&mut self) {
         #[cfg(test)]
@@ -515,18 +523,18 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
     #[cfg(test)]
     fault::check(fault::Call::CreateProcess)?;
     let mut startup = STARTUPINFOEXW::default();
-    let mut flags = request.creation_flags | CREATE_UNICODE_ENVIRONMENT;
     if let Some(attributes) = request.attributes {
         startup.StartupInfo.cb = STARTUPINFOEX_SIZE;
         startup.lpAttributeList = attributes.pointer();
-        flags |= EXTENDED_STARTUPINFO_PRESENT;
     } else {
         startup.StartupInfo.cb = STARTUPINFO_SIZE;
     }
     set_standard_handles(&mut startup, request.stdio);
-    if request.suspended {
-        flags |= CREATE_SUSPENDED;
-    }
+    let flags = creation_word(
+        request.creation_flags,
+        request.attributes.is_some(),
+        request.suspended,
+    );
     let environment = request
         .environment
         .map_or(ptr::null(), |block| block.as_ptr().cast());
@@ -619,6 +627,7 @@ pub(crate) mod fault {
         AssignJob,
         TerminateJob,
         AttributeList,
+        AllocateAttributes,
         UpdateAttribute,
         CreateProcess,
         WaitProcess,
@@ -723,12 +732,19 @@ pub(crate) mod fault {
 /// Test helpers that call Win32 directly, so mutants of the production wrappers cannot disable them.
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::cell::Cell;
+    use std::fs::File;
+    use std::io::Read;
     use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
     use std::ptr;
+    use std::thread;
 
     use windows_sys::Win32::Foundation::{
         DuplicateHandle, GetHandleInformation, DUPLICATE_SAME_ACCESS, HANDLE_FLAG_INHERIT,
         WAIT_OBJECT_0,
+    };
+    use windows_sys::Win32::System::Console::{
+        ClosePseudoConsole, CreatePseudoConsole, COORD, HPCON,
     };
     use windows_sys::Win32::System::Pipes::CreatePipe;
     use windows_sys::Win32::System::Threading::{
@@ -897,6 +913,73 @@ pub(crate) mod test_support {
             }
         }
     }
+
+    /// The size of the test pseudoconsole, which no test reads.
+    const CONSOLE_SIZE: COORD = COORD { X: 80, Y: 25 };
+
+    /// A pseudoconsole created with raw Win32 calls, outside any recorded plan.
+    pub(crate) struct TestConsole {
+        value: HPCON,
+        input: Option<OwnedHandle>,
+    }
+
+    impl TestConsole {
+        pub(crate) fn create() -> Self {
+            let (input_reader, input_writer) = pipe();
+            let (output_reader, output_writer) = pipe();
+            let mut value = 0;
+            // SAFETY: both pipe ends are valid for the call and `value` is writable; this type owns the HPCON.
+            let created = unsafe {
+                CreatePseudoConsole(
+                    CONSOLE_SIZE,
+                    input_reader.as_raw_handle(),
+                    output_writer.as_raw_handle(),
+                    0,
+                    &mut value,
+                )
+            };
+            assert!(created >= 0, "CreatePseudoConsole failed with {created:#x}");
+            drop((input_reader, output_writer));
+            let mut output = File::from(output_reader);
+            drop(thread::spawn(move || {
+                let mut buffer = [0_u8; 4096];
+                while matches!(output.read(&mut buffer), Ok(read) if read > 0) {}
+            }));
+            Self {
+                value,
+                input: Some(input_writer),
+            }
+        }
+    }
+
+    /// The close runs on a detached thread because some Windows Server 2022 builds block in it.
+    impl Drop for TestConsole {
+        fn drop(&mut self) {
+            drop(self.input.take());
+            let value = self.value;
+            drop(thread::spawn(move || {
+                // SAFETY: this type uniquely owns the HPCON.
+                unsafe { ClosePseudoConsole(value) };
+            }));
+        }
+    }
+
+    // SAFETY: TestConsole owns a live HPCON for every borrow and keeps ownership.
+    unsafe impl crate::AsPseudoConsole for TestConsole {
+        fn raw_pseudoconsole(&self) -> isize {
+            self.value
+        }
+    }
+
+    /// A pseudoconsole value that a test changes after lending it, to show that options read it once.
+    pub(crate) struct ChangingPseudoConsole(pub(crate) Cell<isize>);
+
+    // SAFETY: only the snapshot test of `SpawnOptions::pseudoconsole` lends it, and that test never spawns, so the value never reaches Win32.
+    unsafe impl crate::AsPseudoConsole for ChangingPseudoConsole {
+        fn raw_pseudoconsole(&self) -> isize {
+            self.0.get()
+        }
+    }
 }
 
 pub(crate) fn exit_status(process: BorrowedHandle<'_>) -> io::Result<ExitStatus> {
@@ -997,39 +1080,22 @@ pub(crate) fn environment_strings() -> io::Result<Vec<(OsString, OsString)>> {
         return Err(io::Error::last_os_error());
     }
     let guard = EnvironmentBlock(base);
-    let mut entries = Vec::new();
-    let mut cursor = guard.0;
+    let mut length = 0_usize;
+    let mut previous = None;
     loop {
-        // SAFETY: `cursor` points at the start of an entry inside the double-NUL block.
-        if unsafe { *cursor } == 0 {
+        // SAFETY: the block ends with a NUL that starts it or follows another NUL, and the scan stops there.
+        let unit = unsafe { *guard.0.add(length) };
+        if environment_rules::ends_block(previous, unit) {
             break;
         }
-        let mut length = 0_usize;
-        // SAFETY: the current entry is NUL-terminated.
-        while unsafe { *cursor.add(length) } != 0 {
-            length = length.saturating_add(1);
-        }
-        // SAFETY: the range was just measured inside the current entry.
-        let entry = unsafe { std::slice::from_raw_parts(cursor, length) };
-        if let Some((key, value)) = split_entry(entry) {
-            entries.push((OsString::from_wide(key), OsString::from_wide(value)));
-        }
-        let advance = length.saturating_add(1);
-        // SAFETY: `advance` moves just past this entry's terminator, still inside the block.
-        cursor = unsafe { cursor.add(advance) };
+        previous = Some(unit);
+        length = length.saturating_add(1);
     }
-    Ok(entries)
-}
-
-/// Splits `KEY=value` at the first `=` after the first unit, so hidden `=C:` entries keep their key.
-fn split_entry(entry: &[u16]) -> Option<(&[u16], &[u16])> {
-    let (separator, _) = entry
-        .iter()
-        .enumerate()
-        .skip(1)
-        .find(|(_, unit)| **unit == u16::from(b'='))?;
-    let (key, rest) = entry.split_at(separator);
-    rest.split_first().map(|(_, value)| (key, value))
+    // SAFETY: the scan read every unit before the block's terminator, which stays valid until `guard` drops.
+    let block = unsafe { std::slice::from_raw_parts(guard.0, length) };
+    Ok(environment_rules::entries(block)
+        .map(|(key, value)| (OsString::from_wide(key), OsString::from_wide(value)))
+        .collect())
 }
 
 pub(crate) fn compare_ordinal(left: &[u16], right: &[u16]) -> Ordering {
@@ -1138,7 +1204,7 @@ pub(crate) const fn handle_from_value(value: isize) -> HANDLE {
 #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
 const fn dword_const(value: usize) -> u32 {
     let wide = value as u64;
-    assert!(wide <= 0xFFFF_FFFF, "size does not fit a DWORD");
+    assert!(wide <= u32::MAX as u64, "size does not fit a DWORD");
     wide as u32
 }
 
@@ -1300,7 +1366,7 @@ mod tests {
     #[test]
     fn environment_paths_comparison_and_error_helpers_work() -> io::Result<()> {
         let drops_before = ENVIRONMENT_BLOCK_DROPS.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(!environment_strings()?.is_empty());
+        assert_ne!(environment_strings()?, Vec::new());
         assert!(ENVIRONMENT_BLOCK_DROPS.load(std::sync::atomic::Ordering::Relaxed) > drops_before);
         assert_eq!(
             compare_ordinal(&[u16::from(b'a')], &[u16::from(b'B')]),
@@ -1349,25 +1415,6 @@ mod tests {
         assert!(validate_process_handle(file.as_handle()).is_err());
         assert!(validate_job_handle(file.as_handle()).is_err());
         Ok(())
-    }
-
-    #[test]
-    fn attribute_list_sizing_classifies_every_probe_result() {
-        let insufficient = || {
-            io::Error::from_raw_os_error(
-                i32::try_from(ERROR_INSUFFICIENT_BUFFER).expect("Win32 error code fits i32"),
-            )
-        };
-        assert_eq!(probed_size(0, insufficient(), 48).unwrap(), 48);
-        assert!(probed_size(1, insufficient(), 48).is_err());
-        assert!(probed_size(0, io::Error::from_raw_os_error(5), 48).is_err());
-        assert!(probed_size(0, insufficient(), 0).is_err());
-
-        let word = size_of::<usize>();
-        assert_eq!(storage_words(1), 1);
-        assert_eq!(storage_words(word), 1);
-        assert_eq!(storage_words(word + 1), 2);
-        assert_eq!(storage_words(usize::MAX), usize::MAX / word + 1);
     }
 
     #[test]
@@ -1425,17 +1472,14 @@ mod tests {
     }
 
     #[test]
-    fn environment_entries_split_at_the_first_separator_after_the_key() {
-        let wide = |text: &str| -> Vec<u16> { text.encode_utf16().collect() };
-        let split = |text: &str| {
-            let entry = wide(text);
-            split_entry(&entry).map(|(key, value)| (key.to_vec(), value.to_vec()))
-        };
-        assert_eq!(split("KEY=a=b"), Some((wide("KEY"), wide("a=b"))));
-        assert_eq!(split("=C:=C:\\work"), Some((wide("=C:"), wide("C:\\work"))));
-        assert_eq!(split("EMPTY="), Some((wide("EMPTY"), Vec::new())));
-        assert_eq!(split("NOSEPARATOR"), None);
-        assert_eq!(split("="), None);
+    fn storage_beyond_any_allocation_is_out_of_memory() -> io::Result<()> {
+        let largest = (usize::MAX >> 1) / size_of::<usize>();
+        assert_eq!(
+            zeroed_words(largest).unwrap_err().kind(),
+            io::ErrorKind::OutOfMemory
+        );
+        assert_eq!(*zeroed_words(3)?, [0, 0, 0]);
+        Ok(())
     }
 
     #[test]

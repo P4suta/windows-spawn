@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 Yasunobu Sakashita
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# The Lean theorem layer of ADR 0014: proofs/README.md says what is proved and what the proofs trust.
+# The proofs rest on Lean's core library alone, so the package requires nothing.
+
+name = "windows_spawn_proofs"
+version = "0.1.0"
+defaultTargets = ["WindowsSpawn", "audit", "oracle"]
+# Beside Cargo's output, so one ignored directory holds every build of the repository.
+buildDir = "../../target/lean"
+
+[leanOptions]
+autoImplicit = false
+relaxedAutoImplicit = false
+linter.missingDocs = true
+warningAsError = true
+
+# The models and their theorems, which perform no input or output.
+[[lean_lib]]
+name = "WindowsSpawn"
+
+# Proofs the audit must refuse, outside the default targets: `cargo xtask proofs lean` builds it and requires the audit to fail on it.
+[[lean_lib]]
+name = "Canary"
+leanOptions = { warningAsError = false }
+
+# Lists every stated theorem with the axioms it rests on, and fails on any axiom outside Lean's three standard ones.
+[[lean_exe]]
+name = "audit"
+root = "Audit"
+
+# Evaluates the proved models over fixed inputs and writes the vectors the Rust tests read.
+[[lean_exe]]
+name = "oracle"
+root = "Oracle"

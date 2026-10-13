@@ -93,6 +93,57 @@ jobs:
           toolchain: stable
       - run: cargo xtask linux-empty
 
+  proofs:
+    name: Proofs / ${{ matrix.layer }}
+    strategy:
+      fail-fast: false
+      matrix:
+        layer: [kani, lean, verus, tla, quint, alloy, prolog]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          key: ${{ matrix.layer }}
+      - name: Install Kani 0.68.0
+        if: matrix.layer == 'kani'
+        run: |
+          curl --fail --location --silent --show-error --output kani.tar.gz \
+            https://github.com/model-checking/kani/releases/download/kani-0.68.0/kani-0.68.0-x86_64-unknown-linux-gnu.tar.gz
+          echo "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3  kani.tar.gz" | sha256sum --check
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup --use-local-bundle kani.tar.gz
+      - name: Install elan 4.2.4
+        if: matrix.layer == 'lean'
+        run: |
+          curl --fail --location --silent --show-error --output elan.tar.gz \
+            https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz
+          echo "42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63  elan.tar.gz" | sha256sum --check
+          tar -xzf elan.tar.gz
+          ./elan-init -y --no-modify-path --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6  # v6.0.1
+        if: matrix.layer == 'tla' || matrix.layer == 'quint' || matrix.layer == 'alloy'
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        if: matrix.layer == 'quint'
+        with:
+          node-version: "24"
+      - name: Install SWI-Prolog
+        if: matrix.layer == 'prolog'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends swi-prolog-nox
+      - run: cargo xtask proofs ${{ matrix.layer }}
+
   coverage:
     name: Coverage
     runs-on: windows-latest
@@ -127,7 +178,7 @@ jobs:
   ci-required:
     name: CI required
     if: always()
-    needs: [hygiene, test, i686-smoke, linux, coverage, package]
+    needs: [hygiene, test, i686-smoke, linux, proofs, coverage, package]
     runs-on: ubuntu-latest
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')

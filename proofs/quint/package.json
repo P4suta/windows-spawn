@@ -1,0 +1,9 @@
+{
+  "name": "windows-spawn-quint",
+  "private": true,
+  "description": "The Quint release that cargo xtask proofs quint runs",
+  "license": "MIT OR Apache-2.0",
+  "dependencies": {
+    "@informalsystems/quint": "0.33.0"
+  }
+}

@@ -2,7 +2,9 @@
 
 mod cli;
 mod gates;
+mod proofs;
 mod tasks;
+mod verifier;
 
 use std::env;
 use std::process::ExitCode;

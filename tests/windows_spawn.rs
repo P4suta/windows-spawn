@@ -4,6 +4,8 @@
 
 //! End-to-end Windows process creation tests.
 
+#[cfg(windows_spawn_vectors)]
+mod lifecycle;
 mod support;
 
 use std::fs::{self, File};

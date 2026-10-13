@@ -562,7 +562,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::Stdio
 impl core::panic::unwind_safe::UnwindSafe for windows_spawn::Stdio
 pub struct windows_spawn::SuspendedChild
 impl windows_spawn::SuspendedChild
-pub fn windows_spawn::SuspendedChild::id(&self) -> u32
+pub const fn windows_spawn::SuspendedChild::id(&self) -> u32
 pub fn windows_spawn::SuspendedChild::primary_thread_handle(&self) -> std::os::windows::io::handle::BorrowedHandle<'_>
 pub fn windows_spawn::SuspendedChild::resume(self) -> core::io::error::Result<windows_spawn::Child>
 impl core::fmt::Debug for windows_spawn::SuspendedChild

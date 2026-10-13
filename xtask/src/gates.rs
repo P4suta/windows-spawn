@@ -18,27 +18,15 @@ const EXCEPTIONS: &[Exception] = &[
     Exception {
         file: "src/lib.rs",
         lint: "unsafe_code",
-        count: 2,
+        count: 1,
         reason:
-            "sys is the only Win32 FFI boundary; failure_tests creates pseudoconsoles for tests",
+            "sys is the only Win32 FFI boundary, and its test support holds the test pseudoconsoles",
     },
     Exception {
         file: "src/handles.rs",
         lint: "unsafe_code",
         count: 1,
         reason: "AsPseudoConsole is an unsafe trait whose implementors vouch for a live HPCON",
-    },
-    Exception {
-        file: "src/options.rs",
-        lint: "unsafe_code",
-        count: 1,
-        reason: "tests implement AsPseudoConsole",
-    },
-    Exception {
-        file: "src/plan.rs",
-        lint: "unsafe_code",
-        count: 1,
-        reason: "tests implement AsPseudoConsole",
     },
     Exception {
         file: "src/sys.rs",
@@ -55,7 +43,7 @@ const EXCEPTIONS: &[Exception] = &[
     Exception {
         file: "src/child.rs",
         lint: "clippy::expect_used",
-        count: 2,
+        count: 1,
         reason: "a SuspendedChild owns its process until resume consumes it",
     },
     Exception {
@@ -70,12 +58,6 @@ const EXCEPTIONS: &[Exception] = &[
         count: 1,
         reason:
             "one function acquires every creation resource, so rollback has one owner (ADR 0007)",
-    },
-    Exception {
-        file: "src/mitigation.rs",
-        lint: "clippy::too_many_lines",
-        count: 1,
-        reason: "the encoding test lists every SDK 22621 field",
     },
     Exception {
         file: "tests/support/mod.rs",
@@ -251,14 +233,23 @@ fn check_exceptions(allows: &[Allow], exceptions: &[Exception]) -> Vec<Finding> 
     findings
 }
 
+/// The offset of the token after the next one: `dyn` after `Box <`, the arguments after `name (`, and the bracket after `# !`.
+const AFTER_NEXT: usize = 2;
+/// The length of each comment delimiter: `//`, `/*`, and `*/`.
+const DELIMITER: usize = 2;
+/// The length of an escape: a backslash and the character it escapes.
+const ESCAPE: usize = 2;
+/// Where the closing quote of a one-character literal such as `'a'` sits after its opening quote.
+const CLOSING_QUOTE: usize = 2;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CommentKind {
+pub(crate) enum CommentKind {
     Doc,
     Plain,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Token {
+pub(crate) enum Token {
     Ident(String),
     Literal(String),
     Str(String),
@@ -307,7 +298,7 @@ fn scan(file: &str, source: &str) -> Scan {
                 }
                 if name == "Box"
                     && next(1) == Some(&Token::Punct('<'))
-                    && next(2) == Some(&Token::Ident("dyn".to_owned()))
+                    && next(AFTER_NEXT) == Some(&Token::Ident("dyn".to_owned()))
                 {
                     finding(
                         *line,
@@ -316,7 +307,8 @@ fn scan(file: &str, source: &str) -> Scan {
                     );
                 }
                 if name == "WaitForSingleObject" && next(1) == Some(&Token::Punct('(')) {
-                    if let Some(argument) = second_argument(&code, index.saturating_add(2)) {
+                    if let Some(argument) = second_argument(&code, index.saturating_add(AFTER_NEXT))
+                    {
                         let bounded = !matches!(
                             argument.as_slice(),
                             [Token::Ident(bound)] if bound == "INFINITE"
@@ -342,7 +334,7 @@ fn scan(file: &str, source: &str) -> Scan {
             }
             Token::Punct('#') => {
                 let start = if next(1) == Some(&Token::Punct('!')) {
-                    2
+                    AFTER_NEXT
                 } else {
                     1
                 };
@@ -504,7 +496,7 @@ fn allowed_lints(content: &[Token]) -> Vec<String> {
 }
 
 /// Splits Rust source into the tokens the rules need, tracking lines.
-fn lex(source: &str) -> Vec<(usize, Token)> {
+pub(crate) fn lex(source: &str) -> Vec<(usize, Token)> {
     let characters: Vec<char> = source.chars().collect();
     let mut tokens = Vec::new();
     let mut index = 0_usize;
@@ -536,7 +528,7 @@ fn lex(source: &str) -> Vec<(usize, Token)> {
             } else {
                 CommentKind::Plain
             };
-            let body = text.get(2..).unwrap_or_default().to_owned();
+            let body = text.get(DELIMITER..).unwrap_or_default().to_owned();
             tokens.push((
                 line,
                 Token::Comment {
@@ -556,11 +548,11 @@ fn lex(source: &str) -> Vec<(usize, Token)> {
                 if current == '/' && following == Some('*') {
                     depth = depth.saturating_add(1);
                     text.push_str("/*");
-                    index = index.saturating_add(2);
+                    index = index.saturating_add(DELIMITER);
                 } else if current == '*' && following == Some('/') {
                     depth = depth.saturating_sub(1);
                     text.push_str("*/");
-                    index = index.saturating_add(2);
+                    index = index.saturating_add(DELIMITER);
                     if depth == 0 {
                         break;
                     }
@@ -597,11 +589,12 @@ fn lex(source: &str) -> Vec<(usize, Token)> {
         } else if character == '\'' {
             line_has_code = true;
             let escaped = next == Some('\\');
-            let closes_after_one = characters.get(index.saturating_add(2)) == Some(&'\'');
+            let closes_after_one =
+                characters.get(index.saturating_add(CLOSING_QUOTE)) == Some(&'\'');
             if escaped || closes_after_one {
                 let mut end = index.saturating_add(1);
                 while let Some(&current) = characters.get(end) {
-                    end = end.saturating_add(if current == '\\' { 2 } else { 1 });
+                    end = end.saturating_add(if current == '\\' { ESCAPE } else { 1 });
                     if current == '\'' {
                         break;
                     }
@@ -679,7 +672,7 @@ fn quoted(characters: &[char], quote: usize) -> (String, usize, usize) {
             if let Some(&escaped) = characters.get(index.saturating_add(1)) {
                 text.push(escaped);
             }
-            index = index.saturating_add(2);
+            index = index.saturating_add(ESCAPE);
             continue;
         }
         index = index.saturating_add(1);
@@ -744,21 +737,23 @@ mod tests {
             .collect()
     }
 
+    fn assert_clean(source: &str) {
+        assert_eq!(rules(source), Vec::<String>::new(), "{source}");
+    }
+
     #[test]
     fn only_doc_and_safety_comments_are_allowed() {
-        assert!(rules(concat!(
+        assert_clean(concat!(
             "/// doc\n",
             "//! inner\n",
             "/** block doc */\n",
             "fn f() {}\n"
-        ))
-        .is_empty());
-        assert!(rules(concat!(
+        ));
+        assert_clean(concat!(
             "// SAFETY: first\n",
             "// second line\n",
             "unsafe {}\n"
-        ))
-        .is_empty());
+        ));
         assert_eq!(rules(concat!("/", "/ plain\n", "fn f() {}\n")).len(), 1);
         assert_eq!(rules(concat!("fn f() {} /", "/ trailing\n")).len(), 1);
         assert_eq!(rules(concat!("/", "* block */\n")).len(), 1);
@@ -767,7 +762,7 @@ mod tests {
             1
         );
         assert_eq!(rules(concat!("//", "// four slashes\n")).len(), 1);
-        assert!(rules("fn f() { let s = \"// not a comment\"; }\n").is_empty());
+        assert_clean("fn f() { let s = \"// not a comment\"; }\n");
     }
 
     #[test]
@@ -787,7 +782,7 @@ mod tests {
             count: 1,
             reason: "test",
         }];
-        assert!(check_exceptions(&allows, &registered).is_empty());
+        assert_eq!(check_exceptions(&allows, &registered), Vec::new());
         assert_eq!(check_exceptions(&allows, &[]).len(), 1);
         let twice = [Exception {
             file: "src/a.rs",
@@ -811,23 +806,20 @@ mod tests {
         ] {
             assert_eq!(rules(source).len(), 1, "{source}");
         }
-        assert!(
-            rules("fn f() { WaitForSingleObject(h, INFINITE); WaitForSingleObject(h, 0); }")
-                .is_empty()
-        );
-        assert!(rules("use x::{WaitForSingleObject, INFINITE, WAIT_TIMEOUT};").is_empty());
+        assert_clean("fn f() { WaitForSingleObject(h, INFINITE); WaitForSingleObject(h, 0); }");
+        assert_clean("use x::{WaitForSingleObject, INFINITE, WAIT_TIMEOUT};");
     }
 
     #[test]
     fn defaults_and_boxed_trait_objects_are_refused() {
         assert_eq!(rules(concat!("enum E { #[defa", "ult] A, B }")).len(), 1);
         assert_eq!(rules(concat!("struct S { f: Box<d", "yn Fn()> }")).len(), 1);
-        assert!(rules("struct S { f: Box<u8> }").is_empty());
+        assert_clean("struct S { f: Box<u8> }");
     }
 
     #[test]
     fn literals_do_not_confuse_the_lexer() {
-        assert!(rules("fn f<'a>(x: &'a str) -> char { let _ = r#\"// \"#; '\\'' }").is_empty());
-        assert!(rules("fn f() { let c = '\"'; let s = b\"x\"; }").is_empty());
+        assert_clean("fn f<'a>(x: &'a str) -> char { let _ = r#\"// \"#; '\\'' }");
+        assert_clean("fn f() { let c = '\"'; let s = b\"x\"; }");
     }
 }

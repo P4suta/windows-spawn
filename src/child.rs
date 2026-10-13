@@ -116,6 +116,10 @@ impl Child {
 
     /// Terminates the root process.
     ///
+    /// Once [`Self::wait`] or [`Self::try_wait`] has observed the exit, this returns `Ok` without a call.
+    /// Before that, it calls `TerminateProcess`, which fails with `ERROR_ACCESS_DENIED` for a process that has exited;
+    /// [`std::process::Child::kill`] returns `Ok` then.
+    ///
     /// # Errors
     ///
     /// Returns the operating-system error from `TerminateProcess`.
@@ -246,6 +250,7 @@ fn join_readers(
 #[derive(Debug)]
 #[must_use = "dropping a suspended child terminates it"]
 pub struct SuspendedChild {
+    pid: u32,
     child: Option<Child>,
     main_thread: OwnedHandle,
 }
@@ -253,23 +258,16 @@ pub struct SuspendedChild {
 impl SuspendedChild {
     pub(crate) const fn new(child: Child, main_thread: OwnedHandle) -> Self {
         Self {
+            pid: child.id(),
             child: Some(child),
             main_thread,
         }
     }
 
     /// Returns the process identifier captured at creation.
-    ///
-    /// # Panics
-    ///
-    /// Panics only if an internal ownership invariant is broken.
     #[must_use]
-    #[allow(clippy::expect_used)]
-    pub fn id(&self) -> u32 {
-        self.child
-            .as_ref()
-            .expect("a suspended child owns its process until resume")
-            .id()
+    pub const fn id(&self) -> u32 {
+        self.pid
     }
 
     /// Borrows the suspended process's primary thread handle.
@@ -381,7 +379,7 @@ mod tests {
 
     #[test]
     fn absent_and_panicked_output_readers_become_results() {
-        assert!(join_reader(None).unwrap().is_empty());
+        assert_eq!(join_reader(None).unwrap(), Vec::<u8>::new());
         let panicked = thread::spawn(|| -> io::Result<Vec<u8>> { panic!("reader panic") });
         assert_eq!(
             join_reader(Some(panicked)).unwrap_err().kind(),

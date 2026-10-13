@@ -4,6 +4,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follo
 
 ## [Unreleased]
 
+### Added
+
+- Formal verification in layers, as ADR 0014 records.
+  Kani proves the decision cores, and Lean and Verus prove that the C runtime parsers read back every encoded command line.
+  Models in `TLA+`, Quint, Alloy, and Prolog check output draining, the child lifecycle, the handle transfer, and the program search.
+  `cargo xtask proofs` runs them, and Windows tests replay the models' vectors and traces through the crate.
+- Seeded random command lines and environments that Windows tests pass through the crate into children, and `cargo xtask verifier`, which runs the Windows tests under `appverif.exe`.
+
+### Changed
+
+- `SuspendedChild::id` is `const`, like `Child::id`, and returns the identifier recorded at creation, so it cannot panic.
+
+### Fixed
+
+- `Command::to_command_line` accepts a `PATH` set from a handle when a later operation replaces or removes it, as a spawn does.
+- An attribute-list size beyond one allocation returns an error instead of panicking.
+
 ## [0.1.0] - 2026-08-03
 
 Initial release.

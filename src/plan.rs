@@ -7,8 +7,10 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
 use crate::command::{Arg, Command, EnvOp, EnvValue};
+use crate::domain::plan_rules::{self, Request};
+pub(crate) use crate::domain::plan_rules::{IoMode, Source, StandardIo, Streams};
 use crate::handles::Stdio;
-use crate::options::{CreationFlags, SpawnOptions};
+use crate::options::SpawnOptions;
 
 #[derive(Debug)]
 pub(crate) struct Running;
@@ -28,38 +30,11 @@ impl SpawnState for Suspended {
     const SUSPENDED: bool = true;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum IoMode {
-    Spawn,
-    Output,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum StdioSpec<'a> {
-    Configured(&'a Stdio),
-    Inherit,
-    Null,
-    Piped,
-}
-
-#[derive(Debug)]
-pub(crate) struct StandardHandles<T> {
-    pub(crate) stdin: T,
-    pub(crate) stdout: T,
-    pub(crate) stderr: T,
-}
-
-#[derive(Debug)]
-pub(crate) enum StandardIo<'a> {
-    Ordinary(StandardHandles<StdioSpec<'a>>),
-    PseudoConsole,
-}
-
 #[derive(Debug)]
 pub(crate) struct SpawnPlan<'command, 'options, M> {
     pub(crate) command: &'command Command,
     pub(crate) options: SpawnOptions<'options>,
-    pub(crate) stdio: StandardIo<'command>,
+    pub(crate) stdio: StandardIo<&'command Stdio>,
     state: PhantomData<M>,
 }
 
@@ -90,51 +65,18 @@ impl<'command, 'options, M> SpawnPlan<'command, 'options, M> {
         io_mode: IoMode,
     ) -> io::Result<Self> {
         validate_command(command)?;
-        validate_creation_flags(
-            options.creation_flags,
-            options.pseudoconsole_raw().is_some(),
-        )?;
-
-        let explicit_stdio =
-            command.stdin.is_some() || command.stdout.is_some() || command.stderr.is_some();
-        if options.pseudoconsole_raw().is_some() {
-            if explicit_stdio {
-                return Err(invalid(
-                    "a pseudoconsole conflicts with explicit standard I/O",
-                ));
-            }
-            if io_mode == IoMode::Output {
-                return Err(invalid(
-                    "output capture conflicts with pseudoconsole standard I/O",
-                ));
-            }
-        }
-        if options.parent.is_some()
-            && options.pseudoconsole_raw().is_none()
-            && (command.stdin.is_none() || command.stdout.is_none() || command.stderr.is_none())
-        {
-            return Err(invalid(
-                "an alternate parent requires all three standard streams to be explicit",
-            ));
-        }
-        let stdio = if options.pseudoconsole_raw().is_some() {
-            StandardIo::PseudoConsole
-        } else {
-            let handles = match io_mode {
-                IoMode::Spawn => StandardHandles {
-                    stdin: configured_or(command.stdin.as_ref(), StdioSpec::Inherit),
-                    stdout: configured_or(command.stdout.as_ref(), StdioSpec::Inherit),
-                    stderr: configured_or(command.stderr.as_ref(), StdioSpec::Inherit),
-                },
-                IoMode::Output => StandardHandles {
-                    stdin: configured_or(command.stdin.as_ref(), StdioSpec::Null),
-                    stdout: configured_or(command.stdout.as_ref(), StdioSpec::Piped),
-                    stderr: configured_or(command.stderr.as_ref(), StdioSpec::Piped),
-                },
-            };
-            StandardIo::Ordinary(handles)
-        };
-
+        let stdio = plan_rules::plan(Request {
+            configured: Streams {
+                stdin: command.stdin.as_ref(),
+                stdout: command.stdout.as_ref(),
+                stderr: command.stderr.as_ref(),
+            },
+            flags: options.creation_flags.bits(),
+            pseudoconsole: options.pseudoconsole_raw().is_some(),
+            parent: options.parent.is_some(),
+            mode: io_mode,
+        })
+        .map_err(|conflict| invalid(conflict.message()))?;
         Ok(Self {
             command,
             options,
@@ -142,10 +84,6 @@ impl<'command, 'options, M> SpawnPlan<'command, 'options, M> {
             state: PhantomData,
         })
     }
-}
-
-fn configured_or<'a>(value: Option<&'a Stdio>, default: StdioSpec<'a>) -> StdioSpec<'a> {
-    value.map_or(default, StdioSpec::Configured)
 }
 
 pub(crate) fn validate_command(command: &Command) -> io::Result<()> {
@@ -216,49 +154,19 @@ fn no_nul(value: &OsStr, message: &'static str) -> io::Result<()> {
     }
 }
 
-fn validate_creation_flags(flags: CreationFlags, pseudoconsole: bool) -> io::Result<()> {
-    let detached = flags.contains(CreationFlags::DETACHED_PROCESS);
-    let new_console = flags.contains(CreationFlags::NEW_CONSOLE);
-    let no_window = flags.contains(CreationFlags::NO_WINDOW);
-    if detached && new_console {
-        return Err(invalid(
-            "DETACHED_PROCESS and NEW_CONSOLE are mutually exclusive",
-        ));
-    }
-    if no_window && (detached || new_console) {
-        return Err(invalid(
-            "NO_WINDOW cannot be combined with DETACHED_PROCESS or NEW_CONSOLE",
-        ));
-    }
-    if pseudoconsole && (detached || new_console || no_window) {
-        return Err(invalid(
-            "console creation flags conflict with a pseudoconsole",
-        ));
-    }
-    Ok(())
-}
-
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 mod tests {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
 
     use super::*;
-    use crate::handles::{AsPseudoConsole, ParentProcess};
-
-    struct InvalidPseudoConsole;
-
-    // SAFETY: each request is rejected during planning, before the sentinel reaches the system layer.
-    unsafe impl AsPseudoConsole for InvalidPseudoConsole {
-        fn raw_pseudoconsole(&self) -> isize {
-            1
-        }
-    }
+    use crate::handles::ParentProcess;
+    use crate::options::CreationFlags;
+    use crate::sys::test_support::TestConsole;
 
     #[test]
     fn rejects_batch_and_empty_programs() {
@@ -342,7 +250,7 @@ mod tests {
 
     #[test]
     fn pseudoconsole_and_parent_conflicts_are_rejected() {
-        let pseudoconsole = InvalidPseudoConsole;
+        let pseudoconsole = TestConsole::create();
         let mut explicit = Command::new("cmd.exe");
         explicit.stdin(Stdio::null());
         assert!(SpawnPlan::new_running(
@@ -403,11 +311,11 @@ mod tests {
         let StandardIo::Ordinary(output_stdio) = output.stdio else {
             panic!("output capture must use ordinary standard I/O");
         };
-        assert!(matches!(output_stdio.stdin, StdioSpec::Null));
-        assert!(matches!(output_stdio.stdout, StdioSpec::Piped));
-        assert!(matches!(output_stdio.stderr, StdioSpec::Piped));
+        assert!(matches!(output_stdio.stdin, Source::Null));
+        assert!(matches!(output_stdio.stdout, Source::Piped));
+        assert!(matches!(output_stdio.stderr, Source::Piped));
 
-        let pseudoconsole = InvalidPseudoConsole;
+        let pseudoconsole = TestConsole::create();
         let pcon = SpawnPlan::new_suspended(
             &command,
             SpawnOptions::new().pseudoconsole(&pseudoconsole),

@@ -1,8 +1,15 @@
 //! End-to-end UTF-16 argument and environment round-trip test.
+//!
+//! Seeded random environments then pass through the crate's block builder into children,
+//! which must hold exactly the variables the commands set, merged and ordered as Windows compares names.
 #![allow(clippy::as_conversions, clippy::expect_used, clippy::unwrap_in_result)]
 
 #[cfg(windows)]
+mod random;
+
+#[cfg(windows)]
 mod windows {
+    use std::cmp::Ordering;
     use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::io;
@@ -11,12 +18,20 @@ mod windows {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
     use std::ptr;
 
-    use windows_spawn::Command;
+    use windows_spawn::{Command, Stdio};
     use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::Globalization::{
+        CompareStringOrdinal, CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN,
+    };
+    use windows_sys::Win32::System::Environment::{
+        FreeEnvironmentStringsW, GetEnvironmentStringsW,
+    };
     use windows_sys::Win32::System::Threading::{
         CreateProcessW, GetExitCodeProcess, WaitForSingleObject, INFINITE, PROCESS_INFORMATION,
         STARTUPINFOW,
     };
+
+    use crate::random::Generator;
 
     const OUTPUT: &str = "WINDOWS_SPAWN_ROUNDTRIP_OUTPUT";
     const VALUE: &str = "WINDOWS_SPAWN_ROUNDTRIP_VALUE";
@@ -207,13 +222,199 @@ mod windows {
         Ok(())
     }
 
+    /// The seed, the number, and the size of the random environments.
+    const ENVIRONMENT_SEED: u64 = 0x0e17_5eed_b10c_0001;
+    const RANDOM_ENVIRONMENTS: usize = 150;
+    const MOST_VARIABLES: u64 = 4;
+    const LONGEST_NAME: u64 = 8;
+    const LONGEST_VALUE: u64 = 10;
+
+    /// The unit between a name and its value, which no name the crate accepts holds.
+    const SEPARATOR: u16 = 0x3d;
+    /// The unit a generated name gets in place of the separator.
+    const UNDERSCORE: u16 = 0x5f;
+
+    /// The variables a tool sets inside every process it watches, which no generated name can match:
+    /// Application Verifier's, so `cargo xtask verifier` can run this test, and the LLVM profile runtime's, so coverage can.
+    const TOOL_VARIABLES: [&str; 2] = ["OANOCACHE", "__LLVM_PROFILE_RT_INIT_ONCE"];
+
+    /// Units whose case Windows folds and units that look alike:
+    /// `A`, `a`, `Z`, `z`, `_`, `0`, `É`, `é`, `ß`, `İ`, `ı`, `Ǆ`, `ǅ`, `ǆ`, `Σ`, `σ`, `ς`, Cyrillic capital and small zhe (U+0416 and U+0436), fullwidth `Ａ` and `ａ`,
+    /// a lone high and a lone low surrogate, space, double quote, and backslash.
+    const NAME_UNITS: [u16; 26] = [
+        0x41, 0x61, 0x5a, 0x7a, 0x5f, 0x30, 0x00c9, 0x00e9, 0x00df, 0x0130, 0x0131, 0x01c4, 0x01c5,
+        0x01c6, 0x03a3, 0x03c3, 0x03c2, 0x0416, 0x0436, 0xff21, 0xff41, 0xd800, 0xdc00, 0x20, 0x22,
+        0x5c,
+    ];
+    /// The separator, space, double quote, backslash, line feed, `é`, a lone high and a lone low surrogate, and the byte-order mark.
+    const VALUE_UNITS: [u16; 9] = [
+        SEPARATOR, 0x20, 0x22, 0x5c, 0x0a, 0x00e9, 0xd800, 0xdc00, 0xfeff,
+    ];
+
+    fn hex(units: &[u16]) -> String {
+        units
+            .iter()
+            .map(|unit| format!("{unit:x}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Orders two names as the crate's environment map does, with the comparison Windows uses for names.
+    fn by_name(left: &[u16], right: &[u16]) -> Ordering {
+        let left_length = i32::try_from(left.len()).expect("names fit in an i32");
+        let right_length = i32::try_from(right.len()).expect("names fit in an i32");
+        // SAFETY: both pointers are readable for their lengths.
+        match unsafe {
+            CompareStringOrdinal(left.as_ptr(), left_length, right.as_ptr(), right_length, 1)
+        } {
+            CSTR_LESS_THAN => Ordering::Less,
+            CSTR_EQUAL => Ordering::Equal,
+            CSTR_GREATER_THAN => Ordering::Greater,
+            _ => left.cmp(right),
+        }
+    }
+
+    /// Prints every entry of this process's environment block, and every variable `std` reads from it.
+    fn environment_child() -> io::Result<()> {
+        // SAFETY: GetEnvironmentStringsW returns a double-NUL block that stays valid until FreeEnvironmentStringsW.
+        let block = unsafe { GetEnvironmentStringsW() };
+        if block.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let mut entries = Vec::new();
+        let mut offset = 0_usize;
+        loop {
+            let mut length = 0_usize;
+            // SAFETY: every entry ends with a NUL inside the block, and the scan stops there.
+            while unsafe { *block.add(offset.saturating_add(length)) } != 0 {
+                length = length.saturating_add(1);
+            }
+            if length == 0 {
+                break;
+            }
+            // SAFETY: the scan just measured `length` readable units.
+            entries.push(unsafe { std::slice::from_raw_parts(block.add(offset), length) }.to_vec());
+            offset = offset.saturating_add(length).saturating_add(1);
+        }
+        // SAFETY: the block came from GetEnvironmentStringsW, and nothing reads it after this.
+        unsafe { FreeEnvironmentStringsW(block) };
+        for entry in entries {
+            println!("raw\t{}", hex(&entry));
+        }
+        for (name, value) in std::env::vars_os() {
+            let name: Vec<u16> = name.encode_wide().collect();
+            let value: Vec<u16> = value.encode_wide().collect();
+            println!("std\t{}\t{}", hex(&name), hex(&value));
+        }
+        Ok(())
+    }
+
+    /// Passes random variables through the crate's block builder, and requires the child to hold exactly them.
+    fn random_environments() -> io::Result<()> {
+        let mut generator = Generator::new(ENVIRONMENT_SEED);
+        let profile = std::env::var_os("LLVM_PROFILE_FILE");
+        let mut mismatches = Vec::new();
+        for _ in 0..RANDOM_ENVIRONMENTS {
+            let mut variables: Vec<(Vec<u16>, Vec<u16>)> = Vec::new();
+            if let Some(profile) = &profile {
+                variables.push((
+                    OsStr::new("LLVM_PROFILE_FILE").encode_wide().collect(),
+                    profile.encode_wide().collect(),
+                ));
+            }
+            let count = generator.below(MOST_VARIABLES).saturating_add(1);
+            for _ in 0..count {
+                let mut name = generator.text(LONGEST_NAME.saturating_sub(1), &NAME_UNITS);
+                name.push(generator.unit(&NAME_UNITS));
+                for unit in &mut name {
+                    if *unit == SEPARATOR {
+                        *unit = UNDERSCORE;
+                    }
+                }
+                variables.push((name, generator.text(LONGEST_VALUE, &VALUE_UNITS)));
+            }
+
+            let mut command = Command::new(std::env::current_exe()?);
+            command
+                .arg("--environment-child")
+                .env_clear()
+                .stdin(Stdio::null());
+            for (name, value) in &variables {
+                command.env(OsString::from_wide(name), OsString::from_wide(value));
+            }
+            let output = command.output()?;
+            if !output.status.success() {
+                return Err(io::Error::other(format!(
+                    "the environment child failed with {}",
+                    output.status
+                )));
+            }
+
+            let mut expected: Vec<(Vec<u16>, Vec<u16>)> = Vec::new();
+            for (name, value) in variables {
+                match expected
+                    .iter_mut()
+                    .find(|(held, _)| by_name(held, &name) == Ordering::Equal)
+                {
+                    Some((_, held)) => *held = value,
+                    None => expected.push((name, value)),
+                }
+            }
+            expected.sort_by(|left, right| by_name(&left.0, &right.0));
+            let raw: Vec<String> = expected
+                .iter()
+                .map(|(name, value)| {
+                    let mut entry = name.clone();
+                    entry.push(SEPARATOR);
+                    entry.extend(value);
+                    format!("raw\t{}", hex(&entry))
+                })
+                .collect();
+            let read_by_std: Vec<String> = expected
+                .iter()
+                .map(|(name, value)| format!("std\t{}\t{}", hex(name), hex(value)))
+                .collect();
+            let report = String::from_utf8_lossy(&output.stdout);
+            let prefixes: Vec<String> = TOOL_VARIABLES
+                .iter()
+                .flat_map(|name| {
+                    let name = hex(&OsStr::new(name).encode_wide().collect::<Vec<_>>());
+                    [format!("raw\t{name} 3d "), format!("std\t{name}\t")]
+                })
+                .collect();
+            let lines: Vec<&str> = report
+                .lines()
+                .filter(|line| !prefixes.iter().any(|prefix| line.starts_with(prefix)))
+                .collect();
+            let expected_lines: Vec<&str> =
+                raw.iter().chain(&read_by_std).map(String::as_str).collect();
+            if lines != expected_lines {
+                mismatches.push(format!(
+                    "expected {expected_lines:?}, the child holds {lines:?}"
+                ));
+            }
+        }
+        if !mismatches.is_empty() {
+            let shown: Vec<&str> = mismatches.iter().take(10).map(String::as_str).collect();
+            return Err(io::Error::other(format!(
+                "{} random environments arrived differently, the first ones:\n{}",
+                mismatches.len(),
+                shown.join("\n")
+            )));
+        }
+        println!("{RANDOM_ENVIRONMENTS} random environments through the block builder: every child holds exactly its variables");
+        Ok(())
+    }
+
     pub(super) fn main() -> io::Result<()> {
         match std::env::args_os().nth(1) {
             Some(mode) if mode == "--child" => child(),
             Some(mode) if mode == "--broker-child" => broker_child(),
+            Some(mode) if mode == "--environment-child" => environment_child(),
             Some(_) | None => {
                 parent()?;
-                broker_parent()
+                broker_parent()?;
+                random_environments()
             }
         }
     }

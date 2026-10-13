@@ -32,6 +32,20 @@ gitleaks dir . --redact --no-banner
 
 `just release-candidate` checks packaging and reproducibility without publishing.
 
+A change to a verified decision updates its proof, model, or vectors in the same change, as [proofs/README.md](proofs/README.md) and ADR 0014 describe.
+With Kani, `elan`, Java, Node.js, and `swipl` installed, run the layers on any platform:
+
+```sh
+just proofs
+just proofs kani lean
+```
+
+`just proof-traces` regenerates the Quint traces after the lifecycle model changes.
+
+On Windows, `just verifier` runs every test under `appverif.exe`, which stops a process on handle misuse, heap corruption, lock misuse, or a leak.
+It needs an administrator and the `appverif.exe` of the Windows SDK.
+Three tests misuse a handle on purpose, and each must stop, which shows the verifier watches the run.
+
 ## Expectations
 
 - Keep the documented ownership and cleanup behavior, including on errors.

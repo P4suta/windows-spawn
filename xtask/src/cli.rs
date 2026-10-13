@@ -17,9 +17,39 @@ pub(crate) enum SimpleTask {
     Ci,
 }
 
+/// One verifier of `cargo xtask proofs`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProofLayer {
+    Kani,
+    Lean,
+    Tla,
+    Quint,
+    Alloy,
+    Prolog,
+    Verus,
+}
+
+impl ProofLayer {
+    /// Every layer, in the order `cargo xtask proofs` runs them.
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Kani,
+        Self::Lean,
+        Self::Verus,
+        Self::Tla,
+        Self::Quint,
+        Self::Alloy,
+        Self::Prolog,
+    ];
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum Task {
     Simple(SimpleTask),
+    Proofs {
+        layers: Vec<ProofLayer>,
+    },
+    ProofTraces,
+    Verifier,
     PublicApi {
         update: bool,
     },
@@ -68,6 +98,9 @@ pub(crate) fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Task,
         "coverage" => no_arguments(&rest, Task::Simple(SimpleTask::Coverage)),
         "ci" => no_arguments(&rest, Task::Simple(SimpleTask::Ci)),
         "public-api" => parse_public_api(&rest),
+        "proofs" => parse_proofs(&rest),
+        "proof-traces" => no_arguments(&rest, Task::ProofTraces),
+        "verifier" => no_arguments(&rest, Task::Verifier),
         "package-check" => parse_single_flag(&rest, "--allow-dirty")
             .map(|allow_dirty| Task::PackageCheck { allow_dirty }),
         "sbom" => parse_output(&rest).map(|output| Task::Sbom { output }),
@@ -94,6 +127,32 @@ fn parse_public_api(rest: &[String]) -> Result<Task, String> {
         [flag] if flag == "--update" => Ok(Task::PublicApi { update: true }),
         [argument, ..] => Err(format!("unexpected public-api argument: {argument}")),
     }
+}
+
+fn parse_proofs(rest: &[String]) -> Result<Task, String> {
+    if rest.is_empty() {
+        return Ok(Task::Proofs {
+            layers: ProofLayer::ALL.to_vec(),
+        });
+    }
+    let mut layers = Vec::new();
+    for argument in rest {
+        let layer = match argument.as_str() {
+            "kani" => ProofLayer::Kani,
+            "lean" => ProofLayer::Lean,
+            "tla" => ProofLayer::Tla,
+            "quint" => ProofLayer::Quint,
+            "alloy" => ProofLayer::Alloy,
+            "prolog" => ProofLayer::Prolog,
+            "verus" => ProofLayer::Verus,
+            _ => return Err(format!("unknown proof layer: {argument}")),
+        };
+        if layers.contains(&layer) {
+            return Err(format!("proof layer named twice: {argument}"));
+        }
+        layers.push(layer);
+    }
+    Ok(Task::Proofs { layers })
 }
 
 fn parse_single_flag(rest: &[String], expected: &str) -> Result<bool, String> {
@@ -198,6 +257,24 @@ mod tests {
                 forwarded: Vec::new()
             }
         );
+    }
+
+    #[test]
+    fn parses_proof_layers() {
+        assert_eq!(
+            parse(strings(&["proofs"])).unwrap(),
+            Task::Proofs {
+                layers: ProofLayer::ALL.to_vec()
+            }
+        );
+        assert_eq!(
+            parse(strings(&["proofs", "kani"])).unwrap(),
+            Task::Proofs {
+                layers: vec![ProofLayer::Kani]
+            }
+        );
+        assert!(parse(strings(&["proofs", "kani", "kani"])).is_err());
+        assert!(parse(strings(&["proofs", "coq"])).is_err());
     }
 
     #[test]
