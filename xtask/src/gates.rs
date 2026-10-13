@@ -160,7 +160,7 @@ impl fmt::Display for Finding {
 /// Checks every Rust file under the repository's source directories.
 pub(crate) fn check(root: &Path) -> io::Result<Vec<Finding>> {
     let mut files = Vec::new();
-    for directory in ["src", "tests", "examples", "xtask/src"] {
+    for directory in ["src", "tests", "examples", "fuzz/fuzz_targets", "xtask/src"] {
         collect_rust_files(&root.join(directory), &mut files)?;
     }
     files.sort();

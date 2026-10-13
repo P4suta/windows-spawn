@@ -71,10 +71,13 @@ fn put_backslashes(line: &mut impl UnitSink, count: usize) {
     }
 }
 
-/// Executable models of the Windows command-line parsers, for proofs and tests.
-#[cfg(any(test, kani))]
+/// Executable models of the Windows command-line parsers, for proofs, tests, and the fuzzer.
+#[cfg(any(test, kani, fuzzing))]
 pub(crate) mod parsers {
     use super::{BACKSLASH, NUL, QUOTE, SPACE, TAB};
+
+    /// The backslashes before a double quote that stand for one backslash.
+    const BACKSLASH_PAIR: usize = 2;
 
     /// How a parser reads two double quotes inside a quoted region.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,8 +197,8 @@ pub(crate) mod parsers {
                 continue;
             }
             if unit == QUOTE {
-                let escaped = backslashes % 2 == 1;
-                let dropped = backslashes.saturating_sub(backslashes / 2);
+                let escaped = backslashes % BACKSLASH_PAIR == 1;
+                let dropped = backslashes.saturating_sub(backslashes / BACKSLASH_PAIR);
                 arguments.length = arguments.length.saturating_sub(dropped);
                 backslashes = 0;
                 if escaped {

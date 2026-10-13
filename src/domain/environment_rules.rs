@@ -51,7 +51,7 @@ pub(crate) fn finish(block: &mut impl UnitSink) {
 }
 
 /// Returns how many units of `block` precede the NUL that ends it, reading no unit past that NUL.
-#[cfg(any(test, kani))]
+#[cfg(any(test, kani, fuzzing))]
 pub(crate) fn scan(block: &[u16]) -> Option<usize> {
     let mut previous = None;
     for (index, unit) in block.iter().enumerate() {

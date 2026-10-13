@@ -18,6 +18,7 @@ path = [
   "deny.toml",
   "docs/**",
   "examples/**",
+  "fuzz/**",
   "justfile",
   "proofs/**",
   "public-api/**",
@@ -30,7 +31,7 @@ SPDX-FileCopyrightText = "2026 Yasunobu Sakashita"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
 [[annotations]]
-path = ["Cargo.lock", "proofs/quint/package-lock.json"]
+path = ["Cargo.lock", "fuzz/Cargo.lock", "proofs/quint/package-lock.json"]
 precedence = "override"
 SPDX-FileCopyrightText = "NONE"
 SPDX-License-Identifier = "CC0-1.0"
