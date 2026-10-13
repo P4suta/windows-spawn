@@ -33,6 +33,24 @@ multiple-versions-include-dev = true
 skip = []
 skip-tree = []
 wildcards = "deny"
+# ADR 0016: no erased errors, erased dispatch, runtime registration, or implicit global state.
+deny = [
+  { crate = "anyhow", reason = "erases error types" },
+  { crate = "arc-swap", reason = "shares mutable global state" },
+  { crate = "async-trait", reason = "erases futures behind trait objects" },
+  { crate = "color-eyre", reason = "erases error types" },
+  { crate = "dashmap", reason = "shares mutable state and orders by hash" },
+  { crate = "downcast-rs", reason = "dispatches on runtime types" },
+  { crate = "erased-serde", reason = "erases serialization behind trait objects" },
+  { crate = "eyre", reason = "erases error types" },
+  { crate = "inventory", reason = "registers items at run time" },
+  { crate = "lazy_static", reason = "initializes global state implicitly" },
+  { crate = "linkme", reason = "registers items at link time" },
+  { crate = "once_cell", reason = "initializes global state implicitly" },
+  { crate = "parking_lot", reason = "shares mutable state behind locks" },
+  { crate = "serde_traitobject", reason = "serializes trait objects" },
+  { crate = "typetag", reason = "registers trait-object types at run time" },
+]
 
 [sources]
 allow-git = []

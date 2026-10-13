@@ -110,6 +110,54 @@ const DELAY_COMMANDS: [&str; 3] = [
     concat!("timeout", " /t"),
 ];
 
+/// Library files that only tests compile; the library rules skip them as they skip test-only items.
+const TEST_ONLY_FILES: [&str; 1] = ["src/failure_tests.rs"];
+
+/// Why library code holds no shared or interior-mutable state; atomics, whose names start with `Atomic`, share it.
+const SHARED_STATE: &str =
+    "shares or mutates state outside the borrow checker; pass owned values and borrows";
+
+/// Names library code doesn't use, each set with its reason (ADR 0016).
+const LIBRARY_BANS: [(&[&str], &str); 4] = [
+    (
+        &[
+            "Rc",
+            "Arc",
+            "Weak",
+            "Cell",
+            "RefCell",
+            "OnceCell",
+            "LazyCell",
+            "UnsafeCell",
+            "Mutex",
+            "RwLock",
+            "Condvar",
+            "Barrier",
+            "atomic",
+        ],
+        SHARED_STATE,
+    ),
+    (
+        &[
+            "static",
+            "Once",
+            "OnceLock",
+            "LazyLock",
+            "lazy_static",
+            "thread_local",
+        ],
+        "keeps global state; pass the value to what needs it",
+    ),
+    (
+        &["Any", "TypeId", "type_name", "type_name_of_val"],
+        "inspects a type at run time; dispatch on an enum or a trait bound",
+    ),
+    (
+        &["HashMap", "HashSet", "RandomState"],
+        "iterates in a random order; use BTreeMap or BTreeSet",
+    ),
+];
+
 /// A rule violation.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Finding {
@@ -209,6 +257,8 @@ fn check_exceptions(allows: &[Allow], exceptions: &[Exception]) -> Vec<Finding> 
 
 /// The offset of the token after the next one: `dyn` after `Box <`, the arguments after `name (`, and the bracket after `# !`.
 const AFTER_NEXT: usize = 2;
+/// Two adjacent tokens, such as `fn source` read backwards.
+const PAIR: usize = 2;
 /// The length of each comment delimiter: `//`, `/*`, and `*/`.
 const DELIMITER: usize = 2;
 /// The length of an escape: a backslash and the character it escapes.
@@ -256,6 +306,8 @@ fn scan(file: &str, source: &str) -> Scan {
         .iter()
         .filter(|(_, token)| !matches!(token, Token::Comment { .. }))
         .collect();
+    let guarded = test_only(&code);
+    let library = file.starts_with("src/") && !TEST_ONLY_FILES.contains(&file);
     let mut allows = Vec::new();
     for (index, (line, token)) in code.iter().enumerate() {
         let next = |offset: usize| {
@@ -264,6 +316,11 @@ fn scan(file: &str, source: &str) -> Scan {
         };
         match token {
             Token::Ident(name) => {
+                if !guarded.get(index).copied().unwrap_or_default() {
+                    if let Some(rule) = explicit_state_rule(&code, index, library) {
+                        finding(*line, rule);
+                    }
+                }
                 if is_time_name(name) {
                     finding(
                         *line,
@@ -334,6 +391,144 @@ fn scan(file: &str, source: &str) -> Scan {
         }
     }
     Scan { findings, allows }
+}
+
+/// Returns the ADR 0016 rule that the identifier at `index` breaks.
+///
+/// A trait object is refused in any file, and the library bans only in library code.
+fn explicit_state_rule(code: &[&(usize, Token)], index: usize, library: bool) -> Option<String> {
+    let before = |offset: usize| {
+        index
+            .checked_sub(offset)
+            .and_then(|at| code.get(at))
+            .map(|(_, token)| token)
+    };
+    let Some(Token::Ident(name)) = before(0) else {
+        return None;
+    };
+    if name == "dyn" {
+        let boxed = before(AFTER_NEXT) == Some(&Token::Ident("Box".to_owned()))
+            && before(1) == Some(&Token::Punct('<'));
+        return (!boxed && !in_error_source(code, index)).then(|| {
+            "a trait object hides which type runs; own a closed set with an enum or an open one with a generic (ADR 0016)"
+                .to_owned()
+        });
+    }
+    let lifetime = before(1) == Some(&Token::Punct('\''));
+    if !library || lifetime {
+        return None;
+    }
+    library_ban(name).map(|reason| format!("`{name}` {reason} (ADR 0016)"))
+}
+
+/// Returns why library code doesn't use `name`, if it doesn't.
+fn library_ban(name: &str) -> Option<&'static str> {
+    if name.starts_with("Atomic") {
+        return Some(SHARED_STATE);
+    }
+    LIBRARY_BANS
+        .iter()
+        .find(|(names, _)| names.contains(&name))
+        .map(|(_, reason)| *reason)
+}
+
+/// Returns true if the `dyn` at `index` names the `Error` trait in the signature of a `source` method, the `Error::source` contract.
+fn in_error_source(code: &[&(usize, Token)], index: usize) -> bool {
+    let names_error = code
+        .iter()
+        .skip(index.saturating_add(1))
+        .map(|(_, token)| token)
+        .take_while(|token| matches!(token, Token::Ident(_) | Token::Punct(':')))
+        .filter_map(|token| match token {
+            Token::Ident(name) => Some(name.as_str()),
+            Token::Literal(_) | Token::Str(_) | Token::Punct(_) | Token::Comment { .. } => None,
+        })
+        .last()
+        == Some("Error");
+    let signature: Vec<&Token> = code
+        .iter()
+        .take(index)
+        .rev()
+        .map(|(_, token)| token)
+        .take_while(|token| !matches!(token, Token::Punct('{' | '}' | ';')))
+        .collect();
+    names_error
+        && signature.windows(PAIR).any(|pair| {
+            matches!(pair, [Token::Ident(name), Token::Ident(keyword)] if name == "source" && keyword == "fn")
+        })
+}
+
+/// Marks each token of an item, statement, or field that a test-only `cfg` attribute guards.
+fn test_only(code: &[&(usize, Token)]) -> Vec<bool> {
+    let mut guarded = vec![false; code.len()];
+    let mut index = 0_usize;
+    while index < code.len() {
+        let open = index.saturating_add(1);
+        let attribute = matches!(code.get(index), Some((_, Token::Punct('#'))))
+            && matches!(code.get(open), Some((_, Token::Punct('['))));
+        if attribute && is_test_only_cfg(&bracketed(code, open)) {
+            let end = item_end(code, open);
+            for flag in guarded.iter_mut().take(end).skip(index) {
+                *flag = true;
+            }
+            index = end;
+        } else {
+            index = open;
+        }
+    }
+    guarded
+}
+
+/// Returns true if an attribute's tokens are `cfg(test)`, `cfg(kani)`, or `cfg(any(…))` over those two.
+fn is_test_only_cfg(content: &[Token]) -> bool {
+    let [Token::Ident(cfg), Token::Punct('('), predicate @ .., Token::Punct(')')] = content else {
+        return false;
+    };
+    let members = match predicate {
+        [Token::Ident(any), Token::Punct('('), members @ .., Token::Punct(')')] if any == "any" => {
+            members
+        }
+        single => single,
+    };
+    cfg == "cfg"
+        && members.split(|token| *token == Token::Punct(',')).all(
+            |member| matches!(member, [Token::Ident(name)] if name == "test" || name == "kani"),
+        )
+}
+
+/// Returns the index after what the attribute whose `[` is at `open` guards.
+///
+/// That ends with a `;` or `,` outside brackets, with the `}` that closes its body, or before the bracket that closes the enclosing block.
+fn item_end(code: &[&(usize, Token)], open: usize) -> usize {
+    let mut depth = 0_usize;
+    let mut in_attribute = true;
+    for (index, (_, token)) in code.iter().enumerate().skip(open) {
+        match token {
+            Token::Punct('(' | '[' | '{') => depth = depth.saturating_add(1),
+            Token::Punct(close @ (')' | ']' | '}')) => {
+                if depth == 0 {
+                    return index;
+                }
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    if in_attribute {
+                        in_attribute = false;
+                    } else if *close == '}' {
+                        return index.saturating_add(1);
+                    }
+                }
+            }
+            Token::Punct(';' | ',') if depth == 0 && !in_attribute => {
+                return index.saturating_add(1);
+            }
+            Token::Ident(_)
+            | Token::Literal(_)
+            | Token::Str(_)
+            | Token::Punct(_)
+            | Token::Comment { .. } => {}
+        }
+    }
+    code.len()
 }
 
 fn is_time_name(name: &str) -> bool {
@@ -789,6 +984,106 @@ mod tests {
         assert_eq!(rules(concat!("enum E { #[defa", "ult] A, B }")).len(), 1);
         assert_eq!(rules(concat!("struct S { f: Box<d", "yn Fn()> }")).len(), 1);
         assert_clean("struct S { f: Box<u8> }");
+    }
+
+    fn rules_in(file: &str, source: &str) -> Vec<String> {
+        scan(file, source)
+            .findings
+            .into_iter()
+            .map(|finding| finding.rule)
+            .collect()
+    }
+
+    #[test]
+    fn trait_objects_are_refused_outside_the_error_source_contract() {
+        for source in [
+            "fn f(x: &dyn Fn()) {}",
+            "fn cause(&self) -> Option<&dyn Error> { None }",
+            "fn source(&self) -> Option<&(dyn Display + 'static)> { None }",
+            "fn source(&self) {} fn g(x: &dyn Error) {}",
+            "m!(dyn T);",
+            "struct S { f: Box<dyn Fn()> }",
+        ] {
+            assert_eq!(rules_in("tests/example.rs", source).len(), 1, "{source}");
+        }
+        for source in [
+            "impl Error for E { fn source(&self) -> Option<&(dyn Error + 'static)> { None } }",
+            "fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { None }",
+            "#[cfg(test)] fn f(x: &dyn Fn()) {}",
+        ] {
+            assert_eq!(rules_in("tests/example.rs", source), Vec::<String>::new());
+        }
+    }
+
+    #[test]
+    fn library_code_keeps_no_shared_global_reflected_or_hashed_state() {
+        for source in [
+            "use std::rc::Rc;",
+            "fn f() { let x = Arc::new(1); }",
+            "struct S { c: RefCell<u8> }",
+            "fn f() { let x = AtomicBool::new(false); }",
+            "fn f() { let m = Mutex::new(0); }",
+            "static X: u8 = 0;",
+            "thread_local! {}",
+            "fn f() { let l = OnceLock::new(); }",
+            "fn f() -> TypeId { g() }",
+            "fn f() { let m = HashMap::new(); }",
+            "#[cfg(not(test))] static X: u8 = 0;",
+            "#[cfg(test)] COUNT.fetch_add(1); fn f() { let s = HashSet::new(); }",
+            "#[cfg(test)] static X: u8 = 0; fn f() { let m = Mutex::new(0); }",
+        ] {
+            assert_eq!(rules_in("src/example.rs", source).len(), 1, "{source}");
+            assert_eq!(rules_in("tests/example.rs", source), Vec::<String>::new());
+            assert_eq!(
+                rules_in("src/failure_tests.rs", source),
+                Vec::<String>::new()
+            );
+        }
+        for source in [
+            "fn f(x: &'static str) -> Box<u8> { g() }",
+            "const X: &'static str = \"\";",
+            "#[cfg(test)] mod tests { use std::sync::Arc; }",
+            "#[cfg(kani)] fn f() { let c = Cell::new(1); }",
+            "#[cfg(any(test, kani))] static X: u8 = 0;",
+            "struct S { #[cfg(test)] c: Cell<u8>, v: u8 }",
+            "struct S { v: u8, #[cfg(test)] c: Cell<u8> }",
+            "fn f() { #[cfg(test)] COUNT.fetch_add(1, atomic::Ordering::Relaxed); }",
+        ] {
+            assert_eq!(
+                rules_in("src/example.rs", source),
+                Vec::<String>::new(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_cfg_test_and_kani_guard_test_code() {
+        let content = |source: &str| {
+            lex(source)
+                .into_iter()
+                .map(|(_, token)| token)
+                .collect::<Vec<_>>()
+        };
+        for guard in [
+            "cfg(test)",
+            "cfg(kani)",
+            "cfg(any(test, kani))",
+            "cfg(any(test))",
+        ] {
+            assert!(is_test_only_cfg(&content(guard)), "{guard}");
+        }
+        for guard in [
+            "cfg(not(test))",
+            "cfg(any(test, windows))",
+            "cfg(all(test, kani))",
+            "cfg()",
+            "cfg(any(test,))",
+            "cfg_attr(test, allow(x))",
+            "test",
+        ] {
+            assert!(!is_test_only_cfg(&content(guard)), "{guard}");
+        }
     }
 
     #[test]
