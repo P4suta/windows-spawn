@@ -288,7 +288,8 @@ impl Fixture {
 
     /// Waits for an owned tree whose only process still runs when the wait lists the tree.
     ///
-    /// The child has no console, so no console host joins the tree and the call sequence is fixed.
+    /// The child has no console, so no console host joins the tree.
+    /// The Job can still list the child for a moment after its handle is signaled, so the wait sometimes lists the tree once more.
     fn wait_tree() -> Result<()> {
         let mut command = gated_command();
         command.console(ConsoleMode::NoConsole).own_process_tree();
@@ -297,6 +298,9 @@ impl Fixture {
     }
 
     /// Records `operation`'s calls, then fails each in turn and requires exactly that error back.
+    ///
+    /// A run that ends before the call it would fail took a shorter path, as [`Self::wait_tree`] can, and injected nothing,
+    /// so it requires nothing; a run that made the call and still succeeded ignored the failure.
     fn assert_every_failure_propagates(&self, operation: Operation) -> Vec<Call> {
         let calls = {
             let plan = fault::record();
@@ -306,15 +310,17 @@ impl Fixture {
         };
         assert!(!calls.is_empty(), "{operation:?} made no Win32 call");
         for (index, call) in calls.iter().enumerate() {
-            let result = {
-                let _plan = fault::fail_at(index);
-                self.run(operation)
+            let (result, reached) = {
+                let plan = fault::fail_at(index);
+                let result = self.run(operation);
+                (result, plan.calls().len() > index)
             };
             match result {
                 Err(error) if injected(&error) => {}
                 Err(error) => panic!(
                     "{operation:?}: failing call {index} ({call:?}) returned another error: {error}"
                 ),
+                Ok(()) if !reached => {}
                 Ok(()) => panic!("{operation:?}: failing call {index} ({call:?}) was ignored"),
             }
         }
