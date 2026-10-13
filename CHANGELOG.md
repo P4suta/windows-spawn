@@ -4,6 +4,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follo
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/P4suta/windows-spawn/compare/v0.1.0...v0.2.0) - 2026-10-13
+
+### Added
+
+- [**breaking**] design the 0.2 API and prove the spawn decisions ([#33](https://github.com/P4suta/windows-spawn/pull/33))
+- render the command line for launch brokers ([#17](https://github.com/P4suta/windows-spawn/pull/17))
+
+### Other
+
+- record the reason for the Rust 1.84 MSRV ([#46](https://github.com/P4suta/windows-spawn/pull/46))
+- [**breaking**] require Rust 1.84 and let lint exceptions expire ([#43](https://github.com/P4suta/windows-spawn/pull/43))
+- cut the nightly deep verification to about an hour ([#41](https://github.com/P4suta/windows-spawn/pull/41))
+- *(deps)* lock file maintenance ([#31](https://github.com/P4suta/windows-spawn/pull/31))
+- stress, fuzz, and run the spawn where bounded tests stop ([#39](https://github.com/P4suta/windows-spawn/pull/39))
+- make spawn state and handle types explicit ([#36](https://github.com/P4suta/windows-spawn/pull/36))
+- add the required aggregate job ([#29](https://github.com/P4suta/windows-spawn/pull/29))
+- release only from a signed tag and an approved deployment ([#27](https://github.com/P4suta/windows-spawn/pull/27))
+- *(deps)* move dependency updates from Dependabot to Renovate ([#25](https://github.com/P4suta/windows-spawn/pull/25))
+- enforce the repository laws mechanically ([#24](https://github.com/P4suta/windows-spawn/pull/24))
+- inject Win32 failures to cover every error path ([#23](https://github.com/P4suta/windows-spawn/pull/23))
+- run mutation testing on rust-mutants ([#22](https://github.com/P4suta/windows-spawn/pull/22))
+- drain ConPTY output continuously and ban time in code ([#21](https://github.com/P4suta/windows-spawn/pull/21))
+- prove lifecycle properties by events, not time ([#20](https://github.com/P4suta/windows-spawn/pull/20))
+- make all prose terse and one sentence per line ([#18](https://github.com/P4suta/windows-spawn/pull/18))
+
 The 0.2 API follows `std::process` and places each choice on the type that owns it, as ADR 0015 records; `docs/migration-0.2.md` maps every 0.1 item.
 
 ### Added
