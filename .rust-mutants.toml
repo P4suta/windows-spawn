@@ -60,9 +60,9 @@ outcome = "survived"
 
 [[mutation.expect]]
 path = "src/transaction.rs"
-item = "SpawnTransaction::create"
+item = "attribute_list"
 rule = "condition-to-false"
-original = "attribute_count == 0"
+original = "count == 0"
 reason = "Equivalence: CreateProcessW accepts an empty attribute list."
 outcome = "survived"
 
@@ -94,20 +94,20 @@ outcome = "survived"
 
 [[mutation.skip]]
 path = "src/sys.rs"
-lines = "1210-1210"
+lines = "1246-1246"
 reason = "Unreachable: GetEnvironmentStringsW returns null only when out of memory."
 
 [[mutation.skip]]
 path = "src/sys.rs"
-lines = "1219-1219"
+lines = "1255-1255"
 reason = "Hang-only: continuing past the block terminator loops forever."
 
 [[mutation.skip]]
 path = "src/transaction.rs"
-lines = "572-572"
+lines = "565-565"
 reason = "Unreachable: GetFullPathNameW cannot return a double quote."
 
 [[mutation.skip]]
 path = "src/transaction.rs"
-lines = "127-131"
-reason = "Unreachable: wide_nul fails only on an interior NUL, which validate_command rejects first; rejects_every_malformed_text_component holds it."
+lines = "77-77"
+reason = "Unreachable: current_directory fails only on an interior NUL, which validate_command rejects first; rejects_every_malformed_text_component holds it."

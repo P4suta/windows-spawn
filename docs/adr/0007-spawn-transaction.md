@@ -1,6 +1,6 @@
 # 0007 — Process creation is transactional
 
-Status: accepted (2026-08-02)
+Status: accepted (2026-08-02); ADR 0016 moves the rollback of the created process into its handle
 
 ## Context
 

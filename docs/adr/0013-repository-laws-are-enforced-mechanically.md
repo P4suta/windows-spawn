@@ -1,6 +1,6 @@
 # 0013 — Repository laws are enforced mechanically
 
-Status: accepted (2026-09-25)
+Status: accepted (2026-09-25); ADR 0016 extends the trait-object rule to every `dyn`
 
 ## Context
 

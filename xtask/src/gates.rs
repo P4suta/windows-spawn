@@ -34,25 +34,6 @@ const EXCEPTIONS: &[Exception] = &[
         reason: "dword_const is evaluated in constants, where an oversized value fails the build",
     },
     Exception {
-        file: "src/child.rs",
-        lint: "clippy::expect_used",
-        count: 1,
-        reason: "a SuspendedChild owns its process until resume consumes it",
-    },
-    Exception {
-        file: "src/transaction.rs",
-        lint: "clippy::expect_used",
-        count: 1,
-        reason: "an uncommitted transaction owns its process until commit consumes it",
-    },
-    Exception {
-        file: "src/transaction.rs",
-        lint: "clippy::too_many_lines",
-        count: 1,
-        reason:
-            "one function acquires every creation resource, so rollback has one owner (ADR 0007)",
-    },
-    Exception {
         file: "tests/support/mod.rs",
         lint: "clippy::disallowed_methods",
         count: 1,
@@ -127,6 +108,54 @@ const DELAY_COMMANDS: [&str; 3] = [
     concat!("ping", " -n"),
     concat!("start", "-sleep"),
     concat!("timeout", " /t"),
+];
+
+/// Library files that only tests compile; the library rules skip them as they skip test-only items.
+const TEST_ONLY_FILES: [&str; 1] = ["src/failure_tests.rs"];
+
+/// Why library code holds no shared or interior-mutable state; atomics, whose names start with `Atomic`, share it.
+const SHARED_STATE: &str =
+    "shares or mutates state outside the borrow checker; pass owned values and borrows";
+
+/// Names library code doesn't use, each set with its reason (ADR 0016).
+const LIBRARY_BANS: [(&[&str], &str); 4] = [
+    (
+        &[
+            "Rc",
+            "Arc",
+            "Weak",
+            "Cell",
+            "RefCell",
+            "OnceCell",
+            "LazyCell",
+            "UnsafeCell",
+            "Mutex",
+            "RwLock",
+            "Condvar",
+            "Barrier",
+            "atomic",
+        ],
+        SHARED_STATE,
+    ),
+    (
+        &[
+            "static",
+            "Once",
+            "OnceLock",
+            "LazyLock",
+            "lazy_static",
+            "thread_local",
+        ],
+        "keeps global state; pass the value to what needs it",
+    ),
+    (
+        &["Any", "TypeId", "type_name", "type_name_of_val"],
+        "inspects a type at run time; dispatch on an enum or a trait bound",
+    ),
+    (
+        &["HashMap", "HashSet", "RandomState"],
+        "iterates in a random order; use BTreeMap or BTreeSet",
+    ),
 ];
 
 /// A rule violation.
@@ -228,6 +257,8 @@ fn check_exceptions(allows: &[Allow], exceptions: &[Exception]) -> Vec<Finding> 
 
 /// The offset of the token after the next one: `dyn` after `Box <`, the arguments after `name (`, and the bracket after `# !`.
 const AFTER_NEXT: usize = 2;
+/// Two adjacent tokens, such as `fn source` read backwards.
+const PAIR: usize = 2;
 /// The length of each comment delimiter: `//`, `/*`, and `*/`.
 const DELIMITER: usize = 2;
 /// The length of an escape: a backslash and the character it escapes.
@@ -275,6 +306,8 @@ fn scan(file: &str, source: &str) -> Scan {
         .iter()
         .filter(|(_, token)| !matches!(token, Token::Comment { .. }))
         .collect();
+    let guarded = test_only(&code);
+    let library = file.starts_with("src/") && !TEST_ONLY_FILES.contains(&file);
     let mut allows = Vec::new();
     for (index, (line, token)) in code.iter().enumerate() {
         let next = |offset: usize| {
@@ -283,6 +316,11 @@ fn scan(file: &str, source: &str) -> Scan {
         };
         match token {
             Token::Ident(name) => {
+                if !guarded.get(index).copied().unwrap_or_default() {
+                    if let Some(rule) = explicit_state_rule(&code, index, library) {
+                        finding(*line, rule);
+                    }
+                }
                 if is_time_name(name) {
                     finding(
                         *line,
@@ -353,6 +391,277 @@ fn scan(file: &str, source: &str) -> Scan {
         }
     }
     Scan { findings, allows }
+}
+
+/// Returns the ADR 0016 rule that the identifier at `index` breaks.
+///
+/// A trait object is refused in any file, and the library bans only in library code.
+fn explicit_state_rule(code: &[&(usize, Token)], index: usize, library: bool) -> Option<String> {
+    let before = |offset: usize| {
+        index
+            .checked_sub(offset)
+            .and_then(|at| code.get(at))
+            .map(|(_, token)| token)
+    };
+    let Some(Token::Ident(name)) = before(0) else {
+        return None;
+    };
+    if name == "dyn" {
+        let boxed = before(AFTER_NEXT) == Some(&Token::Ident("Box".to_owned()))
+            && before(1) == Some(&Token::Punct('<'));
+        return (!boxed && !in_error_source(code, index)).then(|| {
+            "a trait object hides which type runs; own a closed set with an enum or an open one with a generic (ADR 0016)"
+                .to_owned()
+        });
+    }
+    let lifetime = before(1) == Some(&Token::Punct('\''));
+    if !library || lifetime {
+        return None;
+    }
+    library_ban(name).map(|reason| format!("`{name}` {reason} (ADR 0016)"))
+}
+
+/// Returns why library code doesn't use `name`, if it doesn't.
+fn library_ban(name: &str) -> Option<&'static str> {
+    if name.starts_with("Atomic") {
+        return Some(SHARED_STATE);
+    }
+    LIBRARY_BANS
+        .iter()
+        .find(|(names, _)| names.contains(&name))
+        .map(|(_, reason)| *reason)
+}
+
+/// Returns true if the `dyn` at `index` names the `Error` trait in the return type of `source` in an `impl … Error for …` block:
+/// the `Error::source` contract.
+fn in_error_source(code: &[&(usize, Token)], index: usize) -> bool {
+    let token_at = |at: usize| code.get(at).map(|(_, found)| found);
+    let names_error = code
+        .iter()
+        .skip(index.saturating_add(1))
+        .map(|(_, token)| token)
+        .take_while(|token| matches!(token, Token::Ident(_) | Token::Punct(':')))
+        .filter_map(|token| match token {
+            Token::Ident(name) => Some(name.as_str()),
+            Token::Literal(_) | Token::Str(_) | Token::Punct(_) | Token::Comment { .. } => None,
+        })
+        .last()
+        == Some("Error");
+    let Some(function) = (0..index)
+        .rev()
+        .take_while(|at| !matches!(token_at(*at), Some(Token::Punct('{' | '}' | ';'))))
+        .find(|at| matches!(token_at(*at), Some(Token::Ident(keyword)) if keyword == "fn"))
+    else {
+        return false;
+    };
+    let name = function.saturating_add(1);
+    names_error
+        && matches!(token_at(name), Some(Token::Ident(source)) if source == "source")
+        && return_arrow(code, name).is_some_and(|arrow| arrow < index)
+        && in_error_impl(code, function)
+}
+
+/// Returns the index of the `>` of the `->` after the parameters of the function whose name is at `name`.
+fn return_arrow(code: &[&(usize, Token)], name: usize) -> Option<usize> {
+    let mut depth = 0_usize;
+    let mut close = None;
+    for (at, (_, token)) in code.iter().enumerate().skip(name) {
+        if *token == Token::Punct('(') {
+            depth = depth.saturating_add(1);
+        } else if *token == Token::Punct(')') {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                close = Some(at);
+                break;
+            }
+        }
+    }
+    let dash = close?.saturating_add(1);
+    let arrow = dash.saturating_add(1);
+    let punct = |at: usize, expected: char| {
+        code.get(at)
+            .is_some_and(|(_, token)| *token == Token::Punct(expected))
+    };
+    (punct(dash, '-') && punct(arrow, '>')).then_some(arrow)
+}
+
+/// Returns true if the item at `item` sits in the block of an `impl … Error for …`.
+fn in_error_impl(code: &[&(usize, Token)], item: usize) -> bool {
+    let mut depth = 0_usize;
+    let mut opener = None;
+    for (at, (_, token)) in code.iter().enumerate().take(item).rev() {
+        if *token == Token::Punct('}') {
+            depth = depth.saturating_add(1);
+        } else if *token == Token::Punct('{') {
+            if depth == 0 {
+                opener = Some(at);
+                break;
+            }
+            depth = depth.saturating_sub(1);
+        }
+    }
+    let Some(opener) = opener else {
+        return false;
+    };
+    let header: Vec<&Token> = code
+        .iter()
+        .take(opener)
+        .rev()
+        .map(|(_, token)| token)
+        .take_while(|token| !matches!(token, Token::Punct('{' | '}' | ';')))
+        .collect();
+    header.contains(&&Token::Ident("impl".to_owned()))
+        && header.windows(PAIR).any(|pair| {
+            matches!(pair, [Token::Ident(keyword), Token::Ident(error)] if keyword == "for" && error == "Error")
+        })
+}
+
+/// Marks each token of an item, statement, or field that a test-only `cfg` attribute guards.
+fn test_only(code: &[&(usize, Token)]) -> Vec<bool> {
+    let mut guarded = vec![false; code.len()];
+    let mut index = 0_usize;
+    while index < code.len() {
+        let open = index.saturating_add(1);
+        let attribute = matches!(code.get(index), Some((_, Token::Punct('#'))))
+            && matches!(code.get(open), Some((_, Token::Punct('['))));
+        if attribute && is_test_only_cfg(&bracketed(code, open)) {
+            let end = item_end(code, open);
+            for flag in guarded.iter_mut().take(end).skip(index) {
+                *flag = true;
+            }
+            index = end;
+        } else {
+            index = open;
+        }
+    }
+    guarded
+}
+
+/// Returns true if an attribute's tokens are `cfg(test)`, `cfg(kani)`, or `cfg(any(…))` over those two.
+fn is_test_only_cfg(content: &[Token]) -> bool {
+    let [Token::Ident(cfg), Token::Punct('('), predicate @ .., Token::Punct(')')] = content else {
+        return false;
+    };
+    let members = match without_trailing_comma(predicate) {
+        [Token::Ident(any), Token::Punct('('), members @ .., Token::Punct(')')] if any == "any" => {
+            without_trailing_comma(members)
+        }
+        single => single,
+    };
+    cfg == "cfg"
+        && members.split(|token| *token == Token::Punct(',')).all(
+            |member| matches!(member, [Token::Ident(name)] if name == "test" || name == "kani"),
+        )
+}
+
+/// Drops the one trailing comma Rust allows after the last element of a list.
+fn without_trailing_comma(tokens: &[Token]) -> &[Token] {
+    tokens.strip_suffix(&[Token::Punct(',')]).unwrap_or(tokens)
+}
+
+/// Returns true if `next`, the token after a closing brace, continues the statement the brace closed:
+/// `else`, a method call, `?`, or the `;` or `,` that ends it.
+fn continues(next: Option<&&(usize, Token)>) -> bool {
+    match next.map(|(_, token)| token) {
+        Some(Token::Ident(word)) => word == "else",
+        Some(Token::Punct(punct)) => matches!(punct, '.' | '?' | ';' | ','),
+        Some(Token::Literal(_) | Token::Str(_) | Token::Comment { .. }) | None => false,
+    }
+}
+
+/// Returns true if what starts at `start`, past further attributes and a visibility,
+/// is a `let` statement or a `static`, `const`, `use`, or `type` item, which only a `;` ends.
+fn ends_at_semicolon(code: &[&(usize, Token)], start: usize) -> bool {
+    let token_at = |at: usize| code.get(at).map(|(_, found)| found);
+    let mut at = start;
+    loop {
+        match token_at(at) {
+            Some(Token::Punct('#')) => at = group_end(code, at.saturating_add(1)),
+            Some(Token::Ident(word)) if word == "pub" => {
+                at = at.saturating_add(1);
+                if token_at(at) == Some(&Token::Punct('(')) {
+                    at = group_end(code, at);
+                }
+            }
+            Some(Token::Ident(word)) if word == "const" => {
+                return !matches!(
+                    token_at(at.saturating_add(1)),
+                    Some(Token::Ident(next)) if matches!(next.as_str(), "fn" | "unsafe" | "async" | "extern")
+                );
+            }
+            Some(Token::Ident(word)) => {
+                return matches!(word.as_str(), "let" | "static" | "use" | "type");
+            }
+            Some(Token::Literal(_) | Token::Str(_) | Token::Punct(_) | Token::Comment { .. })
+            | None => {
+                return false;
+            }
+        }
+    }
+}
+
+/// Returns the index after the bracket that closes the one at `open`.
+fn group_end(code: &[&(usize, Token)], open: usize) -> usize {
+    let mut depth = 0_usize;
+    for (index, (_, token)) in code.iter().enumerate().skip(open) {
+        match token {
+            Token::Punct('(' | '[' | '{') => depth = depth.saturating_add(1),
+            Token::Punct(')' | ']' | '}') => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return index.saturating_add(1);
+                }
+            }
+            Token::Ident(_)
+            | Token::Literal(_)
+            | Token::Str(_)
+            | Token::Punct(_)
+            | Token::Comment { .. } => {}
+        }
+    }
+    code.len()
+}
+
+/// Returns the index after what the attribute whose `[` is at `open` guards.
+///
+/// That ends with a `;` or `,` outside brackets, which alone ends a `let` statement and a `static`, `const`, `use`, or `type` item.
+/// Another item ends with a `}` that closes its body when nothing continues the statement.
+/// Either ends before the bracket that closes the enclosing block.
+fn item_end(code: &[&(usize, Token)], open: usize) -> usize {
+    let mut depth = 0_usize;
+    let mut in_attribute = true;
+    let mut semicolon = false;
+    for (index, (_, token)) in code.iter().enumerate().skip(open) {
+        match token {
+            Token::Punct('(' | '[' | '{') => depth = depth.saturating_add(1),
+            Token::Punct(close @ (')' | ']' | '}')) => {
+                if depth == 0 {
+                    return index;
+                }
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    if in_attribute {
+                        in_attribute = false;
+                        semicolon = ends_at_semicolon(code, index.saturating_add(1));
+                    } else if *close == '}'
+                        && !semicolon
+                        && !continues(code.get(index.saturating_add(1)))
+                    {
+                        return index.saturating_add(1);
+                    }
+                }
+            }
+            Token::Punct(';' | ',') if depth == 0 && !in_attribute => {
+                return index.saturating_add(1);
+            }
+            Token::Ident(_)
+            | Token::Literal(_)
+            | Token::Str(_)
+            | Token::Punct(_)
+            | Token::Comment { .. } => {}
+        }
+    }
+    code.len()
 }
 
 fn is_time_name(name: &str) -> bool {
@@ -808,6 +1117,132 @@ mod tests {
         assert_eq!(rules(concat!("enum E { #[defa", "ult] A, B }")).len(), 1);
         assert_eq!(rules(concat!("struct S { f: Box<d", "yn Fn()> }")).len(), 1);
         assert_clean("struct S { f: Box<u8> }");
+    }
+
+    fn rules_in(file: &str, source: &str) -> Vec<String> {
+        scan(file, source)
+            .findings
+            .into_iter()
+            .map(|finding| finding.rule)
+            .collect()
+    }
+
+    #[test]
+    fn trait_objects_are_refused_outside_the_error_source_contract() {
+        for source in [
+            "fn f(x: &dyn Fn()) {}",
+            "fn cause(&self) -> Option<&dyn Error> { None }",
+            "impl Error for E { fn source(&self) -> Option<&(dyn Display + 'static)> { None } }",
+            "impl Error for E { fn source(&self) {} fn g(x: &dyn Error) {} }",
+            "impl Error for E { fn source(&self, x: &dyn Error) {} }",
+            "fn source(&self) -> Option<&(dyn Error + 'static)> { None }",
+            "impl Display for E { fn source(&self) -> Option<&(dyn Error + 'static)> { None } }",
+            "m!(dyn T);",
+            "struct S { f: Box<dyn Fn()> }",
+        ] {
+            assert_eq!(rules_in("tests/example.rs", source).len(), 1, "{source}");
+        }
+        for source in [
+            "impl Error for E { fn source(&self) -> Option<&(dyn Error + 'static)> { None } }",
+            "impl std::error::Error for E { fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { None } }",
+            "impl<T> Error for W<T> { fn f() {} fn source(&self) -> Option<&(dyn Error + 'static)> { None } }",
+            "#[cfg(test)] fn f(x: &dyn Fn()) {}",
+        ] {
+            assert_eq!(
+                rules_in("tests/example.rs", source),
+                Vec::<String>::new(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn library_code_keeps_no_shared_global_reflected_or_hashed_state() {
+        for source in [
+            "use std::rc::Rc;",
+            "fn f() { let x = Arc::new(1); }",
+            "struct S { c: RefCell<u8> }",
+            "fn f() { let x = AtomicBool::new(false); }",
+            "fn f() { let m = Mutex::new(0); }",
+            "static X: u8 = 0;",
+            "thread_local! {}",
+            "fn f() { let l = OnceLock::new(); }",
+            "fn f() -> TypeId { g() }",
+            "fn f() { let m = HashMap::new(); }",
+            "#[cfg(not(test))] static X: u8 = 0;",
+            "#[cfg(test)] COUNT.fetch_add(1); fn f() { let s = HashSet::new(); }",
+            "#[cfg(test)] static X: u8 = 0; fn f() { let m = Mutex::new(0); }",
+            "#[cfg(test)] let x = S { a: 1 }.with(Cell::new(1)); fn f() { let m = HashMap::new(); }",
+            "#[cfg(test)] fn g() {} fn f() { let m = HashMap::new(); }",
+            "#[cfg(test)] let x = { 1 }; fn f() { let m = HashMap::new(); }",
+            "#[cfg(test)] const fn g() -> u8 { 1 } fn f() { let m = HashMap::new(); }",
+            "#[cfg(test)] pub(crate) const unsafe fn g() {} fn f() { let m = HashMap::new(); }",
+        ] {
+            assert_eq!(rules_in("src/example.rs", source).len(), 1, "{source}");
+            assert_eq!(rules_in("tests/example.rs", source), Vec::<String>::new());
+            assert_eq!(
+                rules_in("src/failure_tests.rs", source),
+                Vec::<String>::new()
+            );
+        }
+        for source in [
+            "fn f(x: &'static str) -> Box<u8> { g() }",
+            "const X: &'static str = \"\";",
+            "#[cfg(test)] mod tests { use std::sync::Arc; }",
+            "#[cfg(kani)] fn f() { let c = Cell::new(1); }",
+            "#[cfg(any(test, kani))] static X: u8 = 0;",
+            "struct S { #[cfg(test)] c: Cell<u8>, v: u8 }",
+            "struct S { v: u8, #[cfg(test)] c: Cell<u8> }",
+            "fn f() { #[cfg(test)] COUNT.fetch_add(1, atomic::Ordering::Relaxed); }",
+            "fn f() { #[cfg(test)] let c = if a { Cell::new(1) } else { Cell::new(2) }; }",
+            "fn f() { #[cfg(test)] let s = S { a: 1 }.with(RefCell::new(1))?; }",
+            "match x { #[cfg(test)] A => { Cell::new(1) }, B => 2 }",
+            "fn f() { #[cfg(test)] let value = { 1 } + Arc::strong_count(&arc); }",
+            "#[cfg(test)] pub(crate) static S: u8 = { 1 } + Cell::new(1).get();",
+            "#[cfg(test)] #[doc(hidden)] const N: usize = { 1 } + HashMap::<u8, u8>::new().len();",
+            "#[cfg(test)] use std::{cell::Cell, sync::Arc};",
+            "#[cfg(test)] type Shared = { Arc<u8> };",
+        ] {
+            assert_eq!(
+                rules_in("src/example.rs", source),
+                Vec::<String>::new(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_cfg_test_and_kani_guard_test_code() {
+        let content = |source: &str| {
+            lex(source)
+                .into_iter()
+                .map(|(_, token)| token)
+                .collect::<Vec<_>>()
+        };
+        for guard in [
+            "cfg(test)",
+            "cfg(kani)",
+            "cfg(any(test, kani))",
+            "cfg(any(test))",
+            "cfg(any(test,))",
+            "cfg(any(test, kani,))",
+            "cfg(test,)",
+        ] {
+            assert!(is_test_only_cfg(&content(guard)), "{guard}");
+        }
+        for guard in [
+            "cfg(not(test))",
+            "cfg(any(test, windows))",
+            "cfg(all(test, kani))",
+            "cfg()",
+            "cfg(any())",
+            "cfg(any(test,,kani))",
+            "cfg(any(,))",
+            "cfg_attr(test, allow(x))",
+            "test",
+        ] {
+            assert!(!is_test_only_cfg(&content(guard)), "{guard}");
+        }
     }
 
     #[test]
