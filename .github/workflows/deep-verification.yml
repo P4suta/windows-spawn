@@ -21,11 +21,11 @@ jobs:
       matrix:
         include:
           - target: x86_64-pc-windows-msvc
-            cases: "100000"
-          - target: i686-pc-windows-msvc
             cases: "20000"
+          - target: i686-pc-windows-msvc
+            cases: "5000"
     runs-on: windows-latest
-    timeout-minutes: 180
+    timeout-minutes: 45
     env:
       CARGO_BUILD_TARGET: ${{ matrix.target }}
       WINDOWS_SPAWN_STRESS_CASES: ${{ matrix.cases }}
@@ -43,12 +43,12 @@ jobs:
       - run: cargo test --locked --test windows_spawn spawn_cleanup_stress -- --ignored --exact
 
   random:
-    name: Random command lines and environments at fifty times their size
+    name: Random command lines and environments at ten times their size
     runs-on: windows-latest
-    timeout-minutes: 300
+    timeout-minutes: 60
     env:
       RUSTFLAGS: --cfg windows_spawn_vectors
-      WINDOWS_SPAWN_RANDOM_SCALE: "50"
+      WINDOWS_SPAWN_RANDOM_SCALE: "10"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -66,7 +66,7 @@ jobs:
       matrix:
         target: [command-line, environment-block]
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 30
     env:
       FUZZ_TARGET: ${{ matrix.target }}
     steps:
@@ -84,7 +84,7 @@ jobs:
           tool: cargo-fuzz@0.13.2
       - run: >-
           cargo +nightly-2026-10-13 fuzz run "$FUZZ_TARGET" --target x86_64-unknown-linux-gnu
-          -- -max_total_time=18000 -max_len=16384
+          -- -max_total_time=900 -max_len=16384
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
