@@ -240,9 +240,14 @@ mod windows {
     /// The unit a generated name gets in place of the separator.
     const UNDERSCORE: u16 = 0x5f;
 
-    /// The variables a tool sets inside every process it watches, which no generated name can match:
+    /// The variables a tool or Windows sets inside every process, which no generated name can match:
     /// Application Verifier's, so `cargo xtask verifier` can run this test, and the LLVM profile runtime's, so coverage can.
-    const TOOL_VARIABLES: [&str; 2] = ["OANOCACHE", "__LLVM_PROFILE_RT_INIT_ONCE"];
+    /// Windows on ARM64 also gives every process its architecture, even a process whose environment holds nothing else.
+    const INJECTED_VARIABLES: [&str; 3] = [
+        "OANOCACHE",
+        "__LLVM_PROFILE_RT_INIT_ONCE",
+        "PROCESSOR_ARCHITECTURE",
+    ];
 
     /// Units whose case Windows folds and units that look alike:
     /// `A`, `a`, `Z`, `z`, `_`, `0`, `É`, `é`, `ß`, `İ`, `ı`, `Ǆ`, `ǅ`, `ǆ`, `Σ`, `σ`, `ς`, Cyrillic capital and small zhe (U+0416 and U+0436), fullwidth `Ａ` and `ａ`,
@@ -387,7 +392,7 @@ mod windows {
                 .map(|(name, value)| format!("std\t{}\t{}", hex(name), hex(value)))
                 .collect();
             let report = String::from_utf8_lossy(&output.stdout);
-            let prefixes: Vec<String> = TOOL_VARIABLES
+            let prefixes: Vec<String> = INJECTED_VARIABLES
                 .iter()
                 .flat_map(|name| {
                     let name = hex(&OsStr::new(name).encode_wide().collect::<Vec<_>>());
