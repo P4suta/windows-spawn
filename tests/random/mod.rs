@@ -7,6 +7,26 @@ const MULTIPLIER: u64 = 0x2545_f491_4f6c_dd1d;
 /// The units after NUL, which no argument or variable may hold.
 const NONZERO_UNITS: u64 = 0xffff;
 
+/// The variable that multiplies the number of random cases, which the nightly workflow raises.
+const SCALE: &str = "WINDOWS_SPAWN_RANDOM_SCALE";
+
+/// Returns `cases` times `WINDOWS_SPAWN_RANDOM_SCALE`, or `cases` when the variable is unset.
+///
+/// The seed stays the same, so a larger run checks the cases of a smaller one first.
+pub(crate) fn scaled(cases: usize) -> std::io::Result<usize> {
+    let invalid = |error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error);
+    let scale = match std::env::var(SCALE) {
+        Ok(text) => text
+            .parse::<usize>()
+            .map_err(|error| invalid(error.to_string()))?,
+        Err(std::env::VarError::NotPresent) => 1,
+        Err(error) => return Err(invalid(error.to_string())),
+    };
+    cases
+        .checked_mul(scale)
+        .ok_or_else(|| invalid(format!("{SCALE} times {cases} overflows")))
+}
+
 pub(crate) struct Generator(u64);
 
 impl Generator {

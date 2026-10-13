@@ -21,7 +21,7 @@ mod windows {
     use windows_spawn::{Command, Stdio};
     use windows_sys::Win32::Foundation::LocalFree;
 
-    use crate::random::Generator;
+    use crate::random::{scaled, Generator};
     use windows_sys::Win32::System::Environment::GetCommandLineW;
     use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
     use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
@@ -360,7 +360,8 @@ mod windows {
     fn random_lines() -> io::Result<()> {
         let mut generator = Generator::new(SEED);
         let mut mismatches = Vec::new();
-        for _ in 0..RANDOM_LINES {
+        let lines = scaled(RANDOM_LINES)?;
+        for _ in 0..lines {
             let count = generator.below(MOST_ARGUMENTS).saturating_add(1);
             let arguments: Vec<Vec<u16>> = (0..count)
                 .map(|_| generator.text(LONGEST_ARGUMENT, &INTERESTING))
@@ -394,9 +395,7 @@ mod windows {
                 shown.join("\n")
             )));
         }
-        println!(
-            "{RANDOM_LINES} random command lines through four parsers: every argument read back"
-        );
+        println!("{lines} random command lines through four parsers: every argument read back");
         Ok(())
     }
 

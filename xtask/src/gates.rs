@@ -63,24 +63,6 @@ const EXCEPTIONS: &[Exception] = &[
         count: 1,
         reason: "tests assert by panicking",
     },
-    Exception {
-        file: "tests/argv_roundtrip.rs",
-        lint: "clippy::as_conversions",
-        count: 1,
-        reason: "tests call Win32 directly with handle values",
-    },
-    Exception {
-        file: "tests/argv_roundtrip.rs",
-        lint: "clippy::expect_used",
-        count: 1,
-        reason: "tests assert by panicking",
-    },
-    Exception {
-        file: "tests/argv_roundtrip.rs",
-        lint: "clippy::unwrap_in_result",
-        count: 1,
-        reason: "tests assert by panicking",
-    },
 ];
 
 /// Identifiers that measure or wait on time (ADR 0010).
