@@ -109,5 +109,5 @@ reason = "Unreachable: GetFullPathNameW cannot return a double quote."
 
 [[mutation.skip]]
 path = "src/transaction.rs"
-lines = "165-169"
-reason = "Unreachable: wide_nul fails only on an interior NUL, which validate_command rejects first; rejects_every_malformed_text_component holds it."
+lines = "77-77"
+reason = "Unreachable: current_directory fails only on an interior NUL, which validate_command rejects first; rejects_every_malformed_text_component holds it."
