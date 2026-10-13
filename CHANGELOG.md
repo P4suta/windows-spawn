@@ -14,7 +14,7 @@ The 0.2 API follows `std::process` and places each choice on the type that owns 
 - `SpawnError`, which keeps whether input was rejected, which Windows operation failed in which phase, and which releases failed; `windows_spawn::Result`.
 - `BorrowedPseudoConsole` with `borrow_raw`, for a raw `HPCON`.
 - `From<ChildStdin>`, `From<ChildStdout>`, `From<ChildStderr>`, `From<io::Stdout>`, and `From<io::Stderr>` for `Stdio`; `Write for &ChildStdin`; `AsRawHandle` for the handle types.
-- `ValidationError::CommandLineTooLong` and `ValidationError::PseudoConsoleWithConsoleMode`, which reject a spawn before Windows is asked.
+- `ValidationError::CommandLineTooLong` and `ValidationError::PseudoConsoleWithConsoleMode`, which reject a spawn before `CreateProcessW` runs.
 - Formal verification in layers, as ADR 0014 records.
   Kani proves the decision cores, and Lean and Verus prove that the C runtime parsers read back every encoded command line.
   Models in `TLA+`, Quint, Alloy, and Prolog check output draining, the child lifecycle, the handle transfer, and the program search.

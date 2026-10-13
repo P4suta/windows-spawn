@@ -84,7 +84,9 @@ impl AsPseudoConsole for MyPseudoConsole {
 - `Stdio` converts from `io::stdout()` and `io::stderr()`.
 - `Child`, `SuspendedChild`, the pipe ends, `Job`, and `ParentProcess` implement `AsRawHandle`; `Job` and `ParentProcess` convert into `OwnedHandle`.
 - `Debug` prints a `Command` as std does; `{:#?}` prints every setting.
-- A command line longer than `CreateProcessW` accepts fails with `ValidationError::CommandLineTooLong` before any resource is acquired.
+- A command line longer than `CreateProcessW` accepts fails with `ValidationError::CommandLineTooLong`, and `CreateProcessW` never runs.
+  A spawn finds the length once it has lowered the line's handles, so it has acquired its pipes and duplicates by then and releases them.
+  `Command::to_command_line` acquires nothing before it rejects the line.
 
 ## Behavior
 

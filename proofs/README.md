@@ -27,6 +27,7 @@ The harnesses sit beside the functions they prove, under `cfg(kani)`.
 The proofs rest on `propext`, `Classical.choice`, and `Quot.sound` alone.
 The audit lists every theorem with its axioms, and refuses `Canary.lean`, which uses `sorry`, `native_decide`, and an axiom of its own.
 `leanchecker` and nanoda, a kernel independent of Lean's, replay the library.
+The Lean 4.35.0 toolchain that `lean/lean-toolchain` pins ships `leanchecker`, `leanexport`, and `nanoda_bin`, so `elan` installs every tool the gate runs.
 `lake exe oracle` writes the vectors in `lean/vectors`.
 The Rust tests compare the encoder and the parser models with them.
 On Windows, `tests/command_line_parsers.rs` splits every parsing row with `CommandLineToArgvW`.

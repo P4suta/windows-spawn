@@ -32,7 +32,8 @@ replace `std::process::Command`, end a process tree, run a console tool from a G
   A Windows failure converts into the `io::Error` that Windows reported, so `kind` and `raw_os_error` are those of std.
   The workspace denies `clippy::error_impl_error`, so the type isn't named `Error`.
 - Every spawn creates its process suspended, releases what it acquired for the creation, and only then resumes the main thread or returns a `SuspendedChild`.
-- A console mode beside a pseudoconsole, and a command line longer than `CreateProcessW` accepts, are rejected before Windows is asked.
+- A console mode beside a pseudoconsole is rejected before Windows is asked.
+  A command line longer than `CreateProcessW` accepts is rejected before `CreateProcessW` runs, once the spawn has lowered the line's handles.
 
 Rejected:
 

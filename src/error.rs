@@ -16,7 +16,10 @@ pub type Result<T> = std::result::Result<T, SpawnError>;
 /// and any other failure becomes the payload of an [`io::Error`] of the same kind.
 #[derive(Debug)]
 pub enum SpawnError {
-    /// The input was rejected before Windows was asked to act on it.
+    /// The input was rejected, and no process was created.
+    ///
+    /// A spawn finds an overlong command line only once it has lowered the line's handles,
+    /// so by then it has acquired its pipes and duplicates, and it releases them before it returns.
     Validation(ValidationError),
     /// A Windows operation failed, or the crate found Windows in a state it can't continue from.
     Windows(WindowsError),
