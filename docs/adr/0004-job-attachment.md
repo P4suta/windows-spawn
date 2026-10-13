@@ -1,6 +1,6 @@
 # 0004 — Jobs are ordered process-creation capabilities
 
-Status: accepted (2026-08-02)
+Status: accepted (2026-08-02); ADR 0015 replaces `DropPolicy` with `Command::own_process_tree`
 
 ## Context
 
