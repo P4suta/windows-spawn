@@ -24,44 +24,14 @@ const EXCEPTIONS: &[Exception] = &[
     Exception {
         file: "src/sys.rs",
         lint: "clippy::as_conversions",
-        count: 4,
-        reason: "handle values and Win32 widths convert where Rust 1.75 has no From form",
-    },
-    Exception {
-        file: "src/sys.rs",
-        lint: "clippy::cast_possible_truncation",
         count: 1,
-        reason: "dword_const is evaluated in constants, where an oversized value fails the build",
+        reason: "handle_value reads a handle's value, and Rust 1.75 has no pointer addr",
     },
     Exception {
         file: "tests/support/mod.rs",
         lint: "clippy::disallowed_methods",
         count: 1,
         reason: "a probe reports by exit code",
-    },
-    Exception {
-        file: "tests/windows_spawn.rs",
-        lint: "missing_docs",
-        count: 1,
-        reason: "the test crate is empty off Windows",
-    },
-    Exception {
-        file: "tests/windows_spawn.rs",
-        lint: "clippy::as_conversions",
-        count: 1,
-        reason: "tests call Win32 directly with handle values",
-    },
-    Exception {
-        file: "tests/windows_spawn.rs",
-        lint: "clippy::expect_used",
-        count: 1,
-        reason: "tests assert by panicking",
-    },
-    Exception {
-        file: "tests/windows_spawn.rs",
-        lint: "clippy::unwrap_in_result",
-        count: 1,
-        reason: "tests assert by panicking",
     },
 ];
 

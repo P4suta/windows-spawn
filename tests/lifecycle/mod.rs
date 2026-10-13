@@ -248,8 +248,9 @@ fn differs(what: &str, expected: impl Display, actual: impl Display) -> io::Erro
     ))
 }
 
+/// A probe's exit as the model names it; an exit without a code, which Windows never reports, matches no row.
 fn status_of(code: Option<i32>) -> String {
-    format!("Status {}", code.expect("a probe exits with a code"))
+    code.map_or_else(|| "Status none".to_owned(), |code| format!("Status {code}"))
 }
 
 /// Replays every trace of `table` and returns the first disagreement.

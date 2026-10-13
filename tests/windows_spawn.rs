@@ -1,8 +1,6 @@
-#![cfg_attr(not(windows), allow(missing_docs))]
-#![cfg(windows)]
-#![allow(clippy::as_conversions, clippy::expect_used, clippy::unwrap_in_result)]
-
 //! End-to-end Windows process creation tests.
+
+#![cfg(windows)]
 
 #[cfg(windows_spawn_vectors)]
 mod lifecycle;
@@ -12,7 +10,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::mem::size_of_val;
 use std::os::windows::fs::OpenOptionsExt;
-use std::os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+use std::os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
@@ -60,8 +58,7 @@ fn attached_to_test_pseudoconsole() -> bool {
     };
     let mut information = CONSOLE_SCREEN_BUFFER_INFO::default();
     // SAFETY: `output` is an open console handle and `information` is writable.
-    let queried =
-        unsafe { GetConsoleScreenBufferInfo(output.as_raw_handle() as HANDLE, &mut information) };
+    let queried = unsafe { GetConsoleScreenBufferInfo(output.as_raw_handle(), &mut information) };
     queried != 0 && information.dwSize.X == PCON_SIZE.X && information.dwSize.Y == PCON_SIZE.Y
 }
 
@@ -597,8 +594,8 @@ impl TestPseudoConsole {
             // SAFETY: CreatePipe succeeded and returned two distinct handles.
             Ok(unsafe {
                 (
-                    OwnedHandle::from_raw_handle(read as RawHandle),
-                    OwnedHandle::from_raw_handle(write as RawHandle),
+                    OwnedHandle::from_raw_handle(read),
+                    OwnedHandle::from_raw_handle(write),
                 )
             })
         }
@@ -610,8 +607,8 @@ impl TestPseudoConsole {
         let result = unsafe {
             CreatePseudoConsole(
                 PCON_SIZE,
-                input_reader.as_raw_handle() as HANDLE,
-                output_writer.as_raw_handle() as HANDLE,
+                input_reader.as_raw_handle(),
+                output_writer.as_raw_handle(),
                 0,
                 &mut value,
             )
@@ -647,7 +644,7 @@ impl TestPseudoConsole {
         let writer = self
             .input_writer
             .as_ref()
-            .expect("a live pseudoconsole retains its input writer");
+            .ok_or_else(|| io::Error::other("the pseudoconsole's input writer is closed"))?;
         let mut written = 0_u32;
         let length = u32::try_from(input.len())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
@@ -955,29 +952,49 @@ fn capability_wrappers_and_all_option_builders_are_exercised() -> io::Result<()>
     Ok(())
 }
 
+/// The radix of the `{:p}` text of a handle.
+const HEXADECIMAL: u32 = 16;
+
+/// The error of an excluded-handle probe value that doesn't parse.
+fn malformed_probe(value: &str, what: &str, cause: impl std::fmt::Display) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("the probe's {what} in {value:?} is malformed: {cause}"),
+    )
+}
+
+/// The fields of the excluded-handle probe: the handle as the `{:p}` text of its value, then the file's volume and index.
+fn probe_fields(value: &str) -> io::Result<(HANDLE, u32, u64)> {
+    let [handle_text, volume, index] = value.split(':').collect::<Vec<_>>()[..] else {
+        return Err(malformed_probe(
+            value,
+            "field count",
+            "it needs three fields",
+        ));
+    };
+    let digits = handle_text
+        .strip_prefix("0x")
+        .ok_or_else(|| malformed_probe(value, "handle", "it lacks the 0x prefix"))?;
+    let address = usize::from_str_radix(digits, HEXADECIMAL)
+        .map_err(|error| malformed_probe(value, "handle", error))?;
+    let null: HANDLE = std::ptr::null_mut();
+    Ok((
+        null.wrapping_byte_add(address),
+        volume
+            .parse()
+            .map_err(|error| malformed_probe(value, "volume", error))?,
+        index
+            .parse()
+            .map_err(|error| malformed_probe(value, "file index", error))?,
+    ))
+}
+
 #[test]
 fn handle_list_excludes_an_unlisted_inheritable_handle() -> io::Result<()> {
     const PROBE: &str = "WINDOWS_SPAWN_EXCLUDED_HANDLE_PROBE";
     if let Some(value) = std::env::var_os(PROBE) {
-        let value = value.to_string_lossy();
-        let mut fields = value.split(':');
-        let handle = fields
-            .next()
-            .expect("probe handle is present")
-            .parse::<isize>()
-            .expect("probe handle must be an integer");
-        let volume = fields
-            .next()
-            .expect("probe volume is present")
-            .parse::<u32>()
-            .expect("probe volume must be an integer");
-        let index = fields
-            .next()
-            .expect("probe file index is present")
-            .parse::<u64>()
-            .expect("probe file index must be an integer");
-        assert!(fields.next().is_none(), "probe has exactly three fields");
-        if let Ok(identity) = file_identity(handle as HANDLE) {
+        let (handle, volume, index) = probe_fields(&value.to_string_lossy())?;
+        if let Ok(identity) = file_identity(handle) {
             assert_ne!(
                 identity,
                 (volume, index),
@@ -992,9 +1009,9 @@ fn handle_list_excludes_an_unlisted_inheritable_handle() -> io::Result<()> {
     let listed_file = File::open("NUL")?;
     let excluded_file = File::create(&excluded_path)?;
     let excluded = inheritable_duplicate(&excluded_file)?;
-    let excluded_value = excluded.as_handle().as_raw_handle() as isize;
-    let (excluded_volume, excluded_index) = file_identity(excluded.as_handle().as_raw_handle())?;
-    let probe = format!("{excluded_value}:{excluded_volume}:{excluded_index}");
+    let excluded_raw = excluded.as_handle().as_raw_handle();
+    let (excluded_volume, excluded_index) = file_identity(excluded_raw)?;
+    let probe = format!("{excluded_raw:p}:{excluded_volume}:{excluded_index}");
 
     let mut command = Command::new(std::env::current_exe()?);
     command

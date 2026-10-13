@@ -47,8 +47,8 @@ pub(crate) fn pipe() -> io::Result<(File, File)> {
     // SAFETY: CreatePipe succeeded, so both handles are new and distinct.
     let (read, write) = unsafe {
         (
-            OwnedHandle::from_raw_handle(read as RawHandle),
-            OwnedHandle::from_raw_handle(write as RawHandle),
+            OwnedHandle::from_raw_handle(read),
+            OwnedHandle::from_raw_handle(write),
         )
     };
     Ok((File::from(read), File::from(write)))
@@ -76,7 +76,7 @@ pub(crate) fn local_duplicate<T: AsHandle>(
         return Err(io::Error::last_os_error());
     }
     // SAFETY: DuplicateHandle returned a new, uniquely owned handle.
-    Ok(unsafe { OwnedHandle::from_raw_handle(duplicate as RawHandle) })
+    Ok(unsafe { OwnedHandle::from_raw_handle(duplicate) })
 }
 
 /// The test's end of a probe's gate pipe.
@@ -87,7 +87,10 @@ pub(crate) struct Gate(Option<File>);
 impl Gate {
     /// Makes one probe exit with `code`.
     pub(crate) fn open_with(&mut self, code: u8) -> io::Result<()> {
-        let mut writer = self.0.take().expect("the gate is still closed");
+        let mut writer = self
+            .0
+            .take()
+            .ok_or_else(|| io::Error::other("the gate is already open"))?;
         writer.write_all(&[code])
     }
 
@@ -268,9 +271,10 @@ fn adopt_pipe(variable: &str) -> io::Result<File> {
         .map_err(|error| io::Error::new(io::ErrorKind::NotFound, error))?
         .parse()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let raw: RawHandle = ptr::null_mut();
     // SAFETY: the parent listed this inheritable handle in PROC_THREAD_ATTRIBUTE_HANDLE_LIST and published its value only in `variable`.
     // This process adopts it exactly once.
-    let handle = unsafe { OwnedHandle::from_raw_handle(value as RawHandle) };
+    let handle = unsafe { OwnedHandle::from_raw_handle(raw.wrapping_byte_offset(value)) };
     // SAFETY: the owned handle is valid for the query.
     if unsafe { GetFileType(handle.as_raw_handle()) } != FILE_TYPE_PIPE {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "not a pipe"));
