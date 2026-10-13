@@ -91,6 +91,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     env:
+      CARGO_BUILD_TARGET: ${{ matrix.target }}
       WINDOWS_SPAWN_STRESS_CASES: "1300"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -103,9 +104,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: ${{ matrix.target }}
-      - run: >-
-          cargo test --locked --target ${{ matrix.target }} --test windows_spawn
-          spawn_cleanup_stress -- --ignored --exact
+      - run: cargo test --locked --test windows_spawn spawn_cleanup_stress -- --ignored --exact
 
   careful:
     name: Windows tests under cargo-careful
@@ -182,6 +181,8 @@ jobs:
         target: [command-line, environment-block]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      FUZZ_TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -196,7 +197,7 @@ jobs:
         with:
           tool: cargo-fuzz@0.13.2
       - run: >-
-          cargo +nightly-2026-10-13 fuzz run ${{ matrix.target }} --target x86_64-unknown-linux-gnu
+          cargo +nightly-2026-10-13 fuzz run "$FUZZ_TARGET" --target x86_64-unknown-linux-gnu
           -- -max_total_time=600 -max_len=16384
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
