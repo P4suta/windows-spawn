@@ -47,6 +47,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use crate::domain::attribute_rules::{self, SizeFault};
+use crate::domain::conversion_rules::{dword_const, widen};
 use crate::domain::creation_flag_rules::{creation_word, ConsoleFlag, PriorityFlag};
 use crate::domain::environment_rules;
 use crate::handles::BorrowedPseudoConsole;
@@ -1355,29 +1356,18 @@ fn is_valid_handle(handle: HANDLE) -> bool {
 }
 
 /// Returns a handle's numeric value, as a child sees it in an argument or the environment.
+///
+/// Rust 1.75 has no `addr` for pointers, so reading the value takes `as`.
 #[allow(clippy::as_conversions)]
 pub(crate) fn handle_value(handle: HANDLE) -> isize {
     handle as isize
 }
 
 /// Returns the handle a numeric value names.
-#[allow(clippy::as_conversions)]
+///
+/// A handle is an opaque value that no code dereferences, so the pointer carries no provenance, as `ptr::without_provenance_mut` would make it.
 pub(crate) const fn handle_from_value(value: isize) -> HANDLE {
-    value as HANDLE
-}
-
-/// Converts a compile-time size to a Win32 `DWORD`; a size that does not fit fails constant evaluation.
-#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
-const fn dword_const(value: usize) -> u32 {
-    let wide = value as u64;
-    assert!(wide <= u32::MAX as u64, "size does not fit a DWORD");
-    wide as u32
-}
-
-/// Widens a `DWORD`; `usize` has at least 32 bits on every Windows target.
-#[allow(clippy::as_conversions)]
-const fn widen(value: u32) -> usize {
-    value as usize
+    ptr::null_mut::<c_void>().wrapping_byte_offset(value)
 }
 
 /// Returns true if `error` carries the Win32 error `code`.

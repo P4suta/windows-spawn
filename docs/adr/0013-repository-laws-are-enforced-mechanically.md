@@ -35,5 +35,7 @@ Rustc lints are limited to those Rust 1.75 recognizes.
 ## Consequences
 
 - Changing a law changes the lint table, `clippy.toml`, or the gate, with its tests.
-- Pointer-integer and `DWORD` width conversions keep `as` behind registered exceptions in `sys`, because Rust 1.75 has no `From` form for them.
+- Reading a handle's value keeps `as` behind a registered exception in `sys`, because Rust 1.75 has no pointer `addr`.
+  A value becomes a handle through a byte offset from null.
+  A `DWORD` width converts through its bytes in `domain::conversion_rules`, where Kani proves each conversion for every input.
 - When the MSRV reaches Rust 1.81, `#[expect(…, reason = …)]` replaces the registry.

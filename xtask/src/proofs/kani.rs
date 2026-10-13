@@ -56,6 +56,18 @@ pub(crate) const KANI_PROOFS: &[Proof] = &[
         covers: 2,
     },
     Proof {
+        name: "domain::conversion_rules::proofs::every_dword_widens_to_its_value",
+        covers: 1,
+    },
+    Proof {
+        name: "domain::conversion_rules::proofs::a_size_fits_a_dword_exactly_up_to_its_maximum",
+        covers: 2,
+    },
+    Proof {
+        name: "domain::conversion_rules::proofs::every_size_within_a_dword_narrows_to_its_value",
+        covers: 1,
+    },
+    Proof {
         name: "domain::creation_flag_rules::proofs::the_word_holds_the_policy_one_console_one_priority_and_the_internal_flags",
         covers: 2,
     },
@@ -98,6 +110,10 @@ pub(crate) const KANI_CONTROLS: &[Control] = &[
     Control {
         name: "domain::command_line_rules::proofs::negative_control_unescaped_closing_quote",
         marker: "NEGATIVE_COMMAND_LINE_CONTROL",
+    },
+    Control {
+        name: "domain::conversion_rules::proofs::negative_control_bytes_in_big_endian_order",
+        marker: "NEGATIVE_CONVERSION_CONTROL",
     },
     Control {
         name: "domain::creation_flag_rules::proofs::negative_control_a_spawn_that_runs_at_once",

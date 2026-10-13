@@ -4,6 +4,7 @@
 
 pub(crate) mod attribute_rules;
 pub(crate) mod command_line_rules;
+pub(crate) mod conversion_rules;
 pub(crate) mod creation_flag_rules;
 pub(crate) mod environment_rules;
 pub(crate) mod plan_rules;
