@@ -43,7 +43,7 @@ just proofs kani lean
 `just proof-traces` regenerates the Quint traces after the lifecycle model changes.
 
 On Windows, `just verifier` runs every test under `appverif.exe`, which stops a process on handle misuse, heap corruption, lock misuse, or a leak.
-It needs an administrator and the `appverif.exe` of the Windows SDK.
+It needs an administrator and the `appverif.exe` of the Windows SDK, which the hosted Windows runners of CI also have.
 Three tests misuse a handle on purpose, and each must stop, which shows the verifier watches the run.
 
 ## Expectations

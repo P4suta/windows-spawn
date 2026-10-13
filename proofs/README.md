@@ -85,6 +85,7 @@ The proofs hold for the code and its models, and these Windows checks tie them t
 - `tests/argv_roundtrip.rs` sends 150 seeded random environments through the crate's block builder into children, which must hold exactly the variables their commands set.
 - `cargo xtask verifier` runs every Windows test under `appverif.exe`, which stops a process on handle misuse, heap corruption, lock misuse, or a leak.
   Three tests misuse a handle on purpose and must stop.
+  CI runs it on a hosted Windows runner, which ships `appverif.exe`.
 
 ## Running the layers
 
