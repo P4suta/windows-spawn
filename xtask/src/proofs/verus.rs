@@ -39,7 +39,7 @@ pub(crate) fn verus(root: &Path) -> Result<()> {
         return fail(format!("Verus must report `{VERIFIED}`:\n{report}"));
     }
 
-    let copy = fs::read_to_string(root.join(PROOF))?;
+    let copy = read_lf(&root.join(PROOF))?;
     if copy.matches(DOUBLING).count() != 1 {
         return fail(format!(
             "{PROOF} must close a quoted argument exactly once with:\n{DOUBLING}"
@@ -58,13 +58,18 @@ pub(crate) fn verus(root: &Path) -> Result<()> {
         ));
     }
 
-    let source = fs::read_to_string(root.join(SOURCE))?;
+    let source = read_lf(&root.join(SOURCE))?;
     same_functions(&source, &copy).map_err(crate::tasks::TaskError::from)?;
     println!(
         "Verus: {} functions of {SOURCE} proved for every argument, and the defect control refused",
         FUNCTIONS.len()
     );
     Ok(())
+}
+
+/// Reads `path` with LF line endings, which a Windows checkout with `core.autocrlf` replaces with CRLF.
+fn read_lf(path: &Path) -> std::io::Result<String> {
+    Ok(fs::read_to_string(path)?.replace("\r\n", "\n"))
 }
 
 /// Unpacks the pinned release for this host and installs the Rust toolchain it names.
@@ -246,10 +251,19 @@ mod tests {
     }
 
     #[test]
+    fn a_crlf_checkout_reads_as_lf() {
+        let directory = fresh_directory(&std::env::temp_dir(), "verus-crlf").unwrap();
+        let path = directory.join("command_line.rs");
+        fs::write(&path, DOUBLING.replace('\n', "\r\n")).unwrap();
+        assert_eq!(read_lf(&path).unwrap(), DOUBLING);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn the_copy_is_the_crate_code() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let source = fs::read_to_string(root.join(SOURCE)).unwrap();
-        let copy = fs::read_to_string(root.join(PROOF)).unwrap();
+        let source = read_lf(&root.join(SOURCE)).unwrap();
+        let copy = read_lf(&root.join(PROOF)).unwrap();
         assert_eq!(same_functions(&source, &copy), Ok(()));
         assert_eq!(copy.matches(DOUBLING).count(), 1);
         let drifted = copy.replacen("backslashes = 0;", "backslashes = 1;", 1);
