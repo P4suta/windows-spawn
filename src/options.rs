@@ -129,12 +129,12 @@ impl Creation {
         }
     }
 
-    pub(crate) fn set_priority(&mut self, class: PriorityClass) {
+    pub(crate) const fn set_priority(&mut self, class: PriorityClass) {
         self.priority = class.flag();
     }
 
     /// Sets one policy flag.
-    pub(crate) fn set(&mut self, flag: u32) {
+    pub(crate) const fn set(&mut self, flag: u32) {
         self.policy |= flag;
     }
 
@@ -277,8 +277,8 @@ mod tests {
         let options = SpawnOptions::new().job(&outer).job(&inner);
         let reused = options.clone();
         assert_eq!(reused.jobs.len(), 2);
-        assert!(std::ptr::eq(reused.jobs[0], &outer));
-        assert!(std::ptr::eq(reused.jobs[1], &inner));
+        assert!(std::ptr::eq(reused.jobs[0], &raw const outer));
+        assert!(std::ptr::eq(reused.jobs[1], &raw const inner));
         let empty = SpawnOptions::default();
         assert!(empty.jobs.is_empty() && empty.parent.is_none() && empty.pseudoconsole.is_none());
     }

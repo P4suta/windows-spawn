@@ -6,7 +6,7 @@ Each layer runs a pinned tool, accepts only the complete expected result, and ru
 
 | Layer | Tool | What it proves | How it reaches the code |
 | --- | --- | --- | --- |
-| `kani` | Kani 0.68.0 | The decision cores and `DWORD` conversions in `src/domain` and the mitigation layout, for every input within each harness's bounds | It runs the crate's own functions |
+| `kani` | Kani 0.68.0 | The decision cores and Win32 conversions in `src/domain` and the mitigation layout, for every input within each harness's bounds | It runs the crate's own functions |
 | `lean` | Lean 4.35.0 | Both C runtime parsers read back every command line the encoder writes, for arguments of every length | Vectors from the proved model, which the Rust tests and the Windows parsers check |
 | `verus` | Verus 0.2026.10.04 | The encoder writes what the Lean model writes, for every argument | A copy that must equal the crate's functions token for token |
 | `tla` | `TLC` 1.7.4 | `Child::wait_with_output` returns with every byte, and each of two plausible mistakes deadlocks or never returns | A model of the protocol |

@@ -451,7 +451,7 @@ const fn disjoint(fields: &[Field]) -> bool {
 
 /// Fails the build unless every field fits its word and no two fields of one word share a bit.
 ///
-/// `MitigationPolicy::with` names it, so every compiler evaluates it; Rust 1.75 counts no use inside `const _`.
+/// `MitigationPolicy::with` names it, so every compiler evaluates it; Rust 1.84 counts no use inside `const _`.
 const LAYOUT: () = assert!(
     disjoint(&FIELDS),
     "mitigation fields fit their words and share no bit"

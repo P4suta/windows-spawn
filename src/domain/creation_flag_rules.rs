@@ -151,7 +151,7 @@ const fn distinct_bits(flags: &[u32]) -> bool {
 
 /// Fails the build unless the policy, console, priority, and internal flags are distinct bits that no two groups share.
 ///
-/// `creation_word` names it, so every compiler evaluates it; Rust 1.75 counts no use inside `const _`.
+/// `creation_word` names it, so every compiler evaluates it; Rust 1.84 counts no use inside `const _`.
 const LAYOUT: () = assert!(
     distinct_bits(&POLICY)
         && distinct_bits(&CONSOLE)

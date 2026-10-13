@@ -1,8 +1,11 @@
-//! Conversions between Win32 widths and Rust integers that `From` does not offer, written without `as`.
+//! Conversions between Win32 values and Rust integers that `From` does not offer, written without `as`.
 //!
 //! A `DWORD` widens to a `usize`, and a compile-time size narrows to a `DWORD`, through their little-endian bytes.
+//! A handle is an opaque value that no code dereferences, so it converts through its address alone.
 
+use std::ffi::c_void;
 use std::mem::size_of;
+use std::ptr;
 
 const _: () = assert!(
     size_of::<usize>() >= size_of::<u32>(),
@@ -35,6 +38,16 @@ pub(crate) const fn dword_const(value: usize) -> u32 {
     u32::from_le_bytes([first, second, third, fourth])
 }
 
+/// Returns a handle's numeric value, as a child sees it in an argument or the environment.
+pub(crate) fn handle_value(handle: *mut c_void) -> isize {
+    isize::from_ne_bytes(handle.addr().to_ne_bytes())
+}
+
+/// Returns the handle a numeric value names, a pointer without provenance.
+pub(crate) const fn handle_from_value(value: isize) -> *mut c_void {
+    ptr::without_provenance_mut(usize::from_ne_bytes(value.to_ne_bytes()))
+}
+
 #[cfg(kani)]
 mod proofs {
     use super::*;
@@ -63,6 +76,14 @@ mod proofs {
     }
 
     #[kani::proof]
+    fn every_handle_value_round_trips() {
+        let value: isize = kani::any();
+        assert_eq!(handle_value(handle_from_value(value)), value);
+        kani::cover!(value == -1);
+        kani::cover!(value == isize::MIN);
+    }
+
+    #[kani::proof]
     fn negative_control_bytes_in_big_endian_order() {
         let value: u32 = kani::any();
         let mut bytes = [0_u8; size_of::<usize>()];
@@ -88,6 +109,10 @@ mod tests {
         assert_eq!(dword_const(0), 0);
         assert_eq!(dword_const(0x0102_0304), 0x0102_0304);
         assert_eq!(dword_const(widen(u32::MAX)), u32::MAX);
+        for value in [0, 4, 0x1234, -1, -2, isize::MIN, isize::MAX] {
+            assert_eq!(handle_value(handle_from_value(value)), value);
+        }
+        assert!(handle_from_value(0).is_null());
     }
 
     #[test]

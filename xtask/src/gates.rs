@@ -5,36 +5,6 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// A lint exception the repository accepts, with the number of attributes that claim it.
-struct Exception {
-    file: &'static str,
-    lint: &'static str,
-    count: usize,
-    reason: &'static str,
-}
-
-/// Every `#[allow]` in the repository; an attribute outside this table, or a count that differs, fails the gate.
-const EXCEPTIONS: &[Exception] = &[
-    Exception {
-        file: "src/lib.rs",
-        lint: "unsafe_code",
-        count: 1,
-        reason: "sys is the only Win32 FFI boundary; it holds BorrowedPseudoConsole::borrow_raw and the test pseudoconsoles",
-    },
-    Exception {
-        file: "src/sys.rs",
-        lint: "clippy::as_conversions",
-        count: 1,
-        reason: "handle_value reads a handle's value, and Rust 1.75 has no pointer addr",
-    },
-    Exception {
-        file: "tests/support/mod.rs",
-        lint: "clippy::disallowed_methods",
-        count: 1,
-        reason: "a probe reports by exit code",
-    },
-];
-
 /// Identifiers that measure or wait on time (ADR 0010).
 const TIME_NAMES: [&str; 6] = [
     "SystemTime",
@@ -114,16 +84,13 @@ const LIBRARY_BANS: [(&[&str], &str); 4] = [
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Finding {
     pub(crate) file: String,
-    pub(crate) line: Option<usize>,
+    pub(crate) line: usize,
     pub(crate) rule: String,
 }
 
 impl fmt::Display for Finding {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.line {
-            Some(line) => write!(formatter, "{}:{line}: {}", self.file, self.rule),
-            None => write!(formatter, "{}: {}", self.file, self.rule),
-        }
+        write!(formatter, "{}:{}: {}", self.file, self.line, self.rule)
     }
 }
 
@@ -135,7 +102,6 @@ pub(crate) fn check(root: &Path) -> io::Result<Vec<Finding>> {
     }
     files.sort();
     let mut findings = Vec::new();
-    let mut allows = Vec::new();
     for path in files {
         let relative = path
             .strip_prefix(root)
@@ -143,11 +109,8 @@ pub(crate) fn check(root: &Path) -> io::Result<Vec<Finding>> {
             .to_string_lossy()
             .replace('\\', "/");
         let source = fs::read_to_string(&path)?;
-        let scan = scan(&relative, &source);
-        findings.extend(scan.findings);
-        allows.extend(scan.allows);
+        findings.extend(scan(&relative, &source));
     }
-    findings.extend(check_exceptions(&allows, EXCEPTIONS));
     Ok(findings)
 }
 
@@ -161,50 +124,6 @@ fn collect_rust_files(directory: &Path, files: &mut Vec<PathBuf>) -> io::Result<
         }
     }
     Ok(())
-}
-
-/// An `#[allow]` lint and where it appears.
-#[derive(Debug, PartialEq, Eq)]
-struct Allow {
-    file: String,
-    line: usize,
-    lint: String,
-}
-
-fn check_exceptions(allows: &[Allow], exceptions: &[Exception]) -> Vec<Finding> {
-    let mut findings = Vec::new();
-    for allow in allows {
-        let registered = exceptions
-            .iter()
-            .any(|exception| exception.file == allow.file && exception.lint == allow.lint);
-        if !registered {
-            findings.push(Finding {
-                file: allow.file.clone(),
-                line: Some(allow.line),
-                rule: format!(
-                    "#[allow({})] is not registered in xtask/src/gates.rs",
-                    allow.lint
-                ),
-            });
-        }
-    }
-    for exception in exceptions {
-        let count = allows
-            .iter()
-            .filter(|allow| allow.file == exception.file && allow.lint == exception.lint)
-            .count();
-        if count != exception.count {
-            findings.push(Finding {
-                file: exception.file.to_owned(),
-                line: None,
-                rule: format!(
-                    "{} is registered {} time(s) ({}) but allowed {count} time(s)",
-                    exception.lint, exception.count, exception.reason
-                ),
-            });
-        }
-    }
-    findings
 }
 
 /// The offset of the token after the next one: `dyn` after `Box <`, the arguments after `name (`, and the bracket after `# !`.
@@ -238,18 +157,13 @@ pub(crate) enum Token {
     },
 }
 
-struct Scan {
-    findings: Vec<Finding>,
-    allows: Vec<Allow>,
-}
-
-fn scan(file: &str, source: &str) -> Scan {
+fn scan(file: &str, source: &str) -> Vec<Finding> {
     let tokens = lex(source);
     let mut findings = Vec::new();
     let mut finding = |line: usize, rule: String| {
         findings.push(Finding {
             file: file.to_owned(),
-            line: Some(line),
+            line,
             rule,
         });
     };
@@ -260,7 +174,6 @@ fn scan(file: &str, source: &str) -> Scan {
         .collect();
     let guarded = test_only(&code);
     let library = file.starts_with("src/") && !TEST_ONLY_FILES.contains(&file);
-    let mut allows = Vec::new();
     for (index, (line, token)) in code.iter().enumerate() {
         let next = |offset: usize| {
             code.get(index.saturating_add(offset))
@@ -331,18 +244,19 @@ fn scan(file: &str, source: &str) -> Scan {
                         );
                     }
                     for lint in allowed_lints(&content) {
-                        allows.push(Allow {
-                            file: file.to_owned(),
-                            line: *line,
-                            lint,
-                        });
+                        finding(
+                            *line,
+                            format!(
+                                "allow({lint}) never expires; write #[expect({lint}, reason = \"...\")] on the one item it concerns (ADR 0013)"
+                            ),
+                        );
                     }
                 }
             }
             Token::Literal(_) | Token::Punct(_) | Token::Comment { .. } => {}
         }
     }
-    Scan { findings, allows }
+    findings
 }
 
 /// Returns the ADR 0016 rule that the identifier at `index` breaks.
@@ -714,7 +628,7 @@ fn second_argument(code: &[&(usize, Token)], after_open: usize) -> Option<Vec<To
     None
 }
 
-/// Returns the lint paths named by `allow(...)` inside an attribute.
+/// Returns the lint paths named by `allow(...)` inside an attribute, without its `reason`.
 fn allowed_lints(content: &[Token]) -> Vec<String> {
     let mut lints = Vec::new();
     let mut index = 0_usize;
@@ -746,6 +660,7 @@ fn allowed_lints(content: &[Token]) -> Vec<String> {
         }
         index = index.saturating_add(1);
     }
+    lints.retain(|lint| lint != "reason");
     lints
 }
 
@@ -976,19 +891,7 @@ mod tests {
     use super::*;
 
     fn rules(source: &str) -> Vec<String> {
-        scan("src/example.rs", source)
-            .findings
-            .into_iter()
-            .map(|finding| finding.rule)
-            .collect()
-    }
-
-    fn lints(source: &str) -> Vec<String> {
-        scan("src/example.rs", source)
-            .allows
-            .into_iter()
-            .map(|allow| allow.lint)
-            .collect()
+        rules_in("src/example.rs", source)
     }
 
     fn assert_clean(source: &str) {
@@ -1020,32 +923,27 @@ mod tests {
     }
 
     #[test]
-    fn allow_attributes_are_collected_and_checked_against_the_registry() {
-        assert_eq!(
-            lints("#[allow(clippy::expect_used, unsafe_code)]\n#![cfg_attr(test, allow(dead_code))]\n"),
-            ["clippy::expect_used", "unsafe_code", "dead_code"]
-        );
-        let allows = vec![Allow {
-            file: "src/a.rs".to_owned(),
-            line: 3,
-            lint: "unsafe_code".to_owned(),
-        }];
-        let registered = [Exception {
-            file: "src/a.rs",
-            lint: "unsafe_code",
-            count: 1,
-            reason: "test",
-        }];
-        assert_eq!(check_exceptions(&allows, &registered), Vec::new());
-        assert_eq!(check_exceptions(&allows, &[]).len(), 1);
-        let twice = [Exception {
-            file: "src/a.rs",
-            lint: "unsafe_code",
-            count: 2,
-            reason: "test",
-        }];
-        assert_eq!(check_exceptions(&allows, &twice).len(), 1);
-        assert_eq!(check_exceptions(&[], &registered).len(), 1);
+    fn allow_attributes_are_refused_in_every_form() {
+        let refused = rules(concat!(
+            "#[allow(clippy::expect_used, unsafe_code)]\n",
+            "#![cfg_attr(test, allow(dead_code))]\n",
+            "#![allow(missing_docs, reason = \"stated\")]\n",
+        ));
+        assert_eq!(refused.len(), 4, "{refused:?}");
+        for lint in [
+            "clippy::expect_used",
+            "unsafe_code",
+            "dead_code",
+            "missing_docs",
+        ] {
+            assert!(
+                refused
+                    .iter()
+                    .any(|rule| rule.starts_with(&format!("allow({lint})"))),
+                "{lint}: {refused:?}"
+            );
+        }
+        assert_clean("#[expect(unsafe_code, reason = \"the FFI boundary\")]\nmod sys;\n");
     }
 
     #[test]
@@ -1073,7 +971,6 @@ mod tests {
 
     fn rules_in(file: &str, source: &str) -> Vec<String> {
         scan(file, source)
-            .findings
             .into_iter()
             .map(|finding| finding.rule)
             .collect()

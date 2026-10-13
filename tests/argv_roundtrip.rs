@@ -105,8 +105,8 @@ mod windows {
                 0,
                 ptr::null(),
                 ptr::null(),
-                &startup,
-                &mut information,
+                &raw const startup,
+                &raw mut information,
             )
         };
         if created == 0 {
@@ -125,7 +125,7 @@ mod windows {
         }
         let mut code = 0_u32;
         // SAFETY: the owned process handle is valid and `code` is writable.
-        if unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut code) } == 0 {
+        if unsafe { GetExitCodeProcess(process.as_raw_handle(), &raw mut code) } == 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(code)

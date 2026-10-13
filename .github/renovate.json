@@ -1,0 +1,11 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "packageRules": [
+    {
+      "description": "A numeric Rust toolchain is the MSRV, which follows rust-version in Cargo.toml and moves only with an ADR (ADR 0018).",
+      "matchDepNames": ["rust"],
+      "matchCurrentValue": "/^\\d+\\.\\d+(\\.\\d+)?$/",
+      "enabled": false
+    }
+  ]
+}

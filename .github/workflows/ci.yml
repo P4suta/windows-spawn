@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
         with:
-          toolchain: "1.75"
+          toolchain: "1.84"
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
         with:
           toolchain: nightly-2026-07-02
@@ -52,7 +52,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-2022, windows-latest]
-        rust: [stable, "1.75"]
+        rust: [stable, "1.84"]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:

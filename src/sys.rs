@@ -47,7 +47,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use crate::domain::attribute_rules::{self, SizeFault};
-use crate::domain::conversion_rules::{dword_const, widen};
+use crate::domain::conversion_rules::{dword_const, handle_from_value, handle_value, widen};
 use crate::domain::creation_flag_rules::{creation_word, ConsoleFlag, PriorityFlag};
 use crate::domain::environment_rules;
 use crate::handles::BorrowedPseudoConsole;
@@ -132,7 +132,7 @@ fn duplicate_between(
             source_process,
             source,
             target_process,
-            &mut duplicate,
+            &raw mut duplicate,
             0,
             i32::from(inheritable),
             options,
@@ -207,7 +207,7 @@ pub(crate) fn duplicate_remote<'a, K>(
             GetCurrentProcess(),
             raw(source.untyped()),
             raw(target_process.untyped()),
-            &mut value,
+            &raw mut value,
             0,
             i32::from(inheritable),
             DUPLICATE_SAME_ACCESS,
@@ -281,7 +281,15 @@ pub(crate) fn create_pipe(parent_reads: bool) -> io::Result<PipeEnds> {
     let mut read = ptr::null_mut();
     let mut write = ptr::null_mut();
     // SAFETY: both output pointers are valid, and null security attributes make both handles non-inheritable.
-    if unsafe { CreatePipe(&mut read, &mut write, ptr::null::<SECURITY_ATTRIBUTES>(), 0) } == 0 {
+    if unsafe {
+        CreatePipe(
+            &raw mut read,
+            &raw mut write,
+            ptr::null::<SECURITY_ATTRIBUTES>(),
+            0,
+        )
+    } == 0
+    {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: CreatePipe succeeded, so both handles are valid and distinct; they are adopted together.
@@ -487,7 +495,7 @@ pub(crate) fn open_job_process(
     let mut member = 0;
     // SAFETY: both handles are valid for the query and `member` is writable.
     bool_result(unsafe {
-        IsProcessInJob(process.as_raw_handle(), raw(job.untyped()), &mut member)
+        IsProcessInJob(process.as_raw_handle(), raw(job.untyped()), &raw mut member)
     })?;
     Ok((member != 0).then_some(Owned::adopt(process)))
 }
@@ -519,7 +527,7 @@ impl<'a> AttributeList<'a> {
         let mut bytes = 0_usize;
         // SAFETY: the documented size query passes a null list.
         let probed =
-            unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), count, 0, &mut bytes) };
+            unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), count, 0, &raw mut bytes) };
         let error = io::Error::last_os_error();
         let probe = attribute_rules::probe(
             probed != 0,
@@ -537,7 +545,7 @@ impl<'a> AttributeList<'a> {
         let pointer = storage.as_mut_ptr().cast();
         let mut actual = size_of_val(&*storage);
         // SAFETY: the `Box<[usize]>` is word-aligned, stable, at least `bytes` long, and owned by the returned `AttributeList`.
-        if unsafe { InitializeProcThreadAttributeList(pointer, count, 0, &mut actual) } == 0 {
+        if unsafe { InitializeProcThreadAttributeList(pointer, count, 0, &raw mut actual) } == 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(Self {
@@ -716,8 +724,8 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
             flags,
             environment,
             current_dir,
-            &startup.StartupInfo,
-            &mut information,
+            &raw const startup.StartupInfo,
+            &raw mut information,
         )
     } == 0
     {
@@ -738,7 +746,7 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
     })
 }
 
-fn set_standard_handles(startup: &mut STARTUPINFOEXW, stdio: StartupStdio) {
+const fn set_standard_handles(startup: &mut STARTUPINFOEXW, stdio: StartupStdio) {
     startup.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
     if let StartupStdio::Ordinary(handles) = stdio {
         startup.StartupInfo.hStdInput = handle_from_value(handles.stdin.as_raw());
@@ -951,7 +959,7 @@ pub(crate) mod test_support {
     pub(crate) fn process_handle_count(process: BorrowedHandle<'_>) -> std::io::Result<u32> {
         let mut count = 0;
         // SAFETY: `process` is valid and `count` is writable DWORD storage.
-        if unsafe { GetProcessHandleCount(process.as_raw_handle(), &mut count) } == 0 {
+        if unsafe { GetProcessHandleCount(process.as_raw_handle(), &raw mut count) } == 0 {
             Err(std::io::Error::last_os_error())
         } else {
             Ok(count)
@@ -978,7 +986,7 @@ pub(crate) mod test_support {
                 GetCurrentProcess(),
                 handle.as_raw_handle(),
                 GetCurrentProcess(),
-                &mut duplicate,
+                &raw mut duplicate,
                 0,
                 0,
                 DUPLICATE_SAME_ACCESS,
@@ -998,7 +1006,7 @@ pub(crate) mod test_support {
                 GetCurrentProcess(),
                 handle.as_raw_handle(),
                 GetCurrentProcess(),
-                &mut duplicate,
+                &raw mut duplicate,
                 access,
                 0,
                 0,
@@ -1013,7 +1021,7 @@ pub(crate) mod test_support {
     pub(crate) fn is_inheritable(handle: BorrowedHandle<'_>) -> bool {
         let mut flags = 0;
         // SAFETY: `handle` is valid and `flags` is writable.
-        let queried = unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) };
+        let queried = unsafe { GetHandleInformation(handle.as_raw_handle(), &raw mut flags) };
         assert_ne!(queried, 0, "GetHandleInformation failed");
         flags & HANDLE_FLAG_INHERIT != 0
     }
@@ -1023,7 +1031,7 @@ pub(crate) mod test_support {
         let mut read = ptr::null_mut();
         let mut write = ptr::null_mut();
         // SAFETY: both output pointers are writable, and null security attributes make both handles non-inheritable.
-        let created = unsafe { CreatePipe(&mut read, &mut write, ptr::null(), 0) };
+        let created = unsafe { CreatePipe(&raw mut read, &raw mut write, ptr::null(), 0) };
         assert_ne!(created, 0, "CreatePipe failed");
         // SAFETY: CreatePipe succeeded, so both handles are new and distinct.
         unsafe {
@@ -1064,7 +1072,8 @@ pub(crate) mod test_support {
             self.armed = false;
             let mut code = 0_u32;
             // SAFETY: the owned process handle is valid and `code` is writable.
-            let queried = unsafe { GetExitCodeProcess(self.process.as_raw_handle(), &mut code) };
+            let queried =
+                unsafe { GetExitCodeProcess(self.process.as_raw_handle(), &raw mut code) };
             assert_ne!(queried, 0, "GetExitCodeProcess failed");
             code
         }
@@ -1102,7 +1111,7 @@ pub(crate) mod test_support {
                     input_reader.as_raw_handle(),
                     output_writer.as_raw_handle(),
                     0,
-                    &mut value,
+                    &raw mut value,
                 )
             };
             assert!(created >= 0, "CreatePseudoConsole failed with {created:#x}");
@@ -1157,7 +1166,7 @@ pub(crate) fn exit_status(process: Borrowed<'_, Process>) -> io::Result<ExitStat
 
     let mut code = 0_u32;
     // SAFETY: `code` is writable and the process handle is valid.
-    if unsafe { GetExitCodeProcess(raw(process.untyped()), &mut code) } == 0 {
+    if unsafe { GetExitCodeProcess(raw(process.untyped()), &raw mut code) } == 0 {
         Err(io::Error::last_os_error())
     } else {
         Ok(ExitStatus::from_raw(code))
@@ -1197,7 +1206,7 @@ pub(crate) fn read_handle(handle: Borrowed<'_, Pipe>, buffer: &mut [u8]) -> io::
             raw(handle.untyped()),
             buffer.as_mut_ptr(),
             length,
-            &mut read,
+            &raw mut read,
             ptr::null_mut(),
         )
     } == 0
@@ -1227,7 +1236,7 @@ pub(crate) fn write_handle(handle: Borrowed<'_, Pipe>, buffer: &[u8]) -> io::Res
             raw(handle.untyped()),
             buffer.as_ptr(),
             length,
-            &mut written,
+            &raw mut written,
             ptr::null_mut(),
         )
     } == 0
@@ -1353,21 +1362,6 @@ fn owned(handle: HANDLE) -> io::Result<OwnedHandle> {
 
 fn is_valid_handle(handle: HANDLE) -> bool {
     !handle.is_null() && handle != INVALID_HANDLE_VALUE
-}
-
-/// Returns a handle's numeric value, as a child sees it in an argument or the environment.
-///
-/// Rust 1.75 has no `addr` for pointers, so reading the value takes `as`.
-#[allow(clippy::as_conversions)]
-pub(crate) fn handle_value(handle: HANDLE) -> isize {
-    handle as isize
-}
-
-/// Returns the handle a numeric value names.
-///
-/// A handle is an opaque value that no code dereferences, so the pointer carries no provenance, as `ptr::without_provenance_mut` would make it.
-pub(crate) const fn handle_from_value(value: isize) -> HANDLE {
-    ptr::null_mut::<c_void>().wrapping_byte_offset(value)
 }
 
 /// Returns true if `error` carries the Win32 error `code`.

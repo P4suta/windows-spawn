@@ -41,7 +41,7 @@ pub(crate) fn pipe() -> io::Result<(File, File)> {
     let mut read = ptr::null_mut();
     let mut write = ptr::null_mut();
     // SAFETY: both output pointers are writable, and null security attributes make both handles non-inheritable.
-    if unsafe { CreatePipe(&mut read, &mut write, ptr::null(), 0) } == 0 {
+    if unsafe { CreatePipe(&raw mut read, &raw mut write, ptr::null(), 0) } == 0 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: CreatePipe succeeded, so both handles are new and distinct.
@@ -66,7 +66,7 @@ pub(crate) fn local_duplicate<T: AsHandle>(
             GetCurrentProcess(),
             source.as_handle().as_raw_handle(),
             GetCurrentProcess(),
-            &mut duplicate,
+            &raw mut duplicate,
             0,
             i32::from(inheritable),
             DUPLICATE_SAME_ACCESS,
@@ -166,7 +166,7 @@ impl ProbeCommand {
         ))
     }
 
-    pub(crate) fn command_mut(&mut self) -> &mut Command {
+    pub(crate) const fn command_mut(&mut self) -> &mut Command {
         &mut self.command
     }
 
@@ -205,8 +205,11 @@ pub(crate) fn run_probe_if_requested() {
     exit(code);
 }
 
-/// Ends the probe with `code`; a probe reports by exit code, and no destructor may run after the gate.
-#[allow(clippy::disallowed_methods)]
+/// Ends the probe with `code`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a probe reports by exit code, and no destructor may run after the gate"
+)]
 fn exit(code: u32) -> ! {
     std::process::exit(i32::from_ne_bytes(code.to_ne_bytes()))
 }
@@ -307,7 +310,7 @@ impl ProcessExitGuard {
         self.armed = false;
         let mut code = 0_u32;
         // SAFETY: the owned process handle is valid and `code` is writable.
-        if unsafe { GetExitCodeProcess(self.process.as_raw_handle(), &mut code) } == 0 {
+        if unsafe { GetExitCodeProcess(self.process.as_raw_handle(), &raw mut code) } == 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(code)

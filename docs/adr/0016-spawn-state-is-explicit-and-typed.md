@@ -34,7 +34,7 @@ Main dropped #14, and with it those rules.
 
 ## Consequences
 
-- The registry holds no `expect_used` or `too_many_lines` exception for `src/child.rs` or `src/transaction.rs`.
+- No lint exception covers `expect_used` or `too_many_lines` in `src/child.rs` or `src/transaction.rs`.
 - A handle of the wrong kind, a value of the wrong table, or an attribute value that dies before its list fails to compile.
 - Concurrency in the library needs a typed boundary and a model before it can pass the gate.
 - The output readers of `Child::wait_with_output` stay threads that own what they read, so they share no state.

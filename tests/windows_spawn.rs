@@ -58,7 +58,8 @@ fn attached_to_test_pseudoconsole() -> bool {
     };
     let mut information = CONSOLE_SCREEN_BUFFER_INFO::default();
     // SAFETY: `output` is an open console handle and `information` is writable.
-    let queried = unsafe { GetConsoleScreenBufferInfo(output.as_raw_handle(), &mut information) };
+    let queried =
+        unsafe { GetConsoleScreenBufferInfo(output.as_raw_handle(), &raw mut information) };
     queried != 0 && information.dwSize.X == PCON_SIZE.X && information.dwSize.Y == PCON_SIZE.Y
 }
 
@@ -76,7 +77,7 @@ fn file_identity(handle: HANDLE) -> io::Result<(u32, u64)> {
     // SAFETY: the all-zero value is a valid output buffer initialization.
     let mut information = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
     // SAFETY: the handle is valid and the output buffer is writable for the call.
-    if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0 {
+    if unsafe { GetFileInformationByHandle(handle, &raw mut information) } == 0 {
         Err(io::Error::last_os_error())
     } else {
         let index =
@@ -240,19 +241,40 @@ fn native_standard_handle_probe() {
         let mut byte = [0_u8; 1];
         let mut read = 0_u32;
         // SAFETY: the buffers and byte counts are valid for synchronous I/O.
-        let read_succeeded =
-            unsafe { ReadFile(input, byte.as_mut_ptr(), 1, &mut read, std::ptr::null_mut()) };
+        let read_succeeded = unsafe {
+            ReadFile(
+                input,
+                byte.as_mut_ptr(),
+                1,
+                &raw mut read,
+                std::ptr::null_mut(),
+            )
+        };
         assert_ne!(read_succeeded, 0);
         assert_eq!(read, 0);
         let mut written = 0_u32;
         // SAFETY: the one-byte buffer and byte count are valid.
-        let wrote_stdout =
-            unsafe { WriteFile(output, byte.as_ptr(), 1, &mut written, std::ptr::null_mut()) };
+        let wrote_stdout = unsafe {
+            WriteFile(
+                output,
+                byte.as_ptr(),
+                1,
+                &raw mut written,
+                std::ptr::null_mut(),
+            )
+        };
         assert_ne!(wrote_stdout, 0);
         assert_eq!(written, 1);
         // SAFETY: the one-byte buffer and byte count are valid.
-        let wrote_stderr =
-            unsafe { WriteFile(error, byte.as_ptr(), 1, &mut written, std::ptr::null_mut()) };
+        let wrote_stderr = unsafe {
+            WriteFile(
+                error,
+                byte.as_ptr(),
+                1,
+                &raw mut written,
+                std::ptr::null_mut(),
+            )
+        };
         assert_ne!(wrote_stderr, 0);
         assert_eq!(written, 1);
     }
@@ -342,7 +364,7 @@ fn requested_mitigation_is_visible_on_the_real_process() -> io::Result<()> {
 fn handle_count() -> io::Result<u32> {
     let mut count = 0;
     // SAFETY: the pseudo-handle is valid and `count` is writable DWORD storage.
-    let success = unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) };
+    let success = unsafe { GetProcessHandleCount(GetCurrentProcess(), &raw mut count) };
     if success == 0 {
         Err(io::Error::last_os_error())
     } else {
@@ -588,7 +610,7 @@ impl TestPseudoConsole {
             let mut read = std::ptr::null_mut();
             let mut write = std::ptr::null_mut();
             // SAFETY: both output pointers are writable; on success each handle is adopted once.
-            if unsafe { CreatePipe(&mut read, &mut write, std::ptr::null(), 0) } == 0 {
+            if unsafe { CreatePipe(&raw mut read, &raw mut write, std::ptr::null(), 0) } == 0 {
                 return Err(io::Error::last_os_error());
             }
             // SAFETY: CreatePipe succeeded and returned two distinct handles.
@@ -610,7 +632,7 @@ impl TestPseudoConsole {
                 input_reader.as_raw_handle(),
                 output_writer.as_raw_handle(),
                 0,
-                &mut value,
+                &raw mut value,
             )
         };
         if result < 0 {
@@ -654,7 +676,7 @@ impl TestPseudoConsole {
                 writer.as_raw_handle(),
                 input.as_ptr(),
                 length,
-                &mut written,
+                &raw mut written,
                 std::ptr::null_mut(),
             )
         } == 0

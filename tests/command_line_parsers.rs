@@ -135,7 +135,7 @@ mod windows {
     fn shell(line: &[u16]) -> io::Result<Vec<Vec<u16>>> {
         let mut count = 0;
         // SAFETY: `line` is NUL-terminated and `count` is writable.
-        let vector = unsafe { CommandLineToArgvW(line.as_ptr(), &mut count) };
+        let vector = unsafe { CommandLineToArgvW(line.as_ptr(), &raw mut count) };
         if vector.is_null() {
             return Err(io::Error::last_os_error());
         }
@@ -201,7 +201,16 @@ mod windows {
         let mut environment = ptr::null_mut();
         let mut startup = 0;
         // SAFETY: every out pointer is writable.
-        if unsafe { get(&mut count, &mut vector, &mut environment, 0, &mut startup) } != 0 {
+        if unsafe {
+            get(
+                &raw mut count,
+                &raw mut vector,
+                &raw mut environment,
+                0,
+                &raw mut startup,
+            )
+        } != 0
+        {
             return Err(invalid("__wgetmainargs failed".to_owned()));
         }
         // SAFETY: __wgetmainargs built `count` NUL-terminated strings.

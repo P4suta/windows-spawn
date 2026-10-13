@@ -8,7 +8,7 @@ process trees that end with their owner, Jobs, pseudoconsoles, handle handoff, s
 Use `std::process::Command` for portable child processes.
 Use this crate when a Windows program needs one of these, or a spawn that passes the child no stray handle and releases everything when a step fails.
 
-Requires Windows 10 version 1809 or later and Rust 1.75 or later.
+Requires Windows 10 version 1809 or later and Rust 1.84 or later.
 Non-Windows targets expose no API.
 
 Not affiliated with Microsoft or `windows-rs`; `windows-` names the target platform.

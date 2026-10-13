@@ -1,11 +1,11 @@
 # 0013 — Repository laws are enforced mechanically
 
-Status: accepted (2026-09-25); ADR 0016 extends the trait-object rule to every `dyn`
+Status: accepted (2026-09-25); ADR 0016 extends the trait-object rule to every `dyn`, and ADR 0018 replaces the exception registry with `#[expect]`
 
 ## Context
 
 Rules kept by review alone erode: timed waits, explanatory comments, and silent conversions came back after they were removed.
-Rust 1.75, the MSRV, has neither `#[expect]` nor `reason =`, so a lint exception can neither state its reason nor prove it is still needed.
+Rust 1.75, the MSRV then, had neither `#[expect]` nor `reason =`, so a lint exception could neither state its reason nor prove it was still needed.
 
 ## Decision
 
@@ -19,9 +19,8 @@ Every law has a mechanism, and CI runs it.
   `cargo xtask gates` bans time-named identifiers, delay commands in strings, and `WaitForSingleObject` with a bound other than `INFINITE` or `0`.
 - Reasons belong in commit messages.
   The gate allows doc comments and whole-line `// SAFETY:` runs, and nothing else.
-- Every lint exception is registered.
-  The gate collects each `#[allow]` lint and requires an entry with the same file, lint, and count, with a reason, in `xtask/src/gates.rs`.
-  An entry no attribute uses also fails.
+- Every lint exception states its reason and expires (ADR 0018).
+  It is an `#[expect(…, reason = …)]` on the one item it concerns, and the gate refuses every `allow`.
 - Defaults are chosen explicitly.
   The gate bans `#[default]`; a documented `impl Default` states the choice.
 - Types are closed or generic.
@@ -30,12 +29,9 @@ Every law has a mechanism, and CI runs it.
   `clippy.toml` bans `mem::forget`, `process::exit`, `env::set_var`, and `env::remove_var`.
 
 The gate is a lexer in xtask with no dependencies, because `syn` needs `unicode-ident`, whose license `deny.toml` does not allow.
-Rustc lints are limited to those Rust 1.75 recognizes.
+Rustc lints are limited to those the MSRV recognizes.
 
 ## Consequences
 
 - Changing a law changes the lint table, `clippy.toml`, or the gate, with its tests.
-- Reading a handle's value keeps `as` behind a registered exception in `sys`, because Rust 1.75 has no pointer `addr`.
-  A value becomes a handle through a byte offset from null.
-  A `DWORD` width converts through its bytes in `domain::conversion_rules`, where Kani proves each conversion for every input.
-- When the MSRV reaches Rust 1.81, `#[expect(…, reason = …)]` replaces the registry.
+- A conversion that `From` lacks goes through bytes or a pointer's address in `domain::conversion_rules`, where Kani proves it for every input, so no `as` remains.

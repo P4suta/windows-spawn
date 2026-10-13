@@ -187,7 +187,7 @@ fn run_simple(root: &Path, task: SimpleTask) -> Result<()> {
         }
         SimpleTask::Msrv => run_cargo_with_toolchain(
             root,
-            "1.75",
+            "1.84",
             &["check", "--workspace", "--all-targets", "--locked"],
         ),
         SimpleTask::CrossTargets => {
@@ -500,7 +500,7 @@ fn validate_cyclonedx(path: &Path, package: &PackageInfo) -> Result<()> {
     if document
         .get("dependencies")
         .and_then(Value::as_array)
-        .map_or(true, Vec::is_empty)
+        .is_none_or(Vec::is_empty)
     {
         return fail("CycloneDX SBOM has no dependency relationships");
     }
@@ -511,7 +511,7 @@ fn require_licenses(component: &Value) -> Result<()> {
     if component
         .get("licenses")
         .and_then(Value::as_array)
-        .map_or(true, Vec::is_empty)
+        .is_none_or(Vec::is_empty)
     {
         let name = component
             .get("name")
