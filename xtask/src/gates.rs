@@ -569,13 +569,68 @@ fn continues(next: Option<&&(usize, Token)>) -> bool {
     }
 }
 
+/// Returns true if what starts at `start`, past further attributes and a visibility,
+/// is a `let` statement or a `static`, `const`, `use`, or `type` item, which only a `;` ends.
+fn ends_at_semicolon(code: &[&(usize, Token)], start: usize) -> bool {
+    let token_at = |at: usize| code.get(at).map(|(_, found)| found);
+    let mut at = start;
+    loop {
+        match token_at(at) {
+            Some(Token::Punct('#')) => at = group_end(code, at.saturating_add(1)),
+            Some(Token::Ident(word)) if word == "pub" => {
+                at = at.saturating_add(1);
+                if token_at(at) == Some(&Token::Punct('(')) {
+                    at = group_end(code, at);
+                }
+            }
+            Some(Token::Ident(word)) if word == "const" => {
+                return !matches!(
+                    token_at(at.saturating_add(1)),
+                    Some(Token::Ident(next)) if matches!(next.as_str(), "fn" | "unsafe" | "async" | "extern")
+                );
+            }
+            Some(Token::Ident(word)) => {
+                return matches!(word.as_str(), "let" | "static" | "use" | "type");
+            }
+            Some(Token::Literal(_) | Token::Str(_) | Token::Punct(_) | Token::Comment { .. })
+            | None => {
+                return false;
+            }
+        }
+    }
+}
+
+/// Returns the index after the bracket that closes the one at `open`.
+fn group_end(code: &[&(usize, Token)], open: usize) -> usize {
+    let mut depth = 0_usize;
+    for (index, (_, token)) in code.iter().enumerate().skip(open) {
+        match token {
+            Token::Punct('(' | '[' | '{') => depth = depth.saturating_add(1),
+            Token::Punct(')' | ']' | '}') => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return index.saturating_add(1);
+                }
+            }
+            Token::Ident(_)
+            | Token::Literal(_)
+            | Token::Str(_)
+            | Token::Punct(_)
+            | Token::Comment { .. } => {}
+        }
+    }
+    code.len()
+}
+
 /// Returns the index after what the attribute whose `[` is at `open` guards.
 ///
-/// That ends with a `;` or `,` outside brackets, with a `}` that closes its body when nothing continues the statement,
-/// or before the bracket that closes the enclosing block.
+/// That ends with a `;` or `,` outside brackets, which alone ends a `let` statement and a `static`, `const`, `use`, or `type` item.
+/// Another item ends with a `}` that closes its body when nothing continues the statement.
+/// Either ends before the bracket that closes the enclosing block.
 fn item_end(code: &[&(usize, Token)], open: usize) -> usize {
     let mut depth = 0_usize;
     let mut in_attribute = true;
+    let mut semicolon = false;
     for (index, (_, token)) in code.iter().enumerate().skip(open) {
         match token {
             Token::Punct('(' | '[' | '{') => depth = depth.saturating_add(1),
@@ -587,7 +642,11 @@ fn item_end(code: &[&(usize, Token)], open: usize) -> usize {
                 if depth == 0 {
                     if in_attribute {
                         in_attribute = false;
-                    } else if *close == '}' && !continues(code.get(index.saturating_add(1))) {
+                        semicolon = ends_at_semicolon(code, index.saturating_add(1));
+                    } else if *close == '}'
+                        && !semicolon
+                        && !continues(code.get(index.saturating_add(1)))
+                    {
                         return index.saturating_add(1);
                     }
                 }
@@ -1115,6 +1174,9 @@ mod tests {
             "#[cfg(test)] static X: u8 = 0; fn f() { let m = Mutex::new(0); }",
             "#[cfg(test)] let x = S { a: 1 }.with(Cell::new(1)); fn f() { let m = HashMap::new(); }",
             "#[cfg(test)] fn g() {} fn f() { let m = HashMap::new(); }",
+            "#[cfg(test)] let x = { 1 }; fn f() { let m = HashMap::new(); }",
+            "#[cfg(test)] const fn g() -> u8 { 1 } fn f() { let m = HashMap::new(); }",
+            "#[cfg(test)] pub(crate) const unsafe fn g() {} fn f() { let m = HashMap::new(); }",
         ] {
             assert_eq!(rules_in("src/example.rs", source).len(), 1, "{source}");
             assert_eq!(rules_in("tests/example.rs", source), Vec::<String>::new());
@@ -1135,6 +1197,11 @@ mod tests {
             "fn f() { #[cfg(test)] let c = if a { Cell::new(1) } else { Cell::new(2) }; }",
             "fn f() { #[cfg(test)] let s = S { a: 1 }.with(RefCell::new(1))?; }",
             "match x { #[cfg(test)] A => { Cell::new(1) }, B => 2 }",
+            "fn f() { #[cfg(test)] let value = { 1 } + Arc::strong_count(&arc); }",
+            "#[cfg(test)] pub(crate) static S: u8 = { 1 } + Cell::new(1).get();",
+            "#[cfg(test)] #[doc(hidden)] const N: usize = { 1 } + HashMap::<u8, u8>::new().len();",
+            "#[cfg(test)] use std::{cell::Cell, sync::Arc};",
+            "#[cfg(test)] type Shared = { Arc<u8> };",
         ] {
             assert_eq!(
                 rules_in("src/example.rs", source),
