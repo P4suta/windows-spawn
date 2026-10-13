@@ -1,14 +1,17 @@
 //! Reusable process-launch intent.
 
 use std::ffi::{OsStr, OsString};
-use std::io;
+use std::fmt;
 use std::os::windows::io::{AsHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output};
 
 use crate::child::{Child, SuspendedChild};
+use crate::domain::creation_flag_rules as flags;
+use crate::error::{Operation, Phase, Result, SpawnError};
 use crate::handles::Stdio;
-use crate::options::SpawnOptions;
+use crate::mitigation::MitigationPolicy;
+use crate::options::{ConsoleMode, Creation, PriorityClass, SpawnOptions};
 use crate::plan::{IoMode, SpawnPlan};
 use crate::sys;
 use crate::transaction::SpawnTransaction;
@@ -32,30 +35,32 @@ pub(crate) enum EnvValue {
     Handle(OwnedHandle),
 }
 
-/// A reusable description of a Windows process launch.
+/// A reusable description of a Windows process launch, with the API of [`std::process::Command`].
+///
+/// Beyond std, it owns the choices of `CreateProcessW` that need no borrowed capability:
+/// [`Self::own_process_tree`], [`Self::console`], [`Self::priority`], [`Self::mitigation`], and the creation-flag setters.
+/// Capabilities that one spawn borrows (Jobs, an alternate parent, a pseudoconsole) go in [`SpawnOptions`],
+/// which the `*_with` methods take.
 ///
 /// Handles given to [`Self::arg_handle`] and [`Self::env_handle`] are duplicated privately when configured.
 /// Each spawn duplicates them into the effective parent and only then lowers their values to decimal text.
 ///
 /// # Examples
 ///
-/// Capture output and terminate leftover descendants:
+/// Capture a tool's output, and end every process it starts once it exits:
 ///
 /// ```
-/// use windows_spawn::{Command, DropPolicy, SpawnOptions};
+/// use windows_spawn::Command;
 ///
-/// // `.bat` and `.cmd` are rejected; the shell is explicit.
-/// let shell = std::env::var_os("COMSPEC").expect("COMSPEC is set on Windows");
-/// let mut command = Command::new(shell);
-/// command.args(["/D", "/S", "/C"]).raw_arg("echo hello");
-///
-/// let output = command.output_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
+/// let output = Command::new("cmd.exe")
+///     .args(["/D", "/C", "echo hello"])
+///     .own_process_tree()
+///     .output()?;
 ///
 /// assert!(output.status.success());
 /// assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
-/// # Ok::<(), std::io::Error>(())
+/// # Ok::<(), windows_spawn::SpawnError>(())
 /// ```
-#[derive(Debug)]
 pub struct Command {
     pub(crate) program: OsString,
     pub(crate) args: Vec<Arg>,
@@ -65,6 +70,39 @@ pub struct Command {
     pub(crate) stdin: Option<Stdio>,
     pub(crate) stdout: Option<Stdio>,
     pub(crate) stderr: Option<Stdio>,
+    pub(crate) creation: Creation,
+}
+
+/// Prints the program and its arguments as [`std::process::Command`] does: `"cmd.exe" "/D" echo hi`.
+///
+/// A raw argument prints as written, and a handle argument as `<handle>`.
+/// The alternate form, `{:#?}`, prints every setting.
+impl fmt::Debug for Command {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if formatter.alternate() {
+            return formatter
+                .debug_struct("Command")
+                .field("program", &self.program)
+                .field("args", &self.args)
+                .field("env_clear", &self.env_clear)
+                .field("env_ops", &self.env_ops)
+                .field("cwd", &self.cwd)
+                .field("stdin", &self.stdin)
+                .field("stdout", &self.stdout)
+                .field("stderr", &self.stderr)
+                .field("creation", &self.creation)
+                .finish();
+        }
+        write!(formatter, "{:?}", self.program)?;
+        for arg in &self.args {
+            match arg {
+                Arg::Text(text) => write!(formatter, " {text:?}")?,
+                Arg::Raw(text) => write!(formatter, " {}", text.to_string_lossy())?,
+                Arg::Handle(_) => formatter.write_str(" <handle>")?,
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Command {
@@ -80,6 +118,7 @@ impl Command {
             stdin: None,
             stdout: None,
             stderr: None,
+            creation: Creation::new(),
         }
     }
 
@@ -113,12 +152,9 @@ impl Command {
     ///
     /// # Errors
     ///
-    /// Returns an error if the source handle cannot be duplicated.
-    pub fn arg_handle<T: AsHandle>(&mut self, handle: &T) -> io::Result<&mut Self> {
-        self.args.push(Arg::Handle(sys::duplicate_local(
-            handle.as_handle(),
-            false,
-        )?));
+    /// Returns a Windows error if the source handle cannot be duplicated.
+    pub fn arg_handle<T: AsHandle>(&mut self, handle: &T) -> Result<&mut Self> {
+        self.args.push(Arg::Handle(private_duplicate(handle)?));
         Ok(self)
     }
 
@@ -152,15 +188,15 @@ impl Command {
     ///
     /// # Errors
     ///
-    /// Returns an error if the source handle cannot be duplicated.
+    /// Returns a Windows error if the source handle cannot be duplicated.
     pub fn env_handle<K: AsRef<OsStr>, T: AsHandle>(
         &mut self,
         key: K,
         handle: &T,
-    ) -> io::Result<&mut Self> {
+    ) -> Result<&mut Self> {
         self.env_ops.push(EnvOp::Set(
             key.as_ref().to_os_string(),
-            EnvValue::Handle(sys::duplicate_local(handle.as_handle(), false)?),
+            EnvValue::Handle(private_duplicate(handle)?),
         ));
         Ok(self)
     }
@@ -203,6 +239,76 @@ impl Command {
         self
     }
 
+    /// Makes the returned [`Child`] own the child's whole process tree: the child and every process it starts.
+    ///
+    /// The spawn puts the child in a private Job, innermost after any Jobs of [`SpawnOptions::job`], and the `Child` owns that Job:
+    ///
+    /// - [`Child::kill`] terminates every process in the tree, not only the child.
+    /// - Dropping the `Child`, or the exit of the process that holds it, terminates every process still in the tree.
+    /// - [`Child::wait_with_output`] and [`Self::output`] terminate the descendants once the child exits,
+    ///   so a descendant that inherited an output pipe can't keep the call from returning.
+    /// - [`Child::wait_tree`] waits until every process in the tree has exited.
+    ///
+    /// The Job allows no breakaway, so a descendant that asks for `CREATE_BREAKAWAY_FROM_JOB` fails to start.
+    /// A daemon that a build starts and expects to outlive it, such as `mspdbsrv.exe` or an `sccache` server, ends with the tree too.
+    /// A [`SuspendedChild`] already runs in the Job, and dropping it terminates the child before it runs.
+    pub fn own_process_tree(&mut self) -> &mut Self {
+        self.creation.owns_tree = true;
+        self
+    }
+
+    /// Chooses the child's console.
+    ///
+    /// A pseudoconsole from [`SpawnOptions::pseudo_console`] is the child's console, so it combines only with [`ConsoleMode::Inherit`].
+    pub fn console(&mut self, mode: ConsoleMode) -> &mut Self {
+        self.creation.console = mode;
+        self
+    }
+
+    /// Chooses the child's scheduling priority class.
+    ///
+    /// Without a choice, the child gets the normal class, or the caller's when that is idle or below normal.
+    pub fn priority(&mut self, class: PriorityClass) -> &mut Self {
+        self.creation.set_priority(class);
+        self
+    }
+
+    /// Applies a process-creation mitigation policy: `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`.
+    pub fn mitigation(&mut self, policy: MitigationPolicy) -> &mut Self {
+        self.creation.mitigation = policy;
+        self
+    }
+
+    /// Makes the child the root of a new process group, which `GenerateConsoleCtrlEvent` can signal: `CREATE_NEW_PROCESS_GROUP`.
+    pub fn new_process_group(&mut self) -> &mut Self {
+        self.creation.set(flags::NEW_PROCESS_GROUP);
+        self
+    }
+
+    /// Gives the child its logical parent's processor affinity: `INHERIT_PARENT_AFFINITY`.
+    pub fn inherit_parent_affinity(&mut self) -> &mut Self {
+        self.creation.set(flags::INHERIT_PARENT_AFFINITY);
+        self
+    }
+
+    /// Lets the child leave the caller's Job where that Job allows it: `CREATE_BREAKAWAY_FROM_JOB`.
+    pub fn breakaway_from_job(&mut self) -> &mut Self {
+        self.creation.set(flags::BREAKAWAY_FROM_JOB);
+        self
+    }
+
+    /// Keeps the caller's code-authorization level for the child: `CREATE_PRESERVE_CODE_AUTHZ_LEVEL`.
+    pub fn preserve_code_authorization(&mut self) -> &mut Self {
+        self.creation.set(flags::PRESERVE_CODE_AUTHZ_LEVEL);
+        self
+    }
+
+    /// Starts the child with the default hard-error mode instead of the caller's: `CREATE_DEFAULT_ERROR_MODE`.
+    pub fn default_error_mode(&mut self) -> &mut Self {
+        self.creation.set(flags::DEFAULT_ERROR_MODE);
+        self
+    }
+
     /// Returns the originally configured program.
     #[must_use]
     pub fn get_program(&self) -> &OsStr {
@@ -219,7 +325,7 @@ impl Command {
     ///
     /// The first token is the quoted absolute path of the executable [`Self::spawn`] would run.
     /// Arguments are encoded as for a spawn.
-    /// The environment, working directory, standard I/O, and [`crate::SpawnOptions`] are not represented.
+    /// The environment, working directory, standard I/O, creation choices, and [`SpawnOptions`] are not represented.
     ///
     /// # Examples
     ///
@@ -233,96 +339,105 @@ impl Command {
     /// let line = line.to_string_lossy();
     /// assert!(line.starts_with('"'));
     /// assert!(line.ends_with(r#"\cmd.exe" /D /C "echo two words""#));
-    /// # Ok::<(), std::io::Error>(())
+    /// # Ok::<(), windows_spawn::SpawnError>(())
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns `InvalidInput` for input a spawn rejects, for a handle argument, and for a `PATH` set from a handle.
-    /// Returns `NotFound` if the program is not found.
-    pub fn to_command_line(&self) -> io::Result<OsString> {
+    /// Returns a validation error for input a spawn rejects, for a handle argument, and for a `PATH` set from a handle.
+    /// Returns a Windows error of kind [`std::io::ErrorKind::NotFound`] if the program is not found.
+    pub fn to_command_line(&self) -> Result<OsString> {
         crate::transaction::broker_command_line(self)
     }
 
-    /// Spawns with default options.
+    /// Starts the process, as [`std::process::Command::spawn`] does.
+    ///
+    /// Standard streams the command doesn't configure are inherited.
     ///
     /// # Errors
     ///
-    /// Returns validation, resource-acquisition, or process-creation errors.
-    pub fn spawn(&mut self) -> io::Result<Child> {
+    /// Returns a validation error for rejected input, or the Windows error of the step that failed;
+    /// a program the search didn't find is [`std::io::ErrorKind::NotFound`].
+    pub fn spawn(&mut self) -> Result<Child> {
         self.spawn_with(SpawnOptions::new())
     }
 
-    /// Spawns using one operation's borrowed capabilities and policy.
+    /// Starts the process with the capabilities that `options` lends to this spawn.
     ///
     /// # Errors
     ///
-    /// Returns validation, resource-acquisition, or process-creation errors.
-    pub fn spawn_with(&mut self, options: SpawnOptions<'_>) -> io::Result<Child> {
+    /// As [`Self::spawn`], and a validation error for options that conflict with the command.
+    pub fn spawn_with(&mut self, options: SpawnOptions<'_>) -> Result<Child> {
         let plan = SpawnPlan::new_running(self, options, IoMode::Spawn)?;
-        Ok(SpawnTransaction::new(&plan)?.commit_child())
+        SpawnTransaction::new(&plan)?.commit_child()
     }
 
-    /// Spawns in the suspended type state with default options.
+    /// Creates the process with its main thread still suspended, for inspection before it runs any code.
     ///
     /// # Errors
     ///
-    /// Returns validation, resource-acquisition, or process-creation errors.
-    pub fn spawn_suspended(&mut self) -> io::Result<SuspendedChild> {
+    /// As [`Self::spawn`].
+    pub fn spawn_suspended(&mut self) -> Result<SuspendedChild> {
         self.spawn_suspended_with(SpawnOptions::new())
     }
 
-    /// Spawns in the suspended type state using explicit options.
+    /// Creates the process suspended, with the capabilities that `options` lends to this spawn.
     ///
     /// # Errors
     ///
-    /// Returns validation, resource-acquisition, or process-creation errors.
-    pub fn spawn_suspended_with(
-        &mut self,
-        options: SpawnOptions<'_>,
-    ) -> io::Result<SuspendedChild> {
+    /// As [`Self::spawn_with`].
+    pub fn spawn_suspended_with(&mut self, options: SpawnOptions<'_>) -> Result<SuspendedChild> {
         let plan = SpawnPlan::new_suspended(self, options, IoMode::Spawn)?;
         Ok(SpawnTransaction::new(&plan)?.commit_suspended())
     }
 
-    /// Runs the process and waits for its status using default options.
+    /// Runs the process to completion and returns its status, as [`std::process::Command::status`] does.
     ///
     /// # Errors
     ///
-    /// Returns an error from spawning, waiting, or retrieving the exit code.
-    pub fn status(&mut self) -> io::Result<ExitStatus> {
+    /// As [`Self::spawn`], or the Windows error of waiting for the process.
+    pub fn status(&mut self) -> Result<ExitStatus> {
         self.status_with(SpawnOptions::new())
     }
 
-    /// Runs the process and waits for its status using explicit options.
+    /// Runs the process to completion with the capabilities that `options` lends, and returns its status.
     ///
     /// # Errors
     ///
-    /// Returns an error from spawning, waiting, or retrieving the exit code.
-    pub fn status_with(&mut self, options: SpawnOptions<'_>) -> io::Result<ExitStatus> {
+    /// As [`Self::spawn_with`], or the Windows error of waiting for the process.
+    pub fn status_with(&mut self, options: SpawnOptions<'_>) -> Result<ExitStatus> {
         self.spawn_with(options)?.wait()
     }
 
-    /// Runs the process and captures output using default options.
+    /// Runs the process to completion and collects its output, as [`std::process::Command::output`] does.
+    ///
+    /// Standard input defaults to the null device, and standard output and error to pipes.
     ///
     /// # Errors
     ///
-    /// Returns an error from spawning, waiting, reading, or Job termination.
-    pub fn output(&mut self) -> io::Result<Output> {
+    /// As [`Self::spawn`], or the Windows error of waiting, reading the pipes, or ending the owned tree.
+    pub fn output(&mut self) -> Result<Output> {
         self.output_with(SpawnOptions::new())
     }
 
-    /// Runs the process and captures output using explicit options.
+    /// Runs the process to completion with the capabilities that `options` lends, and collects its output.
     ///
     /// # Errors
     ///
-    /// Returns an error from spawning, waiting, reading, or Job termination.
-    pub fn output_with(&mut self, options: SpawnOptions<'_>) -> io::Result<Output> {
+    /// As [`Self::output`], and a validation error for options that conflict with the command.
+    pub fn output_with(&mut self, options: SpawnOptions<'_>) -> Result<Output> {
         let plan = SpawnPlan::new_running(self, options, IoMode::Output)?;
         SpawnTransaction::new(&plan)?
-            .commit_child()
+            .commit_child()?
             .wait_with_output()
     }
+}
+
+/// A private, non-inheritable duplicate that the command owns until a spawn lowers it.
+fn private_duplicate<T: AsHandle>(handle: &T) -> Result<OwnedHandle> {
+    sys::duplicate_local(handle.as_handle(), false).map_err(|error| {
+        SpawnError::windows(Phase::Preparation, Operation::DuplicateLocalHandle, error)
+    })
 }
 
 #[cfg(test)]
@@ -330,6 +445,7 @@ mod tests {
     use std::fs::File;
 
     use super::*;
+    use crate::error::ValidationError;
     use crate::sys::test_support::is_inheritable;
 
     #[test]
@@ -345,12 +461,15 @@ mod tests {
             batch.output().map(drop),
             batch.output_with(SpawnOptions::new()).map(drop),
         ] {
-            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+            assert!(matches!(
+                result,
+                Err(SpawnError::Validation(ValidationError::BatchFile))
+            ));
         }
     }
 
     #[test]
-    fn stored_handle_duplicates_are_private() -> io::Result<()> {
+    fn stored_handle_duplicates_are_private() -> std::io::Result<()> {
         let nul = File::open("NUL")?;
         let mut command = Command::new("cmd.exe");
         command

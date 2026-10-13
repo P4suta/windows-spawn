@@ -1,6 +1,6 @@
 # 0006 — ConPTY integration is a borrowed capability
 
-Status: accepted (2026-08-02)
+Status: accepted (2026-08-02); ADR 0015 replaces the unsafe trait with `BorrowedPseudoConsole::borrow_raw` and a safe `AsPseudoConsole`
 
 ## Context
 

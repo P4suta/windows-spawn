@@ -1,0 +1,435 @@
+0	0	init	Unowned running	Started	Running
+0	1	exits	77	Done	Exited 77
+0	2	wait	-	Status 77	Exited 77
+0	3	tryWait	-	Status 77	Exited 77
+0	4	wait	-	Status 77	Exited 77
+0	5	tryWait	-	Status 77	Exited 77
+0	6	wait	-	Status 77	Exited 77
+0	7	kill	-	Done	Exited 77
+0	8	kill	-	Done	Exited 77
+1	0	init	OwnsTree running	Started	Running
+1	1	externalKill	-	Done	Exited 9
+1	2	wait	-	Status 9	Exited 9
+1	3	wait	-	Status 9	Exited 9
+1	4	kill	-	Done	Exited 9
+1	5	kill	-	Done	Exited 9
+1	6	wait	-	Status 9	Exited 9
+1	7	wait	-	Status 9	Exited 9
+1	8	tryWait	-	Status 9	Exited 9
+2	0	init	Unowned running	Started	Running
+2	1	externalKill	-	Done	Exited 9
+2	2	tryWait	-	Status 9	Exited 9
+2	3	tryWait	-	Status 9	Exited 9
+2	4	kill	-	Done	Exited 9
+2	5	tryWait	-	Status 9	Exited 9
+2	6	tryWait	-	Status 9	Exited 9
+2	7	wait	-	Status 9	Exited 9
+2	8	dropChild	-	Done	Exited 9
+3	0	init	Unowned running	Started	Running
+3	1	externalKill	-	Done	Exited 9
+3	2	kill	-	Done	Exited 9
+3	3	tryWait	-	Status 9	Exited 9
+3	4	kill	-	Done	Exited 9
+3	5	kill	-	Done	Exited 9
+3	6	kill	-	Done	Exited 9
+3	7	tryWait	-	Status 9	Exited 9
+3	8	wait	-	Status 9	Exited 9
+4	0	init	Unowned suspended	Started	Paused 1
+4	1	resume	-	Resumed	Running
+4	2	tryWait	-	NoStatus	Running
+4	3	exits	3	Done	Exited 3
+4	4	wait	-	Status 3	Exited 3
+4	5	wait	-	Status 3	Exited 3
+4	6	kill	-	Done	Exited 3
+4	7	tryWait	-	Status 3	Exited 3
+4	8	kill	-	Done	Exited 3
+5	0	init	Unowned running	Started	Running
+5	1	tryWait	-	NoStatus	Running
+5	2	exits	77	Done	Exited 77
+5	3	tryWait	-	Status 77	Exited 77
+5	4	tryWait	-	Status 77	Exited 77
+5	5	wait	-	Status 77	Exited 77
+5	6	kill	-	Done	Exited 77
+5	7	wait	-	Status 77	Exited 77
+5	8	dropChild	-	Done	Exited 77
+6	0	init	Unowned running	Started	Running
+6	1	exits	0	Done	Exited 0
+6	2	kill	-	Done	Exited 0
+6	3	tryWait	-	Status 0	Exited 0
+6	4	wait	-	Status 0	Exited 0
+6	5	wait	-	Status 0	Exited 0
+6	6	tryWait	-	Status 0	Exited 0
+6	7	kill	-	Done	Exited 0
+6	8	dropChild	-	Done	Exited 0
+7	0	init	OwnsTree running	Started	Running
+7	1	tryWait	-	NoStatus	Running
+7	2	externalKill	-	Done	Exited 9
+7	3	wait	-	Status 9	Exited 9
+7	4	wait	-	Status 9	Exited 9
+7	5	wait	-	Status 9	Exited 9
+7	6	tryWait	-	Status 9	Exited 9
+7	7	wait	-	Status 9	Exited 9
+7	8	dropChild	-	Done	Exited 9
+8	0	init	OwnsTree running	Started	Running
+8	1	externalKill	-	Done	Exited 9
+8	2	wait	-	Status 9	Exited 9
+8	3	wait	-	Status 9	Exited 9
+8	4	wait	-	Status 9	Exited 9
+8	5	wait	-	Status 9	Exited 9
+8	6	tryWait	-	Status 9	Exited 9
+8	7	tryWait	-	Status 9	Exited 9
+8	8	kill	-	Done	Exited 9
+9	0	init	OwnsTree running	Started	Running
+9	1	kill	-	Done	Exited 1
+9	2	kill	-	Done	Exited 1
+9	3	tryWait	-	Status 1	Exited 1
+9	4	kill	-	Done	Exited 1
+9	5	wait	-	Status 1	Exited 1
+9	6	wait	-	Status 1	Exited 1
+9	7	wait	-	Status 1	Exited 1
+9	8	kill	-	Done	Exited 1
+10	0	init	OwnsTree running	Started	Running
+10	1	kill	-	Done	Exited 1
+10	2	wait	-	Status 1	Exited 1
+10	3	wait	-	Status 1	Exited 1
+10	4	tryWait	-	Status 1	Exited 1
+10	5	kill	-	Done	Exited 1
+10	6	tryWait	-	Status 1	Exited 1
+10	7	wait	-	Status 1	Exited 1
+10	8	dropChild	-	Done	Exited 1
+11	0	init	OwnsTree running	Started	Running
+11	1	externalKill	-	Done	Exited 9
+11	2	kill	-	Done	Exited 9
+11	3	tryWait	-	Status 9	Exited 9
+11	4	tryWait	-	Status 9	Exited 9
+11	5	kill	-	Done	Exited 9
+11	6	tryWait	-	Status 9	Exited 9
+11	7	tryWait	-	Status 9	Exited 9
+11	8	tryWait	-	Status 9	Exited 9
+12	0	init	OwnsTree running	Started	Running
+12	1	exits	0	Done	Exited 0
+12	2	tryWait	-	Status 0	Exited 0
+12	3	kill	-	Done	Exited 0
+12	4	tryWait	-	Status 0	Exited 0
+12	5	tryWait	-	Status 0	Exited 0
+12	6	tryWait	-	Status 0	Exited 0
+12	7	wait	-	Status 0	Exited 0
+12	8	tryWait	-	Status 0	Exited 0
+13	0	init	Unowned running	Started	Running
+13	1	kill	-	Done	Exited 1
+13	2	wait	-	Status 1	Exited 1
+13	3	kill	-	Done	Exited 1
+13	4	tryWait	-	Status 1	Exited 1
+13	5	wait	-	Status 1	Exited 1
+13	6	wait	-	Status 1	Exited 1
+13	7	kill	-	Done	Exited 1
+13	8	tryWait	-	Status 1	Exited 1
+14	0	init	OwnsTree suspended	Started	Paused 1
+14	1	resume	-	Resumed	Running
+14	2	kill	-	Done	Exited 1
+14	3	tryWait	-	Status 1	Exited 1
+14	4	wait	-	Status 1	Exited 1
+14	5	wait	-	Status 1	Exited 1
+14	6	wait	-	Status 1	Exited 1
+14	7	tryWait	-	Status 1	Exited 1
+14	8	dropChild	-	Done	Exited 1
+15	0	init	OwnsTree running	Started	Running
+15	1	tryWait	-	NoStatus	Running
+15	2	kill	-	Done	Exited 1
+15	3	wait	-	Status 1	Exited 1
+15	4	tryWait	-	Status 1	Exited 1
+15	5	kill	-	Done	Exited 1
+15	6	wait	-	Status 1	Exited 1
+15	7	tryWait	-	Status 1	Exited 1
+15	8	wait	-	Status 1	Exited 1
+16	0	init	Unowned running	Started	Running
+16	1	exits	3	Done	Exited 3
+16	2	wait	-	Status 3	Exited 3
+16	3	kill	-	Done	Exited 3
+16	4	kill	-	Done	Exited 3
+16	5	kill	-	Done	Exited 3
+16	6	tryWait	-	Status 3	Exited 3
+16	7	tryWait	-	Status 3	Exited 3
+16	8	tryWait	-	Status 3	Exited 3
+17	0	init	OwnsTree suspended	Started	Paused 1
+17	1	resume	-	Resumed	Running
+17	2	exits	0	Done	Exited 0
+17	3	wait	-	Status 0	Exited 0
+17	4	tryWait	-	Status 0	Exited 0
+17	5	tryWait	-	Status 0	Exited 0
+17	6	kill	-	Done	Exited 0
+17	7	wait	-	Status 0	Exited 0
+17	8	tryWait	-	Status 0	Exited 0
+18	0	init	OwnsTree running	Started	Running
+18	1	kill	-	Done	Exited 1
+18	2	tryWait	-	Status 1	Exited 1
+18	3	kill	-	Done	Exited 1
+18	4	kill	-	Done	Exited 1
+18	5	kill	-	Done	Exited 1
+18	6	tryWait	-	Status 1	Exited 1
+18	7	kill	-	Done	Exited 1
+18	8	tryWait	-	Status 1	Exited 1
+19	0	init	Unowned running	Started	Running
+19	1	tryWait	-	NoStatus	Running
+19	2	kill	-	Done	Exited 1
+19	3	tryWait	-	Status 1	Exited 1
+19	4	kill	-	Done	Exited 1
+19	5	tryWait	-	Status 1	Exited 1
+19	6	tryWait	-	Status 1	Exited 1
+19	7	tryWait	-	Status 1	Exited 1
+19	8	wait	-	Status 1	Exited 1
+20	0	init	OwnsTree running	Started	Running
+20	1	kill	-	Done	Exited 1
+20	2	wait	-	Status 1	Exited 1
+20	3	kill	-	Done	Exited 1
+20	4	wait	-	Status 1	Exited 1
+20	5	wait	-	Status 1	Exited 1
+20	6	tryWait	-	Status 1	Exited 1
+20	7	tryWait	-	Status 1	Exited 1
+20	8	kill	-	Done	Exited 1
+21	0	init	Unowned running	Started	Running
+21	1	tryWait	-	NoStatus	Running
+21	2	kill	-	Done	Exited 1
+21	3	tryWait	-	Status 1	Exited 1
+21	4	wait	-	Status 1	Exited 1
+21	5	tryWait	-	Status 1	Exited 1
+21	6	tryWait	-	Status 1	Exited 1
+21	7	kill	-	Done	Exited 1
+21	8	kill	-	Done	Exited 1
+22	0	init	Unowned running	Started	Running
+22	1	kill	-	Done	Exited 1
+22	2	tryWait	-	Status 1	Exited 1
+22	3	wait	-	Status 1	Exited 1
+22	4	kill	-	Done	Exited 1
+22	5	wait	-	Status 1	Exited 1
+22	6	kill	-	Done	Exited 1
+22	7	wait	-	Status 1	Exited 1
+22	8	tryWait	-	Status 1	Exited 1
+23	0	init	Unowned running	Started	Running
+23	1	tryWait	-	NoStatus	Running
+23	2	externalKill	-	Done	Exited 9
+23	3	wait	-	Status 9	Exited 9
+23	4	kill	-	Done	Exited 9
+23	5	tryWait	-	Status 9	Exited 9
+23	6	tryWait	-	Status 9	Exited 9
+23	7	kill	-	Done	Exited 9
+23	8	tryWait	-	Status 9	Exited 9
+24	0	init	Unowned running	Started	Running
+24	1	kill	-	Done	Exited 1
+24	2	kill	-	Done	Exited 1
+24	3	wait	-	Status 1	Exited 1
+24	4	wait	-	Status 1	Exited 1
+24	5	kill	-	Done	Exited 1
+24	6	tryWait	-	Status 1	Exited 1
+24	7	wait	-	Status 1	Exited 1
+24	8	wait	-	Status 1	Exited 1
+25	0	init	OwnsTree running	Started	Running
+25	1	tryWait	-	NoStatus	Running
+25	2	exits	3	Done	Exited 3
+25	3	wait	-	Status 3	Exited 3
+25	4	wait	-	Status 3	Exited 3
+25	5	tryWait	-	Status 3	Exited 3
+25	6	tryWait	-	Status 3	Exited 3
+25	7	wait	-	Status 3	Exited 3
+25	8	kill	-	Done	Exited 3
+26	0	init	Unowned running	Started	Running
+26	1	exits	3	Done	Exited 3
+26	2	kill	-	Done	Exited 3
+26	3	kill	-	Done	Exited 3
+26	4	tryWait	-	Status 3	Exited 3
+26	5	tryWait	-	Status 3	Exited 3
+26	6	wait	-	Status 3	Exited 3
+26	7	kill	-	Done	Exited 3
+26	8	kill	-	Done	Exited 3
+27	0	init	Unowned running	Started	Running
+27	1	externalKill	-	Done	Exited 9
+27	2	tryWait	-	Status 9	Exited 9
+27	3	kill	-	Done	Exited 9
+27	4	wait	-	Status 9	Exited 9
+27	5	tryWait	-	Status 9	Exited 9
+27	6	kill	-	Done	Exited 9
+27	7	tryWait	-	Status 9	Exited 9
+27	8	kill	-	Done	Exited 9
+28	0	init	Unowned running	Started	Running
+28	1	kill	-	Done	Exited 1
+28	2	wait	-	Status 1	Exited 1
+28	3	kill	-	Done	Exited 1
+28	4	tryWait	-	Status 1	Exited 1
+28	5	tryWait	-	Status 1	Exited 1
+28	6	kill	-	Done	Exited 1
+28	7	tryWait	-	Status 1	Exited 1
+28	8	dropChild	-	Done	Exited 1
+29	0	init	OwnsTree running	Started	Running
+29	1	kill	-	Done	Exited 1
+29	2	wait	-	Status 1	Exited 1
+29	3	wait	-	Status 1	Exited 1
+29	4	kill	-	Done	Exited 1
+29	5	wait	-	Status 1	Exited 1
+29	6	kill	-	Done	Exited 1
+29	7	tryWait	-	Status 1	Exited 1
+29	8	tryWait	-	Status 1	Exited 1
+30	0	init	Unowned suspended	Started	Paused 1
+30	1	resume	-	Resumed	Running
+30	2	externalKill	-	Done	Exited 9
+30	3	kill	-	Done	Exited 9
+30	4	kill	-	Done	Exited 9
+30	5	tryWait	-	Status 9	Exited 9
+30	6	wait	-	Status 9	Exited 9
+30	7	wait	-	Status 9	Exited 9
+30	8	wait	-	Status 9	Exited 9
+31	0	init	Unowned running	Started	Running
+31	1	exits	77	Done	Exited 77
+31	2	kill	-	Done	Exited 77
+31	3	wait	-	Status 77	Exited 77
+31	4	wait	-	Status 77	Exited 77
+31	5	wait	-	Status 77	Exited 77
+31	6	kill	-	Done	Exited 77
+31	7	kill	-	Done	Exited 77
+31	8	wait	-	Status 77	Exited 77
+32	0	init	Unowned suspended	Started	Paused 1
+32	1	resume	-	Resumed	Running
+32	2	externalKill	-	Done	Exited 9
+32	3	wait	-	Status 9	Exited 9
+32	4	wait	-	Status 9	Exited 9
+32	5	kill	-	Done	Exited 9
+32	6	kill	-	Done	Exited 9
+32	7	tryWait	-	Status 9	Exited 9
+32	8	wait	-	Status 9	Exited 9
+33	0	init	Unowned running	Started	Running
+33	1	exits	0	Done	Exited 0
+33	2	kill	-	Done	Exited 0
+33	3	kill	-	Done	Exited 0
+33	4	kill	-	Done	Exited 0
+33	5	tryWait	-	Status 0	Exited 0
+33	6	kill	-	Done	Exited 0
+33	7	kill	-	Done	Exited 0
+33	8	kill	-	Done	Exited 0
+34	0	init	Unowned running	Started	Running
+34	1	kill	-	Done	Exited 1
+34	2	wait	-	Status 1	Exited 1
+34	3	wait	-	Status 1	Exited 1
+34	4	wait	-	Status 1	Exited 1
+34	5	kill	-	Done	Exited 1
+34	6	tryWait	-	Status 1	Exited 1
+34	7	tryWait	-	Status 1	Exited 1
+34	8	wait	-	Status 1	Exited 1
+35	0	init	Unowned running	Started	Running
+35	1	exits	77	Done	Exited 77
+35	2	kill	-	Done	Exited 77
+35	3	wait	-	Status 77	Exited 77
+35	4	tryWait	-	Status 77	Exited 77
+35	5	kill	-	Done	Exited 77
+35	6	wait	-	Status 77	Exited 77
+35	7	kill	-	Done	Exited 77
+35	8	wait	-	Status 77	Exited 77
+36	0	init	Unowned running	Started	Running
+36	1	exits	0	Done	Exited 0
+36	2	tryWait	-	Status 0	Exited 0
+36	3	tryWait	-	Status 0	Exited 0
+36	4	wait	-	Status 0	Exited 0
+36	5	kill	-	Done	Exited 0
+36	6	kill	-	Done	Exited 0
+36	7	tryWait	-	Status 0	Exited 0
+36	8	wait	-	Status 0	Exited 0
+37	0	init	Unowned suspended	Started	Paused 1
+37	1	resume	-	Resumed	Running
+37	2	kill	-	Done	Exited 1
+37	3	tryWait	-	Status 1	Exited 1
+37	4	kill	-	Done	Exited 1
+37	5	kill	-	Done	Exited 1
+37	6	wait	-	Status 1	Exited 1
+37	7	tryWait	-	Status 1	Exited 1
+37	8	dropChild	-	Done	Exited 1
+38	0	init	OwnsTree suspended	Started	Paused 1
+38	1	resume	-	Resumed	Running
+38	2	externalKill	-	Done	Exited 9
+38	3	wait	-	Status 9	Exited 9
+38	4	kill	-	Done	Exited 9
+38	5	wait	-	Status 9	Exited 9
+38	6	kill	-	Done	Exited 9
+38	7	kill	-	Done	Exited 9
+38	8	tryWait	-	Status 9	Exited 9
+39	0	init	Unowned running	Started	Running
+39	1	externalKill	-	Done	Exited 9
+39	2	kill	-	Done	Exited 9
+39	3	kill	-	Done	Exited 9
+39	4	kill	-	Done	Exited 9
+39	5	tryWait	-	Status 9	Exited 9
+39	6	tryWait	-	Status 9	Exited 9
+39	7	tryWait	-	Status 9	Exited 9
+39	8	tryWait	-	Status 9	Exited 9
+160	0	init	OwnsTree suspended	Started	Paused 1
+160	1	resume	-	Resumed	Running
+160	2	tryWait	-	NoStatus	Running
+160	3	tryWait	-	NoStatus	Running
+160	4	dropChild	-	Done	Killed
+161	0	init	OwnsTree suspended	Started	Paused 1
+161	1	resume	-	Resumed	Running
+161	2	tryWait	-	NoStatus	Running
+161	3	tryWait	-	NoStatus	Running
+161	4	dropChild	-	Done	Killed
+182	0	init	OwnsTree suspended	Started	Paused 1
+182	1	suspendAgain	-	Done	Paused 2
+182	2	suspendAgain	-	Done	Paused 3
+182	3	externalKill	-	Done	Exited 9
+182	4	dropSuspended	-	Done	Exited 9
+183	0	init	OwnsTree suspended	Started	Paused 1
+183	1	suspendAgain	-	Done	Paused 2
+183	2	suspendAgain	-	Done	Paused 3
+183	3	externalKill	-	Done	Exited 9
+183	4	dropSuspended	-	Done	Exited 9
+198	0	init	OwnsTree suspended	Started	Paused 1
+198	1	suspendAgain	-	Done	Paused 2
+198	2	suspendAgain	-	Done	Paused 3
+198	3	externalKill	-	Done	Exited 9
+198	4	dropSuspended	-	Done	Exited 9
+199	0	init	OwnsTree suspended	Started	Paused 1
+199	1	suspendAgain	-	Done	Paused 2
+199	2	suspendAgain	-	Done	Paused 3
+199	3	externalKill	-	Done	Exited 9
+199	4	dropSuspended	-	Done	Exited 9
+218	0	init	OwnsTree suspended	Started	Paused 1
+218	1	suspendAgain	-	Done	Paused 2
+218	2	suspendAgain	-	Done	Paused 3
+218	3	externalKill	-	Done	Exited 9
+218	4	dropSuspended	-	Done	Exited 9
+224	0	init	OwnsTree suspended	Started	Paused 1
+224	1	suspendAgain	-	Done	Paused 2
+224	2	suspendAgain	-	Done	Paused 3
+224	3	resume	-	InvalidData	Exited 1
+225	0	init	OwnsTree suspended	Started	Paused 1
+225	1	suspendAgain	-	Done	Paused 2
+225	2	suspendAgain	-	Done	Paused 3
+225	3	resume	-	InvalidData	Exited 1
+230	0	init	OwnsTree suspended	Started	Paused 1
+230	1	resume	-	Resumed	Running
+230	2	tryWait	-	NoStatus	Running
+230	3	dropChild	-	Done	Killed
+231	0	init	OwnsTree suspended	Started	Paused 1
+231	1	resume	-	Resumed	Running
+231	2	tryWait	-	NoStatus	Running
+231	3	dropChild	-	Done	Killed
+232	0	init	Unowned suspended	Started	Paused 1
+232	1	suspendAgain	-	Done	Paused 2
+232	2	externalKill	-	Done	Exited 9
+232	3	resume	-	InvalidData	Exited 9
+233	0	init	Unowned suspended	Started	Paused 1
+233	1	suspendAgain	-	Done	Paused 2
+233	2	externalKill	-	Done	Exited 9
+233	3	resume	-	InvalidData	Exited 9
+242	0	init	Unowned suspended	Started	Paused 1
+242	1	suspendAgain	-	Done	Paused 2
+242	2	externalKill	-	Done	Exited 9
+242	3	resume	-	InvalidData	Exited 9
+243	0	init	Unowned suspended	Started	Paused 1
+243	1	suspendAgain	-	Done	Paused 2
+243	2	externalKill	-	Done	Exited 9
+243	3	resume	-	InvalidData	Exited 9
+262	0	init	Unowned suspended	Started	Paused 1
+262	1	suspendAgain	-	Done	Paused 2
+262	2	externalKill	-	Done	Exited 9
+262	3	resume	-	InvalidData	Exited 9
+268	0	init	OwnsTree running	Started	Running
+268	1	tryWait	-	NoStatus	Running
+268	2	tryWait	-	NoStatus	Running
+268	3	dropChild	-	Done	Killed

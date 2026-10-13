@@ -1,107 +1,161 @@
-//! Per-spawn capabilities and creation policy.
-
-use std::fmt;
-use std::marker::PhantomData;
-use std::ops::{BitOr, BitOrAssign};
+//! Process-creation choices a command owns, and the capabilities one spawn borrows.
 
 use windows_sys::Win32::System::Threading::{
-    CREATE_BREAKAWAY_FROM_JOB, CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE,
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_PRESERVE_CODE_AUTHZ_LEVEL, DETACHED_PROCESS,
-    INHERIT_PARENT_AFFINITY,
+    ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, CREATE_BREAKAWAY_FROM_JOB,
+    CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
+    CREATE_PRESERVE_CODE_AUTHZ_LEVEL, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+    DETACHED_PROCESS, EXTENDED_STARTUPINFO_PRESENT, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS,
+    INHERIT_PARENT_AFFINITY, NORMAL_PRIORITY_CLASS, REALTIME_PRIORITY_CLASS,
 };
 
-use crate::handles::{AsPseudoConsole, Job, ParentProcess};
+use crate::domain::creation_flag_rules::{self as flags, ConsoleFlag, PriorityFlag};
+use crate::handles::{BorrowedPseudoConsole, Job, ParentProcess};
 use crate::mitigation::MitigationPolicy;
 
-/// What dropping a live [`crate::Child`] does to its process tree.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum DropPolicy {
-    /// Close windows-spawn's process handle without terminating the process.
-    Detach,
-    /// Terminate the child and all descendants in windows-spawn's private Job.
-    KillTree,
-}
+/// The flag words the proofs reason about are the SDK's.
+const _: () = assert!(
+    flags::DETACHED_PROCESS == DETACHED_PROCESS
+        && flags::NEW_CONSOLE == CREATE_NEW_CONSOLE
+        && flags::NEW_PROCESS_GROUP == CREATE_NEW_PROCESS_GROUP
+        && flags::INHERIT_PARENT_AFFINITY == INHERIT_PARENT_AFFINITY
+        && flags::BREAKAWAY_FROM_JOB == CREATE_BREAKAWAY_FROM_JOB
+        && flags::PRESERVE_CODE_AUTHZ_LEVEL == CREATE_PRESERVE_CODE_AUTHZ_LEVEL
+        && flags::DEFAULT_ERROR_MODE == CREATE_DEFAULT_ERROR_MODE
+        && flags::NO_WINDOW == CREATE_NO_WINDOW
+        && flags::IDLE_PRIORITY == IDLE_PRIORITY_CLASS
+        && flags::BELOW_NORMAL_PRIORITY == BELOW_NORMAL_PRIORITY_CLASS
+        && flags::NORMAL_PRIORITY == NORMAL_PRIORITY_CLASS
+        && flags::ABOVE_NORMAL_PRIORITY == ABOVE_NORMAL_PRIORITY_CLASS
+        && flags::HIGH_PRIORITY == HIGH_PRIORITY_CLASS
+        && flags::REALTIME_PRIORITY == REALTIME_PRIORITY_CLASS
+        && flags::SUSPENDED == CREATE_SUSPENDED
+        && flags::UNICODE_ENVIRONMENT == CREATE_UNICODE_ENVIRONMENT
+        && flags::EXTENDED_STARTUPINFO == EXTENDED_STARTUPINFO_PRESENT,
+    "a creation flag differs from windows-sys"
+);
 
-impl Default for DropPolicy {
-    /// Detaches, as dropping a [`std::process::Child`] does.
-    fn default() -> Self {
-        Self::Detach
-    }
-}
-
-/// Safe, named `CreateProcessW` creation flags.
+/// The console of a child, which [`crate::Command::console`] chooses.
 ///
-/// Unicode-environment, extended-startup-info, and suspended flags are set internally.
-/// There is no raw-bits constructor.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct CreationFlags(u32);
+/// Each mode's discriminant is the creation flag it sets.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(u32)]
+pub enum ConsoleMode {
+    /// The child shares the caller's console, if the caller has one.
+    Inherit = 0,
+    /// The child starts without a console: `DETACHED_PROCESS`.
+    ///
+    /// A console program that later starts another console program gives that one a new console window,
+    /// so a GUI program that runs console tools should choose [`Self::NoWindow`] instead.
+    NoConsole = DETACHED_PROCESS,
+    /// The child gets a new console window: `CREATE_NEW_CONSOLE`.
+    NewConsole = CREATE_NEW_CONSOLE,
+    /// The child gets a console without a window, which its own console children share: `CREATE_NO_WINDOW`.
+    ///
+    /// This is the mode for a GUI program that runs console tools.
+    NoWindow = CREATE_NO_WINDOW,
+}
 
-impl CreationFlags {
-    /// Creates an empty flag set.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self(0)
-    }
-
-    /// Creates a process without inheriting a console.
-    pub const DETACHED_PROCESS: Self = Self(DETACHED_PROCESS);
-    /// Gives the child a new console.
-    pub const NEW_CONSOLE: Self = Self(CREATE_NEW_CONSOLE);
-    /// Makes the child the root of a new process group.
-    pub const NEW_PROCESS_GROUP: Self = Self(CREATE_NEW_PROCESS_GROUP);
-    /// Inherits the parent's processor affinity.
-    pub const INHERIT_PARENT_AFFINITY: Self = Self(INHERIT_PARENT_AFFINITY);
-    /// Allows the child to break away from the caller's Job when permitted.
-    pub const BREAKAWAY_FROM_JOB: Self = Self(CREATE_BREAKAWAY_FROM_JOB);
-    /// Preserves the caller's code-authorization level.
-    pub const PRESERVE_CODE_AUTHZ_LEVEL: Self = Self(CREATE_PRESERVE_CODE_AUTHZ_LEVEL);
-    /// Prevents the child from inheriting the caller's hard-error mode.
-    pub const DEFAULT_ERROR_MODE: Self = Self(CREATE_DEFAULT_ERROR_MODE);
-    /// Runs a console application without creating a console window.
-    pub const NO_WINDOW: Self = Self(CREATE_NO_WINDOW);
-
-    pub(crate) const fn bits(self) -> u32 {
-        self.0
-    }
-
-    pub(crate) const fn contains(self, other: Self) -> bool {
-        self.0 & other.0 == other.0
+impl Default for ConsoleMode {
+    /// Shares the caller's console, as `CreateProcessW` does without console flags.
+    fn default() -> Self {
+        Self::Inherit
     }
 }
 
-struct PseudoConsole<'a> {
-    raw: isize,
-    _borrow: PhantomData<&'a dyn AsPseudoConsole>,
-}
-
-impl<'a> PseudoConsole<'a> {
-    fn new<T: AsPseudoConsole>(pseudoconsole: &'a T) -> Self {
-        Self {
-            raw: pseudoconsole.raw_pseudoconsole(),
-            _borrow: PhantomData,
+impl ConsoleMode {
+    const fn flag(self) -> ConsoleFlag {
+        match self {
+            Self::Inherit => ConsoleFlag::Inherit,
+            Self::NoConsole => ConsoleFlag::NoConsole,
+            Self::NewConsole => ConsoleFlag::NewConsole,
+            Self::NoWindow => ConsoleFlag::NoWindow,
         }
     }
 }
 
-impl BitOr for CreationFlags {
-    type Output = Self;
-
-    fn bitor(self, rhs: Self) -> Self::Output {
-        Self(self.0 | rhs.0)
-    }
-}
-
-impl BitOrAssign for CreationFlags {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.0 |= rhs.0;
-    }
-}
-
-/// Capabilities and policy needed only for one spawn operation.
+/// The scheduling priority class of a child, which [`crate::Command::priority`] chooses.
 ///
-/// Jobs are kept in call order, root first.
-/// The options borrow every capability and own none.
-/// A borrow cannot outlive its capability:
+/// Each class's discriminant is the creation flag it sets.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(u32)]
+pub enum PriorityClass {
+    /// `IDLE_PRIORITY_CLASS`: runs only when the system is idle.
+    Idle = IDLE_PRIORITY_CLASS,
+    /// `BELOW_NORMAL_PRIORITY_CLASS`: yields to normal processes, as a background build should.
+    BelowNormal = BELOW_NORMAL_PRIORITY_CLASS,
+    /// `NORMAL_PRIORITY_CLASS`.
+    Normal = NORMAL_PRIORITY_CLASS,
+    /// `ABOVE_NORMAL_PRIORITY_CLASS`.
+    AboveNormal = ABOVE_NORMAL_PRIORITY_CLASS,
+    /// `HIGH_PRIORITY_CLASS`: preempts normal processes.
+    High = HIGH_PRIORITY_CLASS,
+    /// `REALTIME_PRIORITY_CLASS`, which Windows lowers to [`Self::High`] for a caller without the privilege to raise priorities.
+    Realtime = REALTIME_PRIORITY_CLASS,
+}
+
+impl PriorityClass {
+    const fn flag(self) -> PriorityFlag {
+        match self {
+            Self::Idle => PriorityFlag::Idle,
+            Self::BelowNormal => PriorityFlag::BelowNormal,
+            Self::Normal => PriorityFlag::Normal,
+            Self::AboveNormal => PriorityFlag::AboveNormal,
+            Self::High => PriorityFlag::High,
+            Self::Realtime => PriorityFlag::Realtime,
+        }
+    }
+}
+
+/// The process-creation choices a [`crate::Command`] owns.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Creation {
+    pub(crate) console: ConsoleMode,
+    priority: PriorityFlag,
+    policy: u32,
+    pub(crate) mitigation: MitigationPolicy,
+    /// The child gets a private Job that its `Child` owns.
+    pub(crate) owns_tree: bool,
+}
+
+impl Creation {
+    /// Shares the caller's console, sets no priority class or policy flag, applies no mitigation, and leaves the process tree unowned.
+    pub(crate) const fn new() -> Self {
+        Self {
+            console: ConsoleMode::Inherit,
+            priority: PriorityFlag::Default,
+            policy: 0,
+            mitigation: MitigationPolicy::new(),
+            owns_tree: false,
+        }
+    }
+
+    pub(crate) fn set_priority(&mut self, class: PriorityClass) {
+        self.priority = class.flag();
+    }
+
+    /// Sets one policy flag.
+    pub(crate) fn set(&mut self, flag: u32) {
+        self.policy |= flag;
+    }
+
+    /// The policy flags the setters chose.
+    pub(crate) const fn policy(&self) -> u32 {
+        self.policy
+    }
+
+    pub(crate) const fn console_flag(&self) -> ConsoleFlag {
+        self.console.flag()
+    }
+
+    pub(crate) const fn priority_flag(&self) -> PriorityFlag {
+        self.priority
+    }
+}
+
+/// Capabilities that one spawn borrows: Jobs, an alternate parent, and a pseudoconsole.
+///
+/// What a command owns, such as its console mode or [`crate::Command::own_process_tree`], belongs to [`crate::Command`];
+/// these options hold only borrows, so they can't outlive what they borrow:
 ///
 /// ```compile_fail
 /// use windows_spawn::{Command, Job, SpawnOptions};
@@ -113,47 +167,26 @@ impl BitOrAssign for CreationFlags {
 /// }
 /// Command::new("cmd.exe").spawn_with(options).unwrap();
 /// ```
+#[derive(Clone, Debug)]
 pub struct SpawnOptions<'a> {
     pub(crate) jobs: Vec<&'a Job>,
     pub(crate) parent: Option<&'a ParentProcess>,
-    pub(crate) mitigation: MitigationPolicy,
-    pseudoconsole: Option<PseudoConsole<'a>>,
-    pub(crate) creation_flags: CreationFlags,
-    pub(crate) drop_policy: DropPolicy,
-}
-
-impl fmt::Debug for SpawnOptions<'_> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("SpawnOptions")
-            .field("jobs", &self.jobs)
-            .field("parent", &self.parent)
-            .field("mitigation", &self.mitigation)
-            .field(
-                "pseudoconsole",
-                &self.pseudoconsole.as_ref().map(|_| "borrowed"),
-            )
-            .field("creation_flags", &self.creation_flags)
-            .field("drop_policy", &self.drop_policy)
-            .finish()
-    }
+    pub(crate) pseudoconsole: Option<BorrowedPseudoConsole<'a>>,
 }
 
 impl Default for SpawnOptions<'_> {
+    /// Borrows nothing: no Job, the caller as the parent, and no pseudoconsole.
     fn default() -> Self {
         Self {
             jobs: Vec::new(),
             parent: None,
-            mitigation: MitigationPolicy::new(),
             pseudoconsole: None,
-            creation_flags: CreationFlags::new(),
-            drop_policy: DropPolicy::default(),
         }
     }
 }
 
 impl<'a> SpawnOptions<'a> {
-    /// Creates default per-spawn options.
+    /// Creates options that borrow nothing.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -168,100 +201,104 @@ impl<'a> SpawnOptions<'a> {
         self
     }
 
-    /// Chooses another process as the logical parent.
+    /// Chooses another process as the logical parent: `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`.
+    ///
+    /// The child inherits from that process, so the [`crate::Command`] must configure all three standard streams.
     #[must_use]
     pub const fn parent_process(mut self, parent: &'a ParentProcess) -> Self {
         self.parent = Some(parent);
         self
     }
 
-    /// Applies a process-creation mitigation policy.
+    /// Attaches the child to a pseudoconsole: `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`.
+    ///
+    /// It takes a reference to a value that implements [`crate::AsPseudoConsole`], or a [`BorrowedPseudoConsole`].
+    /// The pseudoconsole is the child's console and supplies all three standard streams,
+    /// so the [`crate::Command`] must choose no console mode and configure no standard stream.
     #[must_use]
-    pub const fn mitigation(mut self, mitigation: MitigationPolicy) -> Self {
-        self.mitigation = mitigation;
+    pub fn pseudo_console(mut self, console: impl Into<BorrowedPseudoConsole<'a>>) -> Self {
+        self.pseudoconsole = Some(console.into());
         self
-    }
-
-    /// Attaches the child to a borrowed pseudoconsole.
-    #[must_use]
-    pub fn pseudoconsole<T: AsPseudoConsole>(mut self, pseudoconsole: &'a T) -> Self {
-        self.pseudoconsole = Some(PseudoConsole::new(pseudoconsole));
-        self
-    }
-
-    /// Adds named process-creation flags.
-    #[must_use]
-    pub const fn creation_flags(mut self, flags: CreationFlags) -> Self {
-        self.creation_flags = flags;
-        self
-    }
-
-    /// Chooses the live-child drop policy.
-    #[must_use]
-    pub const fn drop_policy(mut self, policy: DropPolicy) -> Self {
-        self.drop_policy = policy;
-        self
-    }
-
-    pub(crate) fn pseudoconsole_raw(&self) -> Option<isize> {
-        self.pseudoconsole
-            .as_ref()
-            .map(|pseudoconsole| pseudoconsole.raw)
     }
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 mod tests {
     use std::cell::Cell;
 
     use super::*;
+    use crate::sys::test_support::ChangingPseudoConsole;
 
-    struct TestPseudoConsole(Cell<isize>);
+    const SNAPSHOT: isize = 42;
+    const CHANGED: isize = 99;
 
-    // SAFETY: tests use the value only as a snapshot and never pass it to Win32.
-    unsafe impl AsPseudoConsole for TestPseudoConsole {
-        fn raw_pseudoconsole(&self) -> isize {
-            self.0.get()
+    #[test]
+    fn creation_choices_combine_and_default_to_nothing() {
+        let mut creation = Creation::new();
+        assert_eq!(creation.policy(), 0);
+        assert_eq!(creation.console_flag(), ConsoleFlag::Inherit);
+        assert_eq!(creation.priority_flag(), PriorityFlag::Default);
+        assert!(!creation.owns_tree);
+        assert_eq!(ConsoleMode::default(), ConsoleMode::Inherit);
+        for flag in flags::POLICY {
+            creation.set(flag);
+            creation.set(flag);
+        }
+        assert_eq!(
+            creation.policy(),
+            flags::POLICY.iter().fold(0, |word, flag| word | flag)
+        );
+        for (class, flag) in [
+            (PriorityClass::Idle, PriorityFlag::Idle),
+            (PriorityClass::BelowNormal, PriorityFlag::BelowNormal),
+            (PriorityClass::Normal, PriorityFlag::Normal),
+            (PriorityClass::AboveNormal, PriorityFlag::AboveNormal),
+            (PriorityClass::High, PriorityFlag::High),
+            (PriorityClass::Realtime, PriorityFlag::Realtime),
+        ] {
+            creation.set_priority(class);
+            assert_eq!(creation.priority_flag(), flag);
+        }
+        for (mode, flag) in [
+            (ConsoleMode::Inherit, ConsoleFlag::Inherit),
+            (ConsoleMode::NoConsole, ConsoleFlag::NoConsole),
+            (ConsoleMode::NewConsole, ConsoleFlag::NewConsole),
+            (ConsoleMode::NoWindow, ConsoleFlag::NoWindow),
+        ] {
+            creation.console = mode;
+            assert_eq!(creation.console_flag(), flag);
         }
     }
 
     #[test]
-    fn creation_flags_combine_idempotently_and_options_keep_job_order() {
-        let combined = CreationFlags::NEW_PROCESS_GROUP | CreationFlags::DEFAULT_ERROR_MODE;
-        assert_eq!(combined.bits(), 0x0400_0200);
-        assert_eq!(
-            (CreationFlags::NEW_PROCESS_GROUP | CreationFlags::NEW_PROCESS_GROUP).bits(),
-            CreationFlags::NEW_PROCESS_GROUP.bits()
-        );
-        let mut assigned = CreationFlags::NEW_PROCESS_GROUP;
-        assigned |= CreationFlags::DEFAULT_ERROR_MODE;
-        assert_eq!(assigned.bits(), combined.bits());
-
+    fn options_keep_job_order_and_reuse_by_clone() {
         let outer = Job::create().unwrap();
         let inner = Job::create().unwrap();
         let options = SpawnOptions::new().job(&outer).job(&inner);
-        assert_eq!(options.jobs.len(), 2);
-        assert!(std::ptr::eq(options.jobs[0], &outer));
-        assert!(std::ptr::eq(options.jobs[1], &inner));
+        let reused = options.clone();
+        assert_eq!(reused.jobs.len(), 2);
+        assert!(std::ptr::eq(reused.jobs[0], &outer));
+        assert!(std::ptr::eq(reused.jobs[1], &inner));
+        let empty = SpawnOptions::default();
+        assert!(empty.jobs.is_empty() && empty.parent.is_none() && empty.pseudoconsole.is_none());
     }
 
     #[test]
-    fn defaults_detach_and_request_nothing() {
-        assert_eq!(DropPolicy::default(), DropPolicy::Detach);
-        let options = SpawnOptions::default();
-        assert_eq!(options.drop_policy, DropPolicy::Detach);
-        assert_eq!(options.creation_flags, CreationFlags::new());
-        assert!(options.jobs.is_empty() && options.parent.is_none());
-        assert_eq!(options.pseudoconsole_raw(), None);
-    }
+    fn a_pseudoconsole_is_read_once_from_a_reference_or_a_borrow() {
+        let pseudoconsole = ChangingPseudoConsole(Cell::new(SNAPSHOT));
+        let options = SpawnOptions::new().pseudo_console(&pseudoconsole);
+        pseudoconsole.0.set(CHANGED);
+        assert_eq!(
+            options.pseudoconsole.map(BorrowedPseudoConsole::as_raw),
+            Some(SNAPSHOT)
+        );
+        assert!(format!("{options:?}").contains("BorrowedPseudoConsole"));
 
-    #[test]
-    fn pseudoconsole_builder_snapshots_the_raw_value() {
-        let pseudoconsole = TestPseudoConsole(Cell::new(42));
-        let options = SpawnOptions::new().pseudoconsole(&pseudoconsole);
-        pseudoconsole.0.set(99);
-        assert_eq!(options.pseudoconsole_raw(), Some(42));
-        assert!(format!("{options:?}").contains("borrowed"));
+        let borrowed = crate::AsPseudoConsole::as_pseudo_console(&pseudoconsole);
+        let from_borrow = SpawnOptions::new().pseudo_console(borrowed);
+        assert_eq!(
+            from_borrow.pseudoconsole.map(BorrowedPseudoConsole::as_raw),
+            Some(CHANGED)
+        );
     }
 }

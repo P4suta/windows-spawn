@@ -51,6 +51,15 @@ coverage:
 mutation:
     cargo xtask mutation
 
+proofs *layers:
+    cargo xtask proofs {{layers}}
+
+proof-traces:
+    cargo xtask proof-traces
+
+verifier:
+    cargo xtask verifier
+
 package-check:
     cargo xtask package-check
 

@@ -1,5 +1,6 @@
-use crate::cli::{SimpleTask, Task};
+use crate::cli::{ProofLayer, SimpleTask, Task};
 use crate::gates;
+use crate::proofs;
 use semver::Version;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -80,6 +81,8 @@ impl From<String> for TaskError {
 
 const PACKAGE_NAME: &str = "windows-spawn";
 const PUBLIC_API_TOOLCHAIN: &str = "nightly-2026-07-02";
+/// The target whose API the snapshot records, named so that every host renders the same snapshot.
+const PUBLIC_API_TARGET: &str = "x86_64-pc-windows-msvc";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PackageInfo {
@@ -91,6 +94,21 @@ pub(crate) fn execute(task: Task) -> Result<i32> {
     let root = repository_root()?;
     match task {
         Task::Simple(task) => run_simple(&root, task)?,
+        Task::Proofs { layers } => {
+            for layer in layers {
+                match layer {
+                    ProofLayer::Kani => proofs::kani::kani(&root)?,
+                    ProofLayer::Lean => proofs::lean::lean(&root)?,
+                    ProofLayer::Tla => proofs::tla::tla(&root)?,
+                    ProofLayer::Quint => proofs::quint::quint(&root)?,
+                    ProofLayer::Alloy => proofs::alloy::alloy(&root)?,
+                    ProofLayer::Prolog => proofs::prolog::prolog(&root)?,
+                    ProofLayer::Verus => proofs::verus::verus(&root)?,
+                }
+            }
+        }
+        Task::ProofTraces => proofs::quint::write_traces(&root)?,
+        Task::Verifier => crate::verifier::verifier(&root)?,
         Task::PublicApi { update } => public_api(&root, update)?,
         Task::PackageCheck { allow_dirty } => package_check(&root, allow_dirty)?,
         Task::Sbom { output } => {
@@ -118,6 +136,9 @@ Repository tasks:
   cargo xtask fmt|clippy|gates|test|doc|msrv|cross-targets|linux-empty
   cargo xtask supply-chain|reuse|typos|coverage|ci
   cargo xtask public-api [--update]
+  cargo xtask proofs [kani] [lean] [verus] [tla] [quint] [alloy] [prolog]
+  cargo xtask proof-traces
+  cargo xtask verifier
   cargo xtask package-check [--allow-dirty]
   cargo xtask sbom [--output DIR]
   cargo xtask release-candidate [--allow-dirty] [--github-output]
@@ -143,18 +164,19 @@ fn run_simple(root: &Path, task: SimpleTask) -> Result<()> {
             ],
         ),
         SimpleTask::Test => {
-            run_cargo(
-                root,
-                &[
-                    "test",
-                    "--workspace",
-                    "--all-targets",
-                    "--locked",
-                    "--",
-                    "--test-threads=1",
-                ],
-            )?;
-            run_cargo(root, &["test", "--workspace", "--doc", "--locked"])
+            let mut targets = cargo(root);
+            with_vectors(&mut targets).args([
+                "test",
+                "--workspace",
+                "--all-targets",
+                "--locked",
+                "--",
+                "--test-threads=1",
+            ]);
+            run(&mut targets)?;
+            let mut doctests = cargo(root);
+            with_vectors(&mut doctests).args(["test", "--workspace", "--doc", "--locked"]);
+            run(&mut doctests)
         }
         SimpleTask::Doc => {
             let mut command = cargo(root);
@@ -277,7 +299,14 @@ fn coverage(root: &Path) -> Result<()> {
 
 fn public_api(root: &Path, update: bool) -> Result<()> {
     let mut command = cargo_with_toolchain(root, PUBLIC_API_TOOLCHAIN);
-    command.args(["public-api", "--package", PACKAGE_NAME, "--simplified"]);
+    command.args([
+        "public-api",
+        "--package",
+        PACKAGE_NAME,
+        "--simplified",
+        "--target",
+        PUBLIC_API_TARGET,
+    ]);
     let actual = capture(&mut command)?;
     let snapshot = root.join("public-api/windows-spawn.txt");
     if update {
@@ -542,7 +571,7 @@ fn release_candidate(root: &Path, allow_dirty: bool, github_output: bool) -> Res
     check_packaged_reuse(root)?;
     let sboms = generate_sboms(root, &output, false)?;
     let artifacts = release_artifacts(&output)?;
-    if artifacts.len() != 3 {
+    if artifacts.len() != RELEASE_ARTIFACTS {
         return fail(format!(
             "expected one crate and two SBOMs, found {}",
             artifacts.len()
@@ -643,10 +672,17 @@ fn write_checksums(path: &Path, artifacts: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
+/// What a release publishes: the crate and its two SBOMs.
+const RELEASE_ARTIFACTS: usize = 3;
+/// The bytes `sha256` reads at a time.
+const HASH_CHUNK: usize = 16 * 1024;
+/// The base of a hexadecimal digit.
+const HEX: u32 = 16;
+
 fn sha256(path: &Path) -> Result<String> {
     let mut file = File::open(path)?;
     let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 16 * 1024];
+    let mut buffer = [0_u8; HASH_CHUNK];
     loop {
         let read = file.read(&mut buffer)?;
         if read == 0 {
@@ -660,13 +696,13 @@ fn sha256(path: &Path) -> Result<String> {
 }
 
 /// Formats a digest as lowercase hex; `sha2` 0.11 digests do not implement `LowerHex`.
-fn lower_hex(bytes: &[u8]) -> String {
+pub(crate) fn lower_hex(bytes: &[u8]) -> String {
     bytes
         .iter()
         .flat_map(|byte| {
             [
-                char::from_digit(u32::from(*byte) / 16, 16),
-                char::from_digit(u32::from(*byte) % 16, 16),
+                char::from_digit(u32::from(*byte) / HEX, HEX),
+                char::from_digit(u32::from(*byte) % HEX, HEX),
             ]
         })
         .flatten()
@@ -777,15 +813,16 @@ fn append_github_output(path: &Path, key: &str, value: &str) -> Result<()> {
 /// Lints are capped to warnings: the instrumented tree trips `unused_qualifications`, and lints are not behavior.
 #[cfg(windows)]
 fn run_mutation(root: &Path, forwarded: &[String]) -> Result<i32> {
-    use windows_spawn::{Command as SpawnCommand, DropPolicy, SpawnOptions};
+    use windows_spawn::Command as SpawnCommand;
 
-    let mut command = SpawnCommand::new("rust-mutants");
-    command
+    let status = SpawnCommand::new("rust-mutants")
         .args(["run", "--locked"])
         .args(forwarded)
         .env("RUSTFLAGS", "--cap-lints=warn")
-        .current_dir(root);
-    let status = command.status_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
+        .current_dir(root)
+        .own_process_tree()
+        .status()
+        .map_err(io::Error::from)?;
     Ok(status.code().unwrap_or(1))
 }
 
@@ -884,11 +921,23 @@ fn repository_root() -> Result<PathBuf> {
     Ok(normalize_path(root))
 }
 
-fn cargo(root: &Path) -> Command {
+pub(crate) fn cargo(root: &Path) -> Command {
     let executable = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = Command::new(executable);
     command.current_dir(root);
     command
+}
+
+/// Adds the cfg that compiles the tests reading `proofs/` vectors and traces to the caller's `RUSTFLAGS`.
+///
+/// The vectors stay outside the package, so only a checkout builds those tests.
+pub(crate) fn with_vectors(command: &mut Command) -> &mut Command {
+    let mut flags = env::var("RUSTFLAGS").unwrap_or_default();
+    if !flags.is_empty() {
+        flags.push(' ');
+    }
+    flags.push_str("--cfg windows_spawn_vectors");
+    command.env("RUSTFLAGS", flags)
 }
 
 fn cargo_with_toolchain(root: &Path, toolchain: &str) -> Command {
@@ -915,7 +964,7 @@ fn run_program(root: &Path, program: &str, arguments: &[&str]) -> Result<()> {
     run(&mut command)
 }
 
-fn run(command: &mut Command) -> Result<()> {
+pub(crate) fn run(command: &mut Command) -> Result<()> {
     println!("+ {command:?}");
     let status = command.status()?;
     if status.success() {
@@ -944,7 +993,7 @@ fn ensure_success(command: &Command, output: &Output) -> Result<()> {
     ))
 }
 
-fn fail<T>(message: impl Into<String>) -> Result<T> {
+pub(crate) fn fail<T>(message: impl Into<String>) -> Result<T> {
     Err(TaskError::Message(message.into()))
 }
 

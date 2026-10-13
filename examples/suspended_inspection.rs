@@ -1,4 +1,4 @@
-//! Inspects process and primary-thread handles before resuming the child.
+//! Inspects the process and main-thread handles before resuming the child.
 
 #[cfg(windows)]
 fn main() -> std::io::Result<()> {
@@ -12,7 +12,7 @@ fn main() -> std::io::Result<()> {
     let suspended = command.spawn_suspended()?;
     println!("created suspended process {}", suspended.id());
     let _process = suspended.as_handle();
-    let _primary_thread = suspended.primary_thread_handle();
+    let _main_thread = suspended.main_thread_handle();
 
     let mut child = suspended.resume()?;
     assert!(child.wait()?.success());

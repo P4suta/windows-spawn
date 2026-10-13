@@ -3,12 +3,21 @@
 use std::fmt;
 use std::fs::File;
 use std::io;
-use std::os::windows::io::{AsHandle, BorrowedHandle, OwnedHandle};
+use std::marker::PhantomData;
+use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle, RawHandle};
 
-use crate::child::Child;
+use crate::error::{Operation, Phase, Result, SpawnError};
 use crate::sys;
 
+/// Runs one Windows operation and types its failure with the phase and operation.
+pub(crate) fn windows<T>(phase: Phase, operation: Operation, outcome: io::Result<T>) -> Result<T> {
+    outcome.map_err(|error| SpawnError::windows(phase, operation, error))
+}
+
 /// Describes a standard stream source while keeping any supplied handle owned.
+///
+/// Like [`std::process::Stdio`], it converts from a [`File`], an [`OwnedHandle`], a child's pipe end such as [`crate::ChildStdout`],
+/// and [`io::stdout`] or [`io::stderr`], which the spawn reads when it runs.
 pub struct Stdio {
     pub(crate) inner: StdioInner,
 }
@@ -18,6 +27,10 @@ pub(crate) enum StdioInner {
     Null,
     Piped,
     Owned(OwnedHandle),
+    /// The caller's standard output, in whichever slot the child receives it.
+    CallerStdout,
+    /// The caller's standard error, in whichever slot the child receives it.
+    CallerStderr,
 }
 
 impl fmt::Debug for Stdio {
@@ -27,6 +40,8 @@ impl fmt::Debug for Stdio {
             StdioInner::Null => "Null",
             StdioInner::Piped => "Piped",
             StdioInner::Owned(_) => "Owned",
+            StdioInner::CallerStdout => "Stdout",
+            StdioInner::CallerStderr => "Stderr",
         };
         formatter.debug_tuple("Stdio").field(&name).finish()
     }
@@ -49,7 +64,7 @@ impl Stdio {
         }
     }
 
-    /// Creates an anonymous pipe and returns the caller's end on [`Child`].
+    /// Creates an anonymous pipe and returns the caller's end on [`crate::Child`].
     #[must_use]
     pub const fn piped() -> Self {
         Self {
@@ -63,9 +78,14 @@ impl Stdio {
     ///
     /// # Errors
     ///
-    /// Returns the operating-system error if duplication fails.
-    pub fn from_borrowed<T: AsHandle>(source: &T) -> io::Result<Self> {
-        Ok(Self::from(sys::duplicate_local(source.as_handle(), false)?))
+    /// Returns a Windows error if duplication fails.
+    pub fn from_borrowed<T: AsHandle>(source: &T) -> Result<Self> {
+        windows(
+            Phase::Preparation,
+            Operation::DuplicateLocalHandle,
+            sys::duplicate_local(source.as_handle(), false),
+        )
+        .map(Self::from)
     }
 }
 
@@ -83,6 +103,24 @@ impl From<File> for Stdio {
     }
 }
 
+impl From<io::Stdout> for Stdio {
+    /// Gives the child the caller's standard output, as the spawn finds it.
+    fn from(_: io::Stdout) -> Self {
+        Self {
+            inner: StdioInner::CallerStdout,
+        }
+    }
+}
+
+impl From<io::Stderr> for Stdio {
+    /// Gives the child the caller's standard error, as the spawn finds it.
+    fn from(_: io::Stderr) -> Self {
+        Self {
+            inner: StdioInner::CallerStderr,
+        }
+    }
+}
+
 /// A process handle validated for use as `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`.
 #[derive(Debug)]
 pub struct ParentProcess {
@@ -94,20 +132,27 @@ impl ParentProcess {
     ///
     /// # Errors
     ///
-    /// Returns an error if the PID cannot be opened with the required rights.
-    pub fn open(pid: u32) -> io::Result<Self> {
-        Ok(Self {
-            handle: sys::open_parent_process(pid)?,
-        })
+    /// Returns a Windows error if the PID cannot be opened with the required rights.
+    pub fn open(pid: u32) -> Result<Self> {
+        windows(
+            Phase::Preparation,
+            Operation::OpenProcess,
+            sys::open_parent_process(pid),
+        )
+        .map(|handle| Self { handle })
     }
 
     /// Adopts and validates an existing process handle.
     ///
     /// # Errors
     ///
-    /// Returns an error if the handle does not identify a process.
-    pub fn from_handle(handle: OwnedHandle) -> io::Result<Self> {
-        sys::validate_process_handle(handle.as_handle())?;
+    /// Returns a Windows error if the handle does not identify a process.
+    pub fn from_handle(handle: OwnedHandle) -> Result<Self> {
+        windows(
+            Phase::Preparation,
+            Operation::OpenProcess,
+            sys::validate_process_handle(handle.as_handle()),
+        )?;
         Ok(Self { handle })
     }
 }
@@ -115,6 +160,18 @@ impl ParentProcess {
 impl AsHandle for ParentProcess {
     fn as_handle(&self) -> BorrowedHandle<'_> {
         self.handle.as_handle()
+    }
+}
+
+impl AsRawHandle for ParentProcess {
+    fn as_raw_handle(&self) -> RawHandle {
+        self.handle.as_raw_handle()
+    }
+}
+
+impl From<ParentProcess> for OwnedHandle {
+    fn from(parent: ParentProcess) -> Self {
+        parent.handle
     }
 }
 
@@ -129,20 +186,23 @@ impl Job {
     ///
     /// # Errors
     ///
-    /// Returns the operating-system error if Job creation fails.
-    pub fn create() -> io::Result<Self> {
-        Ok(Self {
-            handle: sys::create_job()?,
-        })
+    /// Returns a Windows error if Job creation fails.
+    pub fn create() -> Result<Self> {
+        windows(Phase::Preparation, Operation::CreateJob, sys::create_job())
+            .map(|handle| Self { handle })
     }
 
     /// Adopts an existing handle after verifying it is a Job handle.
     ///
     /// # Errors
     ///
-    /// Returns an error if Job limit information cannot be queried.
-    pub fn from_handle(handle: OwnedHandle) -> io::Result<Self> {
-        sys::validate_job_handle(handle.as_handle())?;
+    /// Returns a Windows error if Job limit information cannot be queried.
+    pub fn from_handle(handle: OwnedHandle) -> Result<Self> {
+        windows(
+            Phase::Preparation,
+            Operation::QueryJob,
+            sys::validate_job_handle(handle.as_handle()),
+        )?;
         Ok(Self { handle })
     }
 
@@ -150,38 +210,57 @@ impl Job {
     ///
     /// # Errors
     ///
-    /// Returns the operating-system error if duplication fails.
-    pub fn duplicate(&self) -> io::Result<Self> {
-        Ok(Self {
-            handle: sys::duplicate_local(self.handle.as_handle(), false)?,
-        })
+    /// Returns a Windows error if duplication fails.
+    pub fn duplicate(&self) -> Result<Self> {
+        windows(
+            Phase::Preparation,
+            Operation::DuplicateLocalHandle,
+            sys::duplicate_local(self.handle.as_handle(), false),
+        )
+        .map(|handle| Self { handle })
     }
 
-    /// Assigns an existing child to the Job.
+    /// Assigns a running process to the Job: a [`crate::Child`], a [`crate::SuspendedChild`], a [`std::process::Child`], or any process handle.
+    ///
+    /// A spawn attaches Jobs before the child runs with [`crate::SpawnOptions::job`]; this is for a process that already exists.
     ///
     /// # Errors
     ///
-    /// Returns an error when Windows rejects the Job assignment.
-    pub fn assign(&self, child: &Child) -> io::Result<()> {
-        sys::assign_job(self.handle.as_handle(), child.process_handle())
+    /// Returns a Windows error when Windows rejects the assignment, for example because `process` is no process handle.
+    pub fn assign<P: AsHandle + ?Sized>(&self, process: &P) -> Result<()> {
+        windows(
+            Phase::Runtime,
+            Operation::AssignJob,
+            sys::assign_job(self.handle.as_handle(), process.as_handle()),
+        )
     }
 
     /// Terminates every process in the Job with `exit_code`.
     ///
     /// # Errors
     ///
-    /// Returns the operating-system error if Job termination fails.
-    pub fn terminate(&self, exit_code: u32) -> io::Result<()> {
-        sys::terminate_job(self.handle.as_handle(), exit_code)
+    /// Returns a Windows error if Job termination fails.
+    pub fn terminate(&self, exit_code: u32) -> Result<()> {
+        windows(
+            Phase::Runtime,
+            Operation::TerminateJob,
+            sys::terminate_job(self.handle.as_handle(), exit_code),
+        )
     }
 
-    /// Enables or disables kill-on-close without overwriting other Job limits.
+    /// Sets whether closing the last handle of the Job terminates its processes, without changing other Job limits.
+    ///
+    /// This is the Job's `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` limit.
     ///
     /// # Errors
     ///
-    /// Returns an error if querying or updating Job limits fails.
-    pub fn set_kill_on_close(&self, enable: bool) -> io::Result<()> {
-        sys::set_job_kill_on_close(self.handle.as_handle(), enable)
+    /// Returns a Windows error if querying or updating Job limits fails.
+    pub fn set_kill_on_close(&self, kill: bool) -> Result<()> {
+        windows(
+            Phase::Preparation,
+            Operation::ConfigureJob,
+            sys::set_job_kill_on_close(self.handle.as_handle(), kill),
+        )
     }
 }
 
@@ -191,19 +270,56 @@ impl AsHandle for Job {
     }
 }
 
-/// A borrowed pseudoconsole capability.
+impl AsRawHandle for Job {
+    fn as_raw_handle(&self) -> RawHandle {
+        self.handle.as_raw_handle()
+    }
+}
+
+impl From<Job> for OwnedHandle {
+    fn from(job: Job) -> Self {
+        job.handle
+    }
+}
+
+/// A borrowed pseudoconsole (`HPCON`), valid for the lifetime `'a`.
 ///
-/// # Safety
+/// It plays the part [`BorrowedHandle`] plays for handles: [`AsPseudoConsole`] lends one from an owning value,
+/// and [`Self::borrow_raw`] makes one from a raw `HPCON`, such as one that `CreatePseudoConsole` returned.
+/// windows-spawn never closes it; its owner decides when the pseudoconsole closes and when its pipes reach EOF.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct BorrowedPseudoConsole<'a> {
+    pub(crate) raw: isize,
+    pub(crate) owner: PhantomData<&'a ()>,
+}
+
+impl BorrowedPseudoConsole<'_> {
+    /// Returns the raw `HPCON`.
+    #[must_use]
+    pub const fn as_raw(self) -> isize {
+        self.raw
+    }
+}
+
+impl<'a, T: AsPseudoConsole + ?Sized> From<&'a T> for BorrowedPseudoConsole<'a> {
+    fn from(owner: &'a T) -> Self {
+        owner.as_pseudo_console()
+    }
+}
+
+/// A value that owns or borrows a pseudoconsole and lends it out, as [`AsHandle`] does for handles.
 ///
-/// Implementations must return a valid, nonzero `HPCON` that stays open and unchanged for every borrow passed to [`crate::SpawnOptions::pseudoconsole`].
-/// The implementation keeps ownership; windows-spawn never closes or releases it.
-#[allow(unsafe_code)]
-pub unsafe trait AsPseudoConsole {
-    /// Returns the borrowed raw `HPCON` value.
-    ///
-    /// Terminal libraries implement this to bridge their pseudoconsole type; applications pass the implementing value to [`crate::SpawnOptions::pseudoconsole`].
-    /// The value must satisfy the trait's safety contract; ownership does not transfer.
-    fn raw_pseudoconsole(&self) -> isize;
+/// A terminal library implements it once for its pseudoconsole type with [`BorrowedPseudoConsole::borrow_raw`];
+/// an application then passes a reference to that value to [`crate::SpawnOptions::pseudo_console`].
+pub trait AsPseudoConsole {
+    /// Borrows the pseudoconsole.
+    fn as_pseudo_console(&self) -> BorrowedPseudoConsole<'_>;
+}
+
+impl AsPseudoConsole for BorrowedPseudoConsole<'_> {
+    fn as_pseudo_console(&self) -> BorrowedPseudoConsole<'_> {
+        *self
+    }
 }
 
 #[cfg(test)]
@@ -212,11 +328,16 @@ mod tests {
 
     use super::*;
 
+    const ACCESS_DENIED: i32 = 5;
+
     #[test]
-    fn stored_duplicates_are_private() -> io::Result<()> {
+    fn stored_duplicates_are_private() -> Result<()> {
         use crate::sys::test_support::is_inheritable;
 
-        let stdio = Stdio::from_borrowed(&File::open("NUL")?)?;
+        let nul = File::open("NUL").map_err(|error| {
+            SpawnError::windows(Phase::Preparation, Operation::OpenNullDevice, error)
+        })?;
+        let stdio = Stdio::from_borrowed(&nul)?;
         let StdioInner::Owned(owned) = &stdio.inner else {
             panic!("from_borrowed stores an owned handle");
         };
@@ -224,6 +345,21 @@ mod tests {
         let duplicate = Job::create()?.duplicate()?;
         assert!(!is_inheritable(duplicate.as_handle()));
         Ok(())
+    }
+
+    #[test]
+    fn windows_failures_keep_their_phase_and_operation() {
+        let failed = windows::<()>(
+            Phase::Preparation,
+            Operation::OpenProcess,
+            Err(io::Error::from_raw_os_error(ACCESS_DENIED)),
+        );
+        let Err(SpawnError::Windows(error)) = failed else {
+            panic!("a failed call becomes a Windows error");
+        };
+        assert_eq!(error.phase(), Phase::Preparation);
+        assert_eq!(error.operation(), Operation::OpenProcess);
+        assert_eq!(error.raw_os_error(), Some(ACCESS_DENIED));
     }
 
     #[test]

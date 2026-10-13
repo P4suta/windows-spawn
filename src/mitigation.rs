@@ -1,7 +1,41 @@
 //! Typed process-creation mitigation policy encoding.
 
+/// The legacy one-bit DEP state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+#[repr(u64)]
+pub enum Dep {
+    /// Leave DEP to the child executable and operating system.
+    Defer = 0,
+    /// Enable DEP.
+    Enable = 1,
+}
+
+/// The legacy one-bit DEP ATL-thunk-emulation state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+#[repr(u64)]
+pub enum AtlThunkEmulation {
+    /// Leave ATL thunk emulation to the child executable and operating system.
+    Defer = 0,
+    /// Emulate the ATL thunks that DEP would stop; Windows accepts it only with DEP enabled.
+    Enable = 1,
+}
+
+/// The legacy one-bit SEHOP state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+#[repr(u64)]
+pub enum Sehop {
+    /// Leave structured exception handler overwrite protection to the child executable and operating system.
+    Defer = 0,
+    /// Enable structured exception handler overwrite protection.
+    Enable = 1,
+}
+
 /// The ordinary two-bit mitigation states used by the Windows SDK.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[repr(u64)]
 pub enum Mitigation {
     /// Let the child executable and operating system choose.
@@ -14,6 +48,7 @@ pub enum Mitigation {
 
 /// Mandatory-ASLR modes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[repr(u64)]
 pub enum RelocateImages {
     /// Defer to the child.
@@ -28,6 +63,7 @@ pub enum RelocateImages {
 
 /// Dynamic-code policy modes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[repr(u64)]
 pub enum DynamicCode {
     /// Defer to the child.
@@ -42,6 +78,7 @@ pub enum DynamicCode {
 
 /// Control Flow Guard modes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[repr(u64)]
 pub enum ControlFlowGuard {
     /// Defer to the child.
@@ -56,6 +93,7 @@ pub enum ControlFlowGuard {
 
 /// Microsoft-signed binary policy modes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[repr(u64)]
 pub enum SignedBinaries {
     /// Defer to the child.
@@ -70,8 +108,9 @@ pub enum SignedBinaries {
 
 /// Non-system-font policy modes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[repr(u64)]
-pub enum FontDisable {
+pub enum NonSystemFonts {
     /// Defer to the child.
     Defer = 0,
     /// Block non-system fonts.
@@ -84,6 +123,7 @@ pub enum FontDisable {
 
 /// Loader integrity continuity modes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[repr(u64)]
 pub enum LoaderIntegrity {
     /// Defer to the child.
@@ -98,6 +138,7 @@ pub enum LoaderIntegrity {
 
 /// Module-tampering protection modes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[repr(u64)]
 pub enum ModuleTampering {
     /// Defer to the child.
@@ -115,6 +156,7 @@ pub enum ModuleTampering {
 /// Support depends on the Windows release, architecture, hardware, and child executable.
 /// A representable value may still be rejected by the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[repr(u64)]
 pub enum CetShadowStacks {
     /// Defer to the child.
@@ -131,6 +173,7 @@ pub enum CetShadowStacks {
 ///
 /// Support depends on the Windows release, architecture, hardware, and child executable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[repr(u64)]
 pub enum UserCetContextIpValidation {
     /// Defer to the child.
@@ -147,6 +190,7 @@ pub enum UserCetContextIpValidation {
 ///
 /// Support depends on the Windows release, architecture, and executable metadata.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[repr(u64)]
 pub enum BlockNonCetBinaries {
     /// Defer to the child.
@@ -159,9 +203,18 @@ pub enum BlockNonCetBinaries {
     NonEhContinuation = 3,
 }
 
+/// The two-bit state that defers to the child.
+const DEFER: u64 = 0b00;
+/// The two-bit `ALWAYS_ON` state.
+const ALWAYS_ON: u64 = 0b01;
+/// The two-bit `ALWAYS_OFF` state.
+const ALWAYS_OFF: u64 = 0b10;
+/// The fourth two-bit state, whose meaning each field defines.
+const FOURTH_STATE: u64 = 0b11;
+
 /// Gives a two-bit policy field its encoding and its `Defer` default.
 macro_rules! policy_field {
-    ($name:ident { $($variant:ident => $bits:literal),+ $(,)? }) => {
+    ($name:ident { $($variant:ident => $bits:ident),+ $(,)? }) => {
         impl $name {
             const fn bits(self) -> u64 {
                 match self {
@@ -179,17 +232,230 @@ macro_rules! policy_field {
     };
 }
 
-policy_field!(Mitigation { Defer => 0, AlwaysOn => 1, AlwaysOff => 2 });
-policy_field!(RelocateImages { Defer => 0, AlwaysOn => 1, AlwaysOff => 2, RequireRelocations => 3 });
-policy_field!(DynamicCode { Defer => 0, Prohibit => 1, Allow => 2, ProhibitWithOptOut => 3 });
-policy_field!(ControlFlowGuard { Defer => 0, AlwaysOn => 1, AlwaysOff => 2, ExportSuppression => 3 });
-policy_field!(SignedBinaries { Defer => 0, MicrosoftOnly => 1, AlwaysOff => 2, MicrosoftAndStore => 3 });
-policy_field!(FontDisable { Defer => 0, Block => 1, Allow => 2, Audit => 3 });
-policy_field!(LoaderIntegrity { Defer => 0, AlwaysOn => 1, AlwaysOff => 2, Audit => 3 });
-policy_field!(ModuleTampering { Defer => 0, AlwaysOn => 1, AlwaysOff => 2, NoInherit => 3 });
-policy_field!(CetShadowStacks { Defer => 0, AlwaysOn => 1, AlwaysOff => 2, Strict => 3 });
-policy_field!(UserCetContextIpValidation { Defer => 0, AlwaysOn => 1, AlwaysOff => 2, Relaxed => 3 });
-policy_field!(BlockNonCetBinaries { Defer => 0, AlwaysOn => 1, AlwaysOff => 2, NonEhContinuation => 3 });
+policy_field!(Dep { Defer => DEFER, Enable => ALWAYS_ON });
+policy_field!(AtlThunkEmulation { Defer => DEFER, Enable => ALWAYS_ON });
+policy_field!(Sehop { Defer => DEFER, Enable => ALWAYS_ON });
+policy_field!(Mitigation { Defer => DEFER, AlwaysOn => ALWAYS_ON, AlwaysOff => ALWAYS_OFF });
+policy_field!(RelocateImages {
+    Defer => DEFER,
+    AlwaysOn => ALWAYS_ON,
+    AlwaysOff => ALWAYS_OFF,
+    RequireRelocations => FOURTH_STATE,
+});
+policy_field!(DynamicCode {
+    Defer => DEFER,
+    Prohibit => ALWAYS_ON,
+    Allow => ALWAYS_OFF,
+    ProhibitWithOptOut => FOURTH_STATE,
+});
+policy_field!(ControlFlowGuard {
+    Defer => DEFER,
+    AlwaysOn => ALWAYS_ON,
+    AlwaysOff => ALWAYS_OFF,
+    ExportSuppression => FOURTH_STATE,
+});
+policy_field!(SignedBinaries {
+    Defer => DEFER,
+    MicrosoftOnly => ALWAYS_ON,
+    AlwaysOff => ALWAYS_OFF,
+    MicrosoftAndStore => FOURTH_STATE,
+});
+policy_field!(NonSystemFonts {
+    Defer => DEFER,
+    Block => ALWAYS_ON,
+    Allow => ALWAYS_OFF,
+    Audit => FOURTH_STATE,
+});
+policy_field!(LoaderIntegrity {
+    Defer => DEFER,
+    AlwaysOn => ALWAYS_ON,
+    AlwaysOff => ALWAYS_OFF,
+    Audit => FOURTH_STATE,
+});
+policy_field!(ModuleTampering {
+    Defer => DEFER,
+    AlwaysOn => ALWAYS_ON,
+    AlwaysOff => ALWAYS_OFF,
+    NoInherit => FOURTH_STATE,
+});
+policy_field!(CetShadowStacks {
+    Defer => DEFER,
+    AlwaysOn => ALWAYS_ON,
+    AlwaysOff => ALWAYS_OFF,
+    Strict => FOURTH_STATE,
+});
+policy_field!(UserCetContextIpValidation {
+    Defer => DEFER,
+    AlwaysOn => ALWAYS_ON,
+    AlwaysOff => ALWAYS_OFF,
+    Relaxed => FOURTH_STATE,
+});
+policy_field!(BlockNonCetBinaries {
+    Defer => DEFER,
+    AlwaysOn => ALWAYS_ON,
+    AlwaysOff => ALWAYS_OFF,
+    NonEhContinuation => FOURTH_STATE,
+});
+
+/// The word of a policy that holds a field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Word {
+    First,
+    Second,
+}
+
+/// One policy field: the word that holds it, its lowest bit, and the mask of its bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Field {
+    word: Word,
+    shift: u32,
+    mask: u64,
+}
+
+/// The mask of a legacy one-bit field.
+const ONE_BIT: u64 = 0b1;
+/// The mask of a two-bit field.
+const TWO_BITS: u64 = 0b11;
+
+impl Field {
+    const fn legacy(shift: u32) -> Self {
+        Self {
+            word: Word::First,
+            shift,
+            mask: ONE_BIT,
+        }
+    }
+
+    const fn in_first(shift: u32) -> Self {
+        Self {
+            word: Word::First,
+            shift,
+            mask: TWO_BITS,
+        }
+    }
+
+    const fn in_second(shift: u32) -> Self {
+        Self {
+            word: Word::Second,
+            shift,
+            mask: TWO_BITS,
+        }
+    }
+
+    /// The bits the field occupies in its word.
+    const fn bits(self) -> u64 {
+        self.mask << self.shift
+    }
+
+    /// Replaces the field's bits in `word` with `value`, cut to the field's width.
+    const fn replace(self, word: u64, value: u64) -> u64 {
+        (word & !self.bits()) | ((value & self.mask) << self.shift)
+    }
+}
+
+const DEP: Field = Field::legacy(0);
+const DEP_ATL_THUNK: Field = Field::legacy(1);
+const SEHOP: Field = Field::legacy(2);
+const RELOCATE_IMAGES: Field = Field::in_first(8);
+const HEAP_TERMINATE: Field = Field::in_first(12);
+const BOTTOM_UP_ASLR: Field = Field::in_first(16);
+const HIGH_ENTROPY_ASLR: Field = Field::in_first(20);
+const STRICT_HANDLE_CHECKS: Field = Field::in_first(24);
+const WIN32K_SYSTEM_CALLS: Field = Field::in_first(28);
+const EXTENSION_POINTS: Field = Field::in_first(32);
+const DYNAMIC_CODE: Field = Field::in_first(36);
+const CONTROL_FLOW_GUARD: Field = Field::in_first(40);
+const SIGNED_BINARIES: Field = Field::in_first(44);
+const FONT_DISABLE: Field = Field::in_first(48);
+const REMOTE_IMAGES: Field = Field::in_first(52);
+const LOW_LABEL_IMAGES: Field = Field::in_first(56);
+const PREFER_SYSTEM32_IMAGES: Field = Field::in_first(60);
+const LOADER_INTEGRITY: Field = Field::in_second(4);
+const STRICT_CONTROL_FLOW_GUARD: Field = Field::in_second(8);
+const MODULE_TAMPERING: Field = Field::in_second(12);
+const INDIRECT_BRANCH_PREDICTION: Field = Field::in_second(16);
+const DYNAMIC_CODE_DOWNGRADE: Field = Field::in_second(20);
+const SPECULATIVE_STORE_BYPASS: Field = Field::in_second(24);
+const CET_SHADOW_STACKS: Field = Field::in_second(28);
+const CET_CONTEXT_IP_VALIDATION: Field = Field::in_second(32);
+const NON_CET_BINARIES: Field = Field::in_second(36);
+const EXTENDED_CONTROL_FLOW_GUARD: Field = Field::in_second(40);
+const POINTER_AUTHENTICATION: Field = Field::in_second(44);
+const CET_DYNAMIC_APIS: Field = Field::in_second(48);
+const CORE_SHARING: Field = Field::in_second(52);
+const FSCTL_SYSTEM_CALLS: Field = Field::in_second(56);
+
+/// Every field, in the order of the setters.
+const FIELDS: [Field; 31] = [
+    DEP,
+    DEP_ATL_THUNK,
+    SEHOP,
+    RELOCATE_IMAGES,
+    HEAP_TERMINATE,
+    BOTTOM_UP_ASLR,
+    HIGH_ENTROPY_ASLR,
+    STRICT_HANDLE_CHECKS,
+    WIN32K_SYSTEM_CALLS,
+    EXTENSION_POINTS,
+    DYNAMIC_CODE,
+    CONTROL_FLOW_GUARD,
+    SIGNED_BINARIES,
+    FONT_DISABLE,
+    REMOTE_IMAGES,
+    LOW_LABEL_IMAGES,
+    PREFER_SYSTEM32_IMAGES,
+    LOADER_INTEGRITY,
+    STRICT_CONTROL_FLOW_GUARD,
+    MODULE_TAMPERING,
+    INDIRECT_BRANCH_PREDICTION,
+    DYNAMIC_CODE_DOWNGRADE,
+    SPECULATIVE_STORE_BYPASS,
+    CET_SHADOW_STACKS,
+    CET_CONTEXT_IP_VALIDATION,
+    NON_CET_BINARIES,
+    EXTENDED_CONTROL_FLOW_GUARD,
+    POINTER_AUTHENTICATION,
+    CET_DYNAMIC_APIS,
+    CORE_SHARING,
+    FSCTL_SYSTEM_CALLS,
+];
+
+/// Returns true if every field fits its word and no two fields of one word share a bit.
+const fn disjoint(fields: &[Field]) -> bool {
+    let mut first = 0_u64;
+    let mut second = 0_u64;
+    let mut rest = fields;
+    while let [field, tail @ ..] = rest {
+        if field.shift >= u64::BITS || field.bits() >> field.shift != field.mask {
+            return false;
+        }
+        let bits = field.bits();
+        match field.word {
+            Word::First => {
+                if first & bits != 0 {
+                    return false;
+                }
+                first |= bits;
+            }
+            Word::Second => {
+                if second & bits != 0 {
+                    return false;
+                }
+                second |= bits;
+            }
+        }
+        rest = tail;
+    }
+    true
+}
+
+/// Fails the build unless every field fits its word and no two fields of one word share a bit.
+///
+/// `MitigationPolicy::with` names it, so every compiler evaluates it; Rust 1.75 counts no use inside `const _`.
+const LAYOUT: () = assert!(
+    disjoint(&FIELDS),
+    "mitigation fields fit their words and share no bit"
+);
 
 /// A complete SDK 10.0.22621 process-creation mitigation policy.
 ///
@@ -219,236 +485,337 @@ impl MitigationPolicy {
         self.words
     }
 
-    /// Enables or removes the legacy DEP-enable bit.
-    #[must_use]
-    pub const fn dep(mut self, enable: bool) -> Self {
-        self.words[0] = set_bit(self.words[0], 0, enable);
-        self
+    /// Replaces `field` in its word with `value`.
+    const fn with(self, field: Field, value: u64) -> Self {
+        let () = LAYOUT;
+        let [first, second] = self.words;
+        let words = match field.word {
+            Word::First => [field.replace(first, value), second],
+            Word::Second => [first, field.replace(second, value)],
+        };
+        Self { words }
     }
 
-    /// Enables or removes the legacy DEP ATL-thunk-emulation bit.
+    /// Sets the legacy DEP bit.
     #[must_use]
-    pub const fn dep_atl_thunk(mut self, enable: bool) -> Self {
-        self.words[0] = set_bit(self.words[0], 1, enable);
-        self
+    pub const fn dep(self, value: Dep) -> Self {
+        self.with(DEP, value.bits())
     }
 
-    /// Enables or removes the legacy SEHOP bit.
+    /// Sets the legacy DEP ATL-thunk-emulation bit.
     #[must_use]
-    pub const fn sehop(mut self, enable: bool) -> Self {
-        self.words[0] = set_bit(self.words[0], 2, enable);
-        self
+    pub const fn dep_atl_thunk(self, value: AtlThunkEmulation) -> Self {
+        self.with(DEP_ATL_THUNK, value.bits())
+    }
+
+    /// Sets the legacy SEHOP bit.
+    #[must_use]
+    pub const fn sehop(self, value: Sehop) -> Self {
+        self.with(SEHOP, value.bits())
     }
 
     /// Sets mandatory image relocation.
     #[must_use]
-    pub const fn relocate_images(mut self, value: RelocateImages) -> Self {
-        self.words[0] = replace(self.words[0], 8, value.bits());
-        self
+    pub const fn relocate_images(self, value: RelocateImages) -> Self {
+        self.with(RELOCATE_IMAGES, value.bits())
     }
 
     /// Sets heap termination on corruption.
     #[must_use]
-    pub const fn heap_terminate(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 12, value.bits());
-        self
+    pub const fn heap_terminate(self, value: Mitigation) -> Self {
+        self.with(HEAP_TERMINATE, value.bits())
     }
 
     /// Sets bottom-up ASLR.
     #[must_use]
-    pub const fn bottom_up_aslr(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 16, value.bits());
-        self
+    pub const fn bottom_up_aslr(self, value: Mitigation) -> Self {
+        self.with(BOTTOM_UP_ASLR, value.bits())
     }
 
     /// Sets high-entropy ASLR.
     #[must_use]
-    pub const fn high_entropy_aslr(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 20, value.bits());
-        self
+    pub const fn high_entropy_aslr(self, value: Mitigation) -> Self {
+        self.with(HIGH_ENTROPY_ASLR, value.bits())
     }
 
     /// Sets strict invalid-handle checking.
     #[must_use]
-    pub const fn strict_handle_checks(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 24, value.bits());
-        self
+    pub const fn strict_handle_checks(self, value: Mitigation) -> Self {
+        self.with(STRICT_HANDLE_CHECKS, value.bits())
     }
 
     /// Sets the Win32k system-call-disable mitigation.
     #[must_use]
-    pub const fn disable_win32k_system_calls(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 28, value.bits());
-        self
+    pub const fn disable_win32k_system_calls(self, value: Mitigation) -> Self {
+        self.with(WIN32K_SYSTEM_CALLS, value.bits())
     }
 
     /// Sets extension-point disabling.
     #[must_use]
-    pub const fn disable_extension_points(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 32, value.bits());
-        self
+    pub const fn disable_extension_points(self, value: Mitigation) -> Self {
+        self.with(EXTENSION_POINTS, value.bits())
     }
 
     /// Sets dynamic-code policy.
     #[must_use]
-    pub const fn dynamic_code(mut self, value: DynamicCode) -> Self {
-        self.words[0] = replace(self.words[0], 36, value.bits());
-        self
+    pub const fn dynamic_code(self, value: DynamicCode) -> Self {
+        self.with(DYNAMIC_CODE, value.bits())
     }
 
     /// Sets Control Flow Guard policy.
     #[must_use]
-    pub const fn control_flow_guard(mut self, value: ControlFlowGuard) -> Self {
-        self.words[0] = replace(self.words[0], 40, value.bits());
-        self
+    pub const fn control_flow_guard(self, value: ControlFlowGuard) -> Self {
+        self.with(CONTROL_FLOW_GUARD, value.bits())
     }
 
     /// Sets signed-binary loading policy.
     #[must_use]
-    pub const fn signed_binaries(mut self, value: SignedBinaries) -> Self {
-        self.words[0] = replace(self.words[0], 44, value.bits());
-        self
+    pub const fn signed_binaries(self, value: SignedBinaries) -> Self {
+        self.with(SIGNED_BINARIES, value.bits())
     }
 
     /// Sets non-system-font policy.
     #[must_use]
-    pub const fn font_disable(mut self, value: FontDisable) -> Self {
-        self.words[0] = replace(self.words[0], 48, value.bits());
-        self
+    pub const fn non_system_fonts(self, value: NonSystemFonts) -> Self {
+        self.with(FONT_DISABLE, value.bits())
     }
 
     /// Sets remote-image blocking.
     #[must_use]
-    pub const fn block_remote_images(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 52, value.bits());
-        self
+    pub const fn block_remote_images(self, value: Mitigation) -> Self {
+        self.with(REMOTE_IMAGES, value.bits())
     }
 
     /// Sets low-integrity-label image blocking.
     #[must_use]
-    pub const fn block_low_label_images(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 56, value.bits());
-        self
+    pub const fn block_low_label_images(self, value: Mitigation) -> Self {
+        self.with(LOW_LABEL_IMAGES, value.bits())
     }
 
     /// Sets System32 image preference.
     #[must_use]
-    pub const fn prefer_system32_images(mut self, value: Mitigation) -> Self {
-        self.words[0] = replace(self.words[0], 60, value.bits());
-        self
+    pub const fn prefer_system32_images(self, value: Mitigation) -> Self {
+        self.with(PREFER_SYSTEM32_IMAGES, value.bits())
     }
 
     /// Sets loader integrity continuity.
     #[must_use]
-    pub const fn loader_integrity(mut self, value: LoaderIntegrity) -> Self {
-        self.words[1] = replace(self.words[1], 4, value.bits());
-        self
+    pub const fn loader_integrity(self, value: LoaderIntegrity) -> Self {
+        self.with(LOADER_INTEGRITY, value.bits())
     }
 
     /// Sets strict Control Flow Guard.
     #[must_use]
-    pub const fn strict_control_flow_guard(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 8, value.bits());
-        self
+    pub const fn strict_control_flow_guard(self, value: Mitigation) -> Self {
+        self.with(STRICT_CONTROL_FLOW_GUARD, value.bits())
     }
 
     /// Sets module-tampering protection.
     #[must_use]
-    pub const fn module_tampering(mut self, value: ModuleTampering) -> Self {
-        self.words[1] = replace(self.words[1], 12, value.bits());
-        self
+    pub const fn module_tampering(self, value: ModuleTampering) -> Self {
+        self.with(MODULE_TAMPERING, value.bits())
     }
 
     /// Sets restricted indirect branch prediction.
     #[must_use]
-    pub const fn restrict_indirect_branch_prediction(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 16, value.bits());
-        self
+    pub const fn restrict_indirect_branch_prediction(self, value: Mitigation) -> Self {
+        self.with(INDIRECT_BRANCH_PREDICTION, value.bits())
     }
 
     /// Sets permission for a broker to downgrade dynamic-code policy.
     #[must_use]
-    pub const fn allow_downgrade_dynamic_code(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 20, value.bits());
-        self
+    pub const fn allow_downgrade_dynamic_code(self, value: Mitigation) -> Self {
+        self.with(DYNAMIC_CODE_DOWNGRADE, value.bits())
     }
 
     /// Sets speculative-store-bypass disabling.
     #[must_use]
-    pub const fn disable_speculative_store_bypass(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 24, value.bits());
-        self
+    pub const fn disable_speculative_store_bypass(self, value: Mitigation) -> Self {
+        self.with(SPECULATIVE_STORE_BYPASS, value.bits())
     }
 
     /// Sets CET user shadow stacks.
     #[must_use]
-    pub const fn cet_user_shadow_stacks(mut self, value: CetShadowStacks) -> Self {
-        self.words[1] = replace(self.words[1], 28, value.bits());
-        self
+    pub const fn cet_user_shadow_stacks(self, value: CetShadowStacks) -> Self {
+        self.with(CET_SHADOW_STACKS, value.bits())
     }
 
     /// Sets CET set-context instruction-pointer validation.
     #[must_use]
-    pub const fn user_cet_context_ip_validation(
-        mut self,
-        value: UserCetContextIpValidation,
-    ) -> Self {
-        self.words[1] = replace(self.words[1], 32, value.bits());
-        self
+    pub const fn user_cet_context_ip_validation(self, value: UserCetContextIpValidation) -> Self {
+        self.with(CET_CONTEXT_IP_VALIDATION, value.bits())
     }
 
     /// Sets blocking of binaries without CET metadata.
     #[must_use]
-    pub const fn block_non_cet_binaries(mut self, value: BlockNonCetBinaries) -> Self {
-        self.words[1] = replace(self.words[1], 36, value.bits());
-        self
+    pub const fn block_non_cet_binaries(self, value: BlockNonCetBinaries) -> Self {
+        self.with(NON_CET_BINARIES, value.bits())
     }
 
     /// Sets extended Control Flow Guard.
     #[must_use]
-    pub const fn extended_control_flow_guard(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 40, value.bits());
-        self
+    pub const fn extended_control_flow_guard(self, value: Mitigation) -> Self {
+        self.with(EXTENDED_CONTROL_FLOW_GUARD, value.bits())
     }
 
     /// Sets ARM64 user-mode instruction-pointer authentication.
     #[must_use]
-    pub const fn pointer_authentication(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 44, value.bits());
-        self
+    pub const fn pointer_authentication(self, value: Mitigation) -> Self {
+        self.with(POINTER_AUTHENTICATION, value.bits())
     }
 
     /// Sets CET dynamic APIs to out-of-process-only mode.
     #[must_use]
-    pub const fn cet_dynamic_apis_out_of_process(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 48, value.bits());
-        self
+    pub const fn cet_dynamic_apis_out_of_process(self, value: Mitigation) -> Self {
+        self.with(CET_DYNAMIC_APIS, value.bits())
     }
 
     /// Sets restricted CPU-core sharing.
     #[must_use]
-    pub const fn restrict_core_sharing(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 52, value.bits());
-        self
+    pub const fn restrict_core_sharing(self, value: Mitigation) -> Self {
+        self.with(CORE_SHARING, value.bits())
     }
 
     /// Sets FSCTL system-call disabling.
     #[must_use]
-    pub const fn disable_fsctl_system_calls(mut self, value: Mitigation) -> Self {
-        self.words[1] = replace(self.words[1], 56, value.bits());
-        self
+    pub const fn disable_fsctl_system_calls(self, value: Mitigation) -> Self {
+        self.with(FSCTL_SYSTEM_CALLS, value.bits())
     }
 }
 
-const fn replace(word: u64, shift: u32, value: u64) -> u64 {
-    (word & !(3_u64 << shift)) | (value << shift)
-}
+#[cfg(kani)]
+mod proofs {
+    use super::*;
 
-const fn set_bit(word: u64, shift: u32, value: bool) -> u64 {
-    if value {
-        word | (1_u64 << shift)
-    } else {
-        word & !(1_u64 << shift)
+    /// Applies the setter `selector` picks to `policy` with an arbitrary value.
+    ///
+    /// Returns the result, the field the setter writes, and the value the caller passed, read from its declared discriminant.
+    fn set(policy: MitigationPolicy, selector: usize) -> (MitigationPolicy, Field, u64) {
+        macro_rules! typed {
+            ($setter:ident, $kind:ty, $field:ident) => {{
+                let value: $kind = kani::any();
+                assert_eq!(
+                    value.bits(),
+                    value as u64,
+                    "the encoding is the declared discriminant"
+                );
+                (policy.$setter(value), $field, value as u64)
+            }};
+        }
+        match selector {
+            0 => typed!(dep, Dep, DEP),
+            1 => typed!(dep_atl_thunk, AtlThunkEmulation, DEP_ATL_THUNK),
+            2 => typed!(sehop, Sehop, SEHOP),
+            3 => typed!(relocate_images, RelocateImages, RELOCATE_IMAGES),
+            4 => typed!(heap_terminate, Mitigation, HEAP_TERMINATE),
+            5 => typed!(bottom_up_aslr, Mitigation, BOTTOM_UP_ASLR),
+            6 => typed!(high_entropy_aslr, Mitigation, HIGH_ENTROPY_ASLR),
+            7 => typed!(strict_handle_checks, Mitigation, STRICT_HANDLE_CHECKS),
+            8 => typed!(disable_win32k_system_calls, Mitigation, WIN32K_SYSTEM_CALLS),
+            9 => typed!(disable_extension_points, Mitigation, EXTENSION_POINTS),
+            10 => typed!(dynamic_code, DynamicCode, DYNAMIC_CODE),
+            11 => typed!(control_flow_guard, ControlFlowGuard, CONTROL_FLOW_GUARD),
+            12 => typed!(signed_binaries, SignedBinaries, SIGNED_BINARIES),
+            13 => typed!(non_system_fonts, NonSystemFonts, FONT_DISABLE),
+            14 => typed!(block_remote_images, Mitigation, REMOTE_IMAGES),
+            15 => typed!(block_low_label_images, Mitigation, LOW_LABEL_IMAGES),
+            16 => typed!(prefer_system32_images, Mitigation, PREFER_SYSTEM32_IMAGES),
+            17 => typed!(loader_integrity, LoaderIntegrity, LOADER_INTEGRITY),
+            18 => typed!(
+                strict_control_flow_guard,
+                Mitigation,
+                STRICT_CONTROL_FLOW_GUARD
+            ),
+            19 => typed!(module_tampering, ModuleTampering, MODULE_TAMPERING),
+            20 => typed!(
+                restrict_indirect_branch_prediction,
+                Mitigation,
+                INDIRECT_BRANCH_PREDICTION
+            ),
+            21 => typed!(
+                allow_downgrade_dynamic_code,
+                Mitigation,
+                DYNAMIC_CODE_DOWNGRADE
+            ),
+            22 => typed!(
+                disable_speculative_store_bypass,
+                Mitigation,
+                SPECULATIVE_STORE_BYPASS
+            ),
+            23 => typed!(cet_user_shadow_stacks, CetShadowStacks, CET_SHADOW_STACKS),
+            24 => typed!(
+                user_cet_context_ip_validation,
+                UserCetContextIpValidation,
+                CET_CONTEXT_IP_VALIDATION
+            ),
+            25 => typed!(
+                block_non_cet_binaries,
+                BlockNonCetBinaries,
+                NON_CET_BINARIES
+            ),
+            26 => typed!(
+                extended_control_flow_guard,
+                Mitigation,
+                EXTENDED_CONTROL_FLOW_GUARD
+            ),
+            27 => typed!(pointer_authentication, Mitigation, POINTER_AUTHENTICATION),
+            28 => typed!(
+                cet_dynamic_apis_out_of_process,
+                Mitigation,
+                CET_DYNAMIC_APIS
+            ),
+            29 => typed!(restrict_core_sharing, Mitigation, CORE_SHARING),
+            _ => typed!(disable_fsctl_system_calls, Mitigation, FSCTL_SYSTEM_CALLS),
+        }
+    }
+
+    fn read(policy: MitigationPolicy, field: Field) -> (u64, u64) {
+        let [first, second] = policy.words();
+        match field.word {
+            Word::First => (first, second),
+            Word::Second => (second, first),
+        }
+    }
+
+    #[kani::proof]
+    fn every_setter_writes_exactly_its_field() {
+        let before = MitigationPolicy { words: kani::any() };
+        let selector: usize = kani::any();
+        kani::assume(selector < FIELDS.len());
+        let (after, field, value) = set(before, selector);
+        assert_eq!(field, FIELDS[selector]);
+        let (written, kept) = read(after, field);
+        let (original, untouched) = read(before, field);
+        assert_eq!(kept, untouched);
+        assert_eq!(written & !field.bits(), original & !field.bits());
+        assert_eq!((written >> field.shift) & field.mask, value);
+        assert_eq!(value & !field.mask, 0);
+        kani::cover!(selector == 0 && value == 1);
+        kani::cover!(selector == FIELDS.len() - 1 && value == ALWAYS_OFF);
+        kani::cover!(field.mask == TWO_BITS && value == FOURTH_STATE && original == u64::MAX);
+    }
+
+    #[kani::proof]
+    fn a_new_policy_defers_every_field() {
+        let selector: usize = kani::any();
+        kani::assume(selector < FIELDS.len());
+        let field = FIELDS[selector];
+        let (word, other) = read(MitigationPolicy::new(), field);
+        assert_eq!((word >> field.shift) & field.mask, DEFER);
+        assert_eq!(other, 0);
+        assert_eq!(MitigationPolicy::new(), MitigationPolicy::default());
+    }
+
+    #[kani::proof]
+    fn negative_control_write_without_clearing() {
+        let word: u64 = kani::any();
+        let value: u64 = kani::any();
+        kani::assume(value <= TWO_BITS);
+        let written = word | (value << RELOCATE_IMAGES.shift);
+        assert!(
+            (written >> RELOCATE_IMAGES.shift) & TWO_BITS == value,
+            "NEGATIVE_MITIGATION_CONTROL"
+        );
     }
 }
 
@@ -460,7 +827,7 @@ mod tests {
     fn setters_replace_only_their_field() {
         let first = MitigationPolicy::new()
             .dynamic_code(DynamicCode::ProhibitWithOptOut)
-            .font_disable(FontDisable::Audit)
+            .non_system_fonts(NonSystemFonts::Audit)
             .dynamic_code(DynamicCode::Allow);
         assert_eq!(first.words(), [(2_u64 << 36) | (3_u64 << 48), 0]);
 
@@ -474,199 +841,216 @@ mod tests {
     fn legacy_bits_do_not_touch_two_bit_fields() {
         let policy = MitigationPolicy::new()
             .relocate_images(RelocateImages::RequireRelocations)
-            .dep(true)
-            .dep_atl_thunk(true)
-            .sehop(true);
+            .dep(Dep::Enable)
+            .dep_atl_thunk(AtlThunkEmulation::Enable)
+            .sehop(Sehop::Enable);
         assert_eq!(policy.words()[0], 7 | (3_u64 << 8));
 
-        let cleared = policy.dep(false).dep_atl_thunk(false).sehop(false);
+        let cleared = policy
+            .dep(Dep::Defer)
+            .dep_atl_thunk(AtlThunkEmulation::Defer)
+            .sehop(Sehop::Defer);
         assert_eq!(cleared.words()[0], 3_u64 << 8);
-        assert_eq!(MitigationPolicy::new().dep(true).dep(true).words()[0], 1);
+        assert_eq!(
+            MitigationPolicy::new()
+                .dep(Dep::Enable)
+                .dep(Dep::Enable)
+                .words()[0],
+            1
+        );
     }
 
-    #[test]
-    #[allow(clippy::too_many_lines)]
-    fn every_sdk_22621_field_has_the_expected_encoding() {
-        macro_rules! field {
-            ($policy:expr, $word:expr, $shift:expr, $value:expr) => {{
-                let value: u64 = $value;
-                let mut expected = [0_u64; 2];
-                expected[$word] = value << $shift;
-                assert_eq!($policy.words(), expected);
-            }};
-        }
+    /// One setter applied to a policy.
+    type Setter = fn(MitigationPolicy) -> MitigationPolicy;
 
-        field!(MitigationPolicy::new().dep(true), 0, 0, 1);
-        field!(MitigationPolicy::new().dep_atl_thunk(true), 0, 1, 1);
-        field!(MitigationPolicy::new().sehop(true), 0, 2, 1);
-        field!(
-            MitigationPolicy::new().relocate_images(RelocateImages::RequireRelocations),
+    /// Each SDK 10.0.22621 field's setter, with the word, shift, and value `winnt.h` gives the state it sets.
+    ///
+    /// The test calls each setter, rather than a constant holding the policies, so coverage counts them.
+    const SDK_22621: [(Setter, usize, u32, u64); 31] = [
+        (|policy| policy.dep(Dep::Enable), 0, 0, 1),
+        (
+            |policy| policy.dep_atl_thunk(AtlThunkEmulation::Enable),
+            0,
+            1,
+            1,
+        ),
+        (|policy| policy.sehop(Sehop::Enable), 0, 2, 1),
+        (
+            |policy| policy.relocate_images(RelocateImages::RequireRelocations),
             0,
             8,
-            3
-        );
-        field!(
-            MitigationPolicy::new().heap_terminate(Mitigation::AlwaysOn),
+            3,
+        ),
+        (
+            |policy| policy.heap_terminate(Mitigation::AlwaysOn),
             0,
             12,
-            1
-        );
-        field!(
-            MitigationPolicy::new().bottom_up_aslr(Mitigation::AlwaysOn),
+            1,
+        ),
+        (
+            |policy| policy.bottom_up_aslr(Mitigation::AlwaysOn),
             0,
             16,
-            1
-        );
-        field!(
-            MitigationPolicy::new().high_entropy_aslr(Mitigation::AlwaysOn),
+            1,
+        ),
+        (
+            |policy| policy.high_entropy_aslr(Mitigation::AlwaysOn),
             0,
             20,
-            1
-        );
-        field!(
-            MitigationPolicy::new().strict_handle_checks(Mitigation::AlwaysOn),
+            1,
+        ),
+        (
+            |policy| policy.strict_handle_checks(Mitigation::AlwaysOn),
             0,
             24,
-            1
-        );
-        field!(
-            MitigationPolicy::new().disable_win32k_system_calls(Mitigation::AlwaysOn),
+            1,
+        ),
+        (
+            |policy| policy.disable_win32k_system_calls(Mitigation::AlwaysOn),
             0,
             28,
-            1
-        );
-        field!(
-            MitigationPolicy::new().disable_extension_points(Mitigation::AlwaysOn),
+            1,
+        ),
+        (
+            |policy| policy.disable_extension_points(Mitigation::AlwaysOn),
             0,
             32,
-            1
-        );
-        field!(
-            MitigationPolicy::new().dynamic_code(DynamicCode::ProhibitWithOptOut),
+            1,
+        ),
+        (
+            |policy| policy.dynamic_code(DynamicCode::ProhibitWithOptOut),
             0,
             36,
-            3
-        );
-        field!(
-            MitigationPolicy::new().control_flow_guard(ControlFlowGuard::ExportSuppression),
+            3,
+        ),
+        (
+            |policy| policy.control_flow_guard(ControlFlowGuard::ExportSuppression),
             0,
             40,
-            3
-        );
-        field!(
-            MitigationPolicy::new().signed_binaries(SignedBinaries::MicrosoftAndStore),
+            3,
+        ),
+        (
+            |policy| policy.signed_binaries(SignedBinaries::MicrosoftAndStore),
             0,
             44,
-            3
-        );
-        field!(
-            MitigationPolicy::new().font_disable(FontDisable::Audit),
+            3,
+        ),
+        (
+            |policy| policy.non_system_fonts(NonSystemFonts::Audit),
             0,
             48,
-            3
-        );
-        field!(
-            MitigationPolicy::new().block_remote_images(Mitigation::AlwaysOn),
+            3,
+        ),
+        (
+            |policy| policy.block_remote_images(Mitigation::AlwaysOn),
             0,
             52,
-            1
-        );
-        field!(
-            MitigationPolicy::new().block_low_label_images(Mitigation::AlwaysOn),
+            1,
+        ),
+        (
+            |policy| policy.block_low_label_images(Mitigation::AlwaysOn),
             0,
             56,
-            1
-        );
-        field!(
-            MitigationPolicy::new().prefer_system32_images(Mitigation::AlwaysOn),
+            1,
+        ),
+        (
+            |policy| policy.prefer_system32_images(Mitigation::AlwaysOn),
             0,
             60,
-            1
-        );
-        field!(
-            MitigationPolicy::new().loader_integrity(LoaderIntegrity::Audit),
+            1,
+        ),
+        (
+            |policy| policy.loader_integrity(LoaderIntegrity::Audit),
             1,
             4,
-            3
-        );
-        field!(
-            MitigationPolicy::new().strict_control_flow_guard(Mitigation::AlwaysOn),
+            3,
+        ),
+        (
+            |policy| policy.strict_control_flow_guard(Mitigation::AlwaysOn),
             1,
             8,
-            1
-        );
-        field!(
-            MitigationPolicy::new().module_tampering(ModuleTampering::NoInherit),
+            1,
+        ),
+        (
+            |policy| policy.module_tampering(ModuleTampering::NoInherit),
             1,
             12,
-            3
-        );
-        field!(
-            MitigationPolicy::new().restrict_indirect_branch_prediction(Mitigation::AlwaysOn),
+            3,
+        ),
+        (
+            |policy| policy.restrict_indirect_branch_prediction(Mitigation::AlwaysOn),
             1,
             16,
-            1
-        );
-        field!(
-            MitigationPolicy::new().allow_downgrade_dynamic_code(Mitigation::AlwaysOn),
+            1,
+        ),
+        (
+            |policy| policy.allow_downgrade_dynamic_code(Mitigation::AlwaysOn),
             1,
             20,
-            1
-        );
-        field!(
-            MitigationPolicy::new().disable_speculative_store_bypass(Mitigation::AlwaysOn),
+            1,
+        ),
+        (
+            |policy| policy.disable_speculative_store_bypass(Mitigation::AlwaysOn),
             1,
             24,
-            1
-        );
-        field!(
-            MitigationPolicy::new().cet_user_shadow_stacks(CetShadowStacks::Strict),
+            1,
+        ),
+        (
+            |policy| policy.cet_user_shadow_stacks(CetShadowStacks::Strict),
             1,
             28,
-            3
-        );
-        field!(
-            MitigationPolicy::new()
-                .user_cet_context_ip_validation(UserCetContextIpValidation::Relaxed),
+            3,
+        ),
+        (
+            |policy| policy.user_cet_context_ip_validation(UserCetContextIpValidation::Relaxed),
             1,
             32,
-            3
-        );
-        field!(
-            MitigationPolicy::new().block_non_cet_binaries(BlockNonCetBinaries::NonEhContinuation),
+            3,
+        ),
+        (
+            |policy| policy.block_non_cet_binaries(BlockNonCetBinaries::NonEhContinuation),
             1,
             36,
-            3
-        );
-        field!(
-            MitigationPolicy::new().extended_control_flow_guard(Mitigation::AlwaysOn),
+            3,
+        ),
+        (
+            |policy| policy.extended_control_flow_guard(Mitigation::AlwaysOn),
             1,
             40,
-            1
-        );
-        field!(
-            MitigationPolicy::new().pointer_authentication(Mitigation::AlwaysOn),
+            1,
+        ),
+        (
+            |policy| policy.pointer_authentication(Mitigation::AlwaysOn),
             1,
             44,
-            1
-        );
-        field!(
-            MitigationPolicy::new().cet_dynamic_apis_out_of_process(Mitigation::AlwaysOn),
+            1,
+        ),
+        (
+            |policy| policy.cet_dynamic_apis_out_of_process(Mitigation::AlwaysOn),
             1,
             48,
-            1
-        );
-        field!(
-            MitigationPolicy::new().restrict_core_sharing(Mitigation::AlwaysOn),
+            1,
+        ),
+        (
+            |policy| policy.restrict_core_sharing(Mitigation::AlwaysOn),
             1,
             52,
-            1
-        );
-        field!(
-            MitigationPolicy::new().disable_fsctl_system_calls(Mitigation::AlwaysOn),
+            1,
+        ),
+        (
+            |policy| policy.disable_fsctl_system_calls(Mitigation::AlwaysOn),
             1,
             56,
-            1
-        );
+            1,
+        ),
+    ];
+
+    #[test]
+    fn every_sdk_22621_field_has_the_expected_encoding() {
+        for (set, word, shift, value) in SDK_22621 {
+            let mut expected = [0_u64; 2];
+            expected[word] = value << shift;
+            assert_eq!(set(MitigationPolicy::new()).words(), expected);
+        }
     }
 }
