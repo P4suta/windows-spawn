@@ -432,8 +432,10 @@ fn library_ban(name: &str) -> Option<&'static str> {
         .map(|(_, reason)| *reason)
 }
 
-/// Returns true if the `dyn` at `index` names the `Error` trait in the signature of a `source` method, the `Error::source` contract.
+/// Returns true if the `dyn` at `index` names the `Error` trait in the return type of `source` in an `impl … Error for …` block:
+/// the `Error::source` contract.
 fn in_error_source(code: &[&(usize, Token)], index: usize) -> bool {
+    let token_at = |at: usize| code.get(at).map(|(_, found)| found);
     let names_error = code
         .iter()
         .skip(index.saturating_add(1))
@@ -445,16 +447,72 @@ fn in_error_source(code: &[&(usize, Token)], index: usize) -> bool {
         })
         .last()
         == Some("Error");
-    let signature: Vec<&Token> = code
+    let Some(function) = (0..index)
+        .rev()
+        .take_while(|at| !matches!(token_at(*at), Some(Token::Punct('{' | '}' | ';'))))
+        .find(|at| matches!(token_at(*at), Some(Token::Ident(keyword)) if keyword == "fn"))
+    else {
+        return false;
+    };
+    let name = function.saturating_add(1);
+    names_error
+        && matches!(token_at(name), Some(Token::Ident(source)) if source == "source")
+        && return_arrow(code, name).is_some_and(|arrow| arrow < index)
+        && in_error_impl(code, function)
+}
+
+/// Returns the index of the `>` of the `->` after the parameters of the function whose name is at `name`.
+fn return_arrow(code: &[&(usize, Token)], name: usize) -> Option<usize> {
+    let mut depth = 0_usize;
+    let mut close = None;
+    for (at, (_, token)) in code.iter().enumerate().skip(name) {
+        if *token == Token::Punct('(') {
+            depth = depth.saturating_add(1);
+        } else if *token == Token::Punct(')') {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                close = Some(at);
+                break;
+            }
+        }
+    }
+    let dash = close?.saturating_add(1);
+    let arrow = dash.saturating_add(1);
+    let punct = |at: usize, expected: char| {
+        code.get(at)
+            .is_some_and(|(_, token)| *token == Token::Punct(expected))
+    };
+    (punct(dash, '-') && punct(arrow, '>')).then_some(arrow)
+}
+
+/// Returns true if the item at `item` sits in the block of an `impl … Error for …`.
+fn in_error_impl(code: &[&(usize, Token)], item: usize) -> bool {
+    let mut depth = 0_usize;
+    let mut opener = None;
+    for (at, (_, token)) in code.iter().enumerate().take(item).rev() {
+        if *token == Token::Punct('}') {
+            depth = depth.saturating_add(1);
+        } else if *token == Token::Punct('{') {
+            if depth == 0 {
+                opener = Some(at);
+                break;
+            }
+            depth = depth.saturating_sub(1);
+        }
+    }
+    let Some(opener) = opener else {
+        return false;
+    };
+    let header: Vec<&Token> = code
         .iter()
-        .take(index)
+        .take(opener)
         .rev()
         .map(|(_, token)| token)
         .take_while(|token| !matches!(token, Token::Punct('{' | '}' | ';')))
         .collect();
-    names_error
-        && signature.windows(PAIR).any(|pair| {
-            matches!(pair, [Token::Ident(name), Token::Ident(keyword)] if name == "source" && keyword == "fn")
+    header.contains(&&Token::Ident("impl".to_owned()))
+        && header.windows(PAIR).any(|pair| {
+            matches!(pair, [Token::Ident(keyword), Token::Ident(error)] if keyword == "for" && error == "Error")
         })
 }
 
@@ -484,9 +542,9 @@ fn is_test_only_cfg(content: &[Token]) -> bool {
     let [Token::Ident(cfg), Token::Punct('('), predicate @ .., Token::Punct(')')] = content else {
         return false;
     };
-    let members = match predicate {
+    let members = match without_trailing_comma(predicate) {
         [Token::Ident(any), Token::Punct('('), members @ .., Token::Punct(')')] if any == "any" => {
-            members
+            without_trailing_comma(members)
         }
         single => single,
     };
@@ -496,9 +554,25 @@ fn is_test_only_cfg(content: &[Token]) -> bool {
         )
 }
 
+/// Drops the one trailing comma Rust allows after the last element of a list.
+fn without_trailing_comma(tokens: &[Token]) -> &[Token] {
+    tokens.strip_suffix(&[Token::Punct(',')]).unwrap_or(tokens)
+}
+
+/// Returns true if `next`, the token after a closing brace, continues the statement the brace closed:
+/// `else`, a method call, `?`, or the `;` or `,` that ends it.
+fn continues(next: Option<&&(usize, Token)>) -> bool {
+    match next.map(|(_, token)| token) {
+        Some(Token::Ident(word)) => word == "else",
+        Some(Token::Punct(punct)) => matches!(punct, '.' | '?' | ';' | ','),
+        Some(Token::Literal(_) | Token::Str(_) | Token::Comment { .. }) | None => false,
+    }
+}
+
 /// Returns the index after what the attribute whose `[` is at `open` guards.
 ///
-/// That ends with a `;` or `,` outside brackets, with the `}` that closes its body, or before the bracket that closes the enclosing block.
+/// That ends with a `;` or `,` outside brackets, with a `}` that closes its body when nothing continues the statement,
+/// or before the bracket that closes the enclosing block.
 fn item_end(code: &[&(usize, Token)], open: usize) -> usize {
     let mut depth = 0_usize;
     let mut in_attribute = true;
@@ -513,7 +587,7 @@ fn item_end(code: &[&(usize, Token)], open: usize) -> usize {
                 if depth == 0 {
                     if in_attribute {
                         in_attribute = false;
-                    } else if *close == '}' {
+                    } else if *close == '}' && !continues(code.get(index.saturating_add(1))) {
                         return index.saturating_add(1);
                     }
                 }
@@ -999,8 +1073,11 @@ mod tests {
         for source in [
             "fn f(x: &dyn Fn()) {}",
             "fn cause(&self) -> Option<&dyn Error> { None }",
-            "fn source(&self) -> Option<&(dyn Display + 'static)> { None }",
-            "fn source(&self) {} fn g(x: &dyn Error) {}",
+            "impl Error for E { fn source(&self) -> Option<&(dyn Display + 'static)> { None } }",
+            "impl Error for E { fn source(&self) {} fn g(x: &dyn Error) {} }",
+            "impl Error for E { fn source(&self, x: &dyn Error) {} }",
+            "fn source(&self) -> Option<&(dyn Error + 'static)> { None }",
+            "impl Display for E { fn source(&self) -> Option<&(dyn Error + 'static)> { None } }",
             "m!(dyn T);",
             "struct S { f: Box<dyn Fn()> }",
         ] {
@@ -1008,10 +1085,15 @@ mod tests {
         }
         for source in [
             "impl Error for E { fn source(&self) -> Option<&(dyn Error + 'static)> { None } }",
-            "fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { None }",
+            "impl std::error::Error for E { fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { None } }",
+            "impl<T> Error for W<T> { fn f() {} fn source(&self) -> Option<&(dyn Error + 'static)> { None } }",
             "#[cfg(test)] fn f(x: &dyn Fn()) {}",
         ] {
-            assert_eq!(rules_in("tests/example.rs", source), Vec::<String>::new());
+            assert_eq!(
+                rules_in("tests/example.rs", source),
+                Vec::<String>::new(),
+                "{source}"
+            );
         }
     }
 
@@ -1031,6 +1113,8 @@ mod tests {
             "#[cfg(not(test))] static X: u8 = 0;",
             "#[cfg(test)] COUNT.fetch_add(1); fn f() { let s = HashSet::new(); }",
             "#[cfg(test)] static X: u8 = 0; fn f() { let m = Mutex::new(0); }",
+            "#[cfg(test)] let x = S { a: 1 }.with(Cell::new(1)); fn f() { let m = HashMap::new(); }",
+            "#[cfg(test)] fn g() {} fn f() { let m = HashMap::new(); }",
         ] {
             assert_eq!(rules_in("src/example.rs", source).len(), 1, "{source}");
             assert_eq!(rules_in("tests/example.rs", source), Vec::<String>::new());
@@ -1048,6 +1132,9 @@ mod tests {
             "struct S { #[cfg(test)] c: Cell<u8>, v: u8 }",
             "struct S { v: u8, #[cfg(test)] c: Cell<u8> }",
             "fn f() { #[cfg(test)] COUNT.fetch_add(1, atomic::Ordering::Relaxed); }",
+            "fn f() { #[cfg(test)] let c = if a { Cell::new(1) } else { Cell::new(2) }; }",
+            "fn f() { #[cfg(test)] let s = S { a: 1 }.with(RefCell::new(1))?; }",
+            "match x { #[cfg(test)] A => { Cell::new(1) }, B => 2 }",
         ] {
             assert_eq!(
                 rules_in("src/example.rs", source),
@@ -1070,6 +1157,9 @@ mod tests {
             "cfg(kani)",
             "cfg(any(test, kani))",
             "cfg(any(test))",
+            "cfg(any(test,))",
+            "cfg(any(test, kani,))",
+            "cfg(test,)",
         ] {
             assert!(is_test_only_cfg(&content(guard)), "{guard}");
         }
@@ -1078,7 +1168,9 @@ mod tests {
             "cfg(any(test, windows))",
             "cfg(all(test, kani))",
             "cfg()",
-            "cfg(any(test,))",
+            "cfg(any())",
+            "cfg(any(test,,kani))",
+            "cfg(any(,))",
             "cfg_attr(test, allow(x))",
             "test",
         ] {
