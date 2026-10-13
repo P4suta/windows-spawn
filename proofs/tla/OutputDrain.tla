@@ -5,14 +5,15 @@
 (* may keep the standard-output writer open.                               *)
 (*                                                                         *)
 (* The parent closes standard input, starts one reader for each output     *)
-(* pipe, waits for the root to exit, terminates the private Job under      *)
-(* `DropPolicy::KillTree`, and joins the readers.  A reader ends on EOF:   *)
-(* an empty pipe that no process can still write to.                       *)
+(* pipe, waits for the root to exit, terminates the private Job when the   *)
+(* child owns its tree (`Command::own_process_tree`), and joins the        *)
+(* readers.  A reader ends on EOF: an empty pipe that no process can       *)
+(* still write to.                                                         *)
 (*                                                                         *)
 (* OutputDrain.cfg proves that the call returns with every chunk the child *)
-(* wrote whenever the policy is `KillTree` or no descendant holds a        *)
-(* writer.  The other two configurations are negative controls: waiting    *)
-(* before reading deadlocks, and `Detach` with such a descendant never     *)
+(* wrote whenever the child owns its tree or no descendant holds a writer. *)
+(* The other two configurations are negative controls: waiting before      *)
+(* reading deadlocks, and an unowned tree with such a descendant never     *)
 (* returns.                                                                *)
 (***************************************************************************)
 EXTENDS Naturals
@@ -25,7 +26,7 @@ CONSTANTS
 Streams == {"stdout", "stderr"}
 
 VARIABLES
-    killTree,         \* the drop policy is KillTree
+    ownsTree,         \* the child owns its tree
     descendant,       \* the root started a descendant that inherited the stdout writer
     stdinOpen,        \* the parent still holds the writer of the child's standard input
     written,          \* chunks the root wrote to each stream
@@ -36,13 +37,13 @@ VARIABLES
     readers,          \* each reader is "idle", "reading", or "done"
     parent            \* where wait_with_output stands
 
-vars == <<killTree, descendant, stdinOpen, written, piped, collected,
+vars == <<ownsTree, descendant, stdinOpen, written, piped, collected,
           rootAlive, descendantAlive, readers, parent>>
 
 Phases == {"start", "waiting", "terminating", "joining", "returned"}
 
 TypeOK ==
-    /\ killTree \in BOOLEAN
+    /\ ownsTree \in BOOLEAN
     /\ descendant \in BOOLEAN
     /\ stdinOpen \in BOOLEAN
     /\ written \in [Streams -> 0..Chunks]
@@ -57,7 +58,7 @@ TypeOK ==
 HasWriter(s) == rootAlive \/ (s = "stdout" /\ descendantAlive)
 
 Init ==
-    /\ killTree \in BOOLEAN
+    /\ ownsTree \in BOOLEAN
     /\ descendant \in BOOLEAN
     /\ stdinOpen = TRUE
     /\ written = [s \in Streams |-> 0]
@@ -75,7 +76,7 @@ RootWrite(s) ==
     /\ piped[s] < Capacity
     /\ written' = [written EXCEPT ![s] = @ + 1]
     /\ piped' = [piped EXCEPT ![s] = @ + 1]
-    /\ UNCHANGED <<killTree, descendant, stdinOpen, collected, rootAlive,
+    /\ UNCHANGED <<ownsTree, descendant, stdinOpen, collected, rootAlive,
                    descendantAlive, readers, parent>>
 
 \* The root exits after its input reaches EOF and its output is written, which closes its writers.
@@ -84,7 +85,7 @@ RootExit ==
     /\ ~stdinOpen
     /\ \A s \in Streams : written[s] = Chunks
     /\ rootAlive' = FALSE
-    /\ UNCHANGED <<killTree, descendant, stdinOpen, written, piped, collected,
+    /\ UNCHANGED <<ownsTree, descendant, stdinOpen, written, piped, collected,
                    descendantAlive, readers, parent>>
 
 \* wait_with_output closes standard input and starts both readers before it waits.
@@ -94,7 +95,7 @@ StartReaders ==
     /\ stdinOpen' = FALSE
     /\ readers' = [s \in Streams |-> "reading"]
     /\ parent' = "waiting"
-    /\ UNCHANGED <<killTree, descendant, written, piped, collected, rootAlive,
+    /\ UNCHANGED <<ownsTree, descendant, written, piped, collected, rootAlive,
                    descendantAlive>>
 
 \* The order the crate avoids: close standard input and wait before any reader starts.
@@ -103,7 +104,7 @@ WaitFirst ==
     /\ ~Concurrent
     /\ stdinOpen' = FALSE
     /\ parent' = "waiting"
-    /\ UNCHANGED <<killTree, descendant, written, piped, collected, rootAlive,
+    /\ UNCHANGED <<ownsTree, descendant, written, piped, collected, rootAlive,
                    descendantAlive, readers>>
 
 \* WaitForSingleObject returns once the root exited; the naive order starts its readers only now.
@@ -112,15 +113,15 @@ Wait ==
     /\ ~rootAlive
     /\ readers' = [s \in Streams |-> "reading"]
     /\ parent' = "terminating"
-    /\ UNCHANGED <<killTree, descendant, stdinOpen, written, piped, collected,
+    /\ UNCHANGED <<ownsTree, descendant, stdinOpen, written, piped, collected,
                    rootAlive, descendantAlive>>
 
-\* Under KillTree, terminating the private Job ends every descendant and closes its writers.
+\* With an owned tree, terminating the private Job ends every descendant and closes its writers.
 Terminate ==
     /\ parent = "terminating"
-    /\ descendantAlive' = (descendantAlive /\ ~killTree)
+    /\ descendantAlive' = (descendantAlive /\ ~ownsTree)
     /\ parent' = "joining"
-    /\ UNCHANGED <<killTree, descendant, stdinOpen, written, piped, collected,
+    /\ UNCHANGED <<ownsTree, descendant, stdinOpen, written, piped, collected,
                    rootAlive, readers>>
 
 \* A reader takes one chunk out of its pipe.
@@ -129,7 +130,7 @@ Read(s) ==
     /\ piped[s] > 0
     /\ piped' = [piped EXCEPT ![s] = @ - 1]
     /\ collected' = [collected EXCEPT ![s] = @ + 1]
-    /\ UNCHANGED <<killTree, descendant, stdinOpen, written, rootAlive,
+    /\ UNCHANGED <<ownsTree, descendant, stdinOpen, written, rootAlive,
                    descendantAlive, readers, parent>>
 
 \* A reader sees EOF once its pipe is empty and no process can write to it.
@@ -138,7 +139,7 @@ Eof(s) ==
     /\ piped[s] = 0
     /\ ~HasWriter(s)
     /\ readers' = [readers EXCEPT ![s] = "done"]
-    /\ UNCHANGED <<killTree, descendant, stdinOpen, written, piped, collected,
+    /\ UNCHANGED <<ownsTree, descendant, stdinOpen, written, piped, collected,
                    rootAlive, descendantAlive, parent>>
 
 \* join_readers returns once both readers finished.
@@ -146,7 +147,7 @@ Join ==
     /\ parent = "joining"
     /\ \A s \in Streams : readers[s] = "done"
     /\ parent' = "returned"
-    /\ UNCHANGED <<killTree, descendant, stdinOpen, written, piped, collected,
+    /\ UNCHANGED <<ownsTree, descendant, stdinOpen, written, piped, collected,
                    rootAlive, descendantAlive, readers>>
 
 \* After the call returns nothing happens, which is not a deadlock.
@@ -167,8 +168,8 @@ Fairness ==
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
-\* The cases the crate promises to return from: KillTree, or no descendant holding a writer.
-Supported == killTree \/ ~descendant
+\* The cases the crate promises to return from: an owned tree, or no descendant holding a writer.
+Supported == ownsTree \/ ~descendant
 
 SupportedSpec == Init /\ Supported /\ [][Next]_vars /\ Fairness
 

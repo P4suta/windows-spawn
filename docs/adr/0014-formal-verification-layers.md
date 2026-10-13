@@ -46,9 +46,9 @@ Every gate obeys the same rules.
 - The verification found and fixed two defects.
   `Command::to_command_line` refused a `PATH` set from a handle that a later operation replaced or removed.
   An attribute-list size beyond one allocation panicked.
-- It also confirmed four behaviors the crate keeps.
-  After an exit that no call observed, `Child::kill` returns the `ERROR_ACCESS_DENIED` of `TerminateProcess`, and `std::process::Child::kill` returns `Ok`.
-  After another process terminates a suspended child, `resume` returns `InvalidData`, because the primary thread then reads a suspend count of zero.
+- It also found that `Child::kill` returned the `ERROR_ACCESS_DENIED` of `TerminateProcess` after an exit that no call observed, where `std::process::Child::kill` returns `Ok`; ADR 0015 aligns the crate with std.
+- It confirmed three behaviors the crate keeps.
+  After another process terminates a suspended child, `resume` returns `InvalidData`, because the main thread then reads a suspend count of zero.
   `CommandLineToArgvW` and `msvcrt.dll` read two double quotes inside a quoted region as the C runtime did before Visual C++ 2008, and both readings return the crate's command lines unchanged.
   `ParentProcess::from_handle` and `Job::from_handle` check a handle's kind with an API of that kind, which `appverif.exe` reports as an incorrect object type when the handle has another kind.
 - Each proof holds as far as its statement reaches.

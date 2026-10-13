@@ -27,11 +27,13 @@ pub(crate) const COMMANDS: &[(&str, Expect)] = &[
     ("CorrectInheritsExactly", Expect::NoInstance),
     ("CorrectListsEachValueOnce", Expect::NoInstance),
     ("CorrectLeavesNoDuplicate", Expect::NoInstance),
+    ("CorrectRunsOnlyAfterRelease", Expect::NoInstance),
     ("SpawnThroughABusyParent", Expect::Instance),
     ("RollBackAfterADuplicate", Expect::Instance),
     ("NegativeControlInheritsAll", Expect::Instance),
     ("NegativeControlLowersLocally", Expect::Instance),
     ("NegativeControlKeepsRemote", Expect::Instance),
+    ("NegativeControlResumesFirst", Expect::Instance),
 ];
 
 /// Runs every command of the model and requires each one's result.

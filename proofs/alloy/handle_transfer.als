@@ -12,12 +12,14 @@
  * PROC_THREAD_ATTRIBUTE_HANDLE_LIST, which lists every duplicate.
  * After CreateProcessW returns, or when the spawn fails before it, dropping the transfer closes every duplicate:
  * a local one directly, and a remote one by duplicating it back with DUPLICATE_CLOSE_SOURCE.
+ * The child is created suspended, and its primary thread resumes only after the transfer is released.
  *
  * `Correct` is that design.
  * The other designs each drop one of its decisions, and the checks below require each of them to fail,
  * so the model shows that every decision matters:
  * `InheritsAll` sets bInheritHandles without the list, `LowersLocally` duplicates into the creator even when a
- * parent is named, and `KeepsRemote` never closes the duplicates it made in the parent.
+ * parent is named, `KeepsRemote` never closes the duplicates it made in the parent, and `ResumesFirst` lets the
+ * child run before the transfer is released.
  */
 module handle_transfer
 
@@ -46,7 +48,7 @@ sig Request {
 }
 
 abstract sig Design {}
-one sig Correct, InheritsAll, LowersLocally, KeepsRemote extends Design {}
+one sig Correct, InheritsAll, LowersLocally, KeepsRemote, ResumesFirst extends Design {}
 
 one sig Chosen {
   design: one Design,
@@ -62,6 +64,8 @@ one sig Spawn {
   /** PROC_THREAD_ATTRIBUTE_HANDLE_LIST. */
   var listed: set Value,
   var born: lone Child,
+  /** The child once its primary thread resumed. */
+  var running: lone Child,
 }
 
 /** The tables before the spawn. */
@@ -84,6 +88,7 @@ pred init {
   no Spawn.lowered
   no Spawn.listed
   no Spawn.born
+  no Spawn.running
   no Child.table
   no Child.inheritable
   all p: Process | p.inheritable in p.table.Object
@@ -102,9 +107,10 @@ pred lower[r: Request, v: Value] {
   Spawn.listed' = Spawn.listed + v
   Spawn.phase' = Spawn.phase
   Spawn.born' = Spawn.born
+  Spawn.running' = Spawn.running
 }
 
-/** CreateProcessW, which requires every listed value to name an inheritable handle of the inheritor. */
+/** CreateProcessW with CREATE_SUSPENDED, which requires every listed value to name an inheritable handle of the inheritor. */
 pred create {
   Spawn.phase = Lowering
   Request in Spawn.lowered.Value
@@ -119,6 +125,7 @@ pred create {
   Spawn.listed' = Spawn.listed
   Spawn.phase' = Created
   Spawn.born' = Child
+  Spawn.running' = Spawn.running
 }
 
 /** Drops the transfer after CreateProcessW returns, or when the spawn fails before it. */
@@ -133,6 +140,21 @@ pred release {
   Spawn.listed' = Spawn.listed
   Spawn.phase' = Done
   Spawn.born' = Spawn.born
+  Spawn.running' = Spawn.running
+}
+
+/** ResumeThread on the primary thread, which `Correct` calls only after the release. */
+pred resume {
+  some Spawn.born
+  no Spawn.running
+  Chosen.design = ResumesFirst implies Spawn.phase in Created + Done else Spawn.phase = Done
+  table' = table
+  inheritable' = inheritable
+  Spawn.lowered' = Spawn.lowered
+  Spawn.listed' = Spawn.listed
+  Spawn.phase' = Spawn.phase
+  Spawn.born' = Spawn.born
+  Spawn.running' = Spawn.born
 }
 
 pred stutter {
@@ -142,11 +164,12 @@ pred stutter {
   Spawn.listed' = Spawn.listed
   Spawn.phase' = Spawn.phase
   Spawn.born' = Spawn.born
+  Spawn.running' = Spawn.running
 }
 
 fact traces {
   init
-  always (stutter or create or release or some r: Request, v: Value | lower[r, v])
+  always (stutter or create or release or resume or some r: Request, v: Value | lower[r, v])
 }
 
 /** The child holds exactly the transferred objects, each under the value its request wrote. */
@@ -167,6 +190,14 @@ pred leavesNoDuplicate {
   always (Spawn.phase = Done implies all p: Process - Child | p.table = Initial.held[p])
 }
 
+/** The child runs no code while a duplicate of the transfer is open, so a failed release can still end it unrun. */
+pred runsOnlyAfterRelease {
+  always (some Spawn.running implies {
+    Spawn.phase = Done
+    all p: Process - Child | p.table = Initial.held[p]
+  })
+}
+
 check CorrectInheritsExactly {
   Chosen.design = Correct implies inheritsExactly
 } for 4 but 8 steps expect 0
@@ -177,6 +208,10 @@ check CorrectListsEachValueOnce {
 
 check CorrectLeavesNoDuplicate {
   Chosen.design = Correct implies leavesNoDuplicate
+} for 4 but 8 steps expect 0
+
+check CorrectRunsOnlyAfterRelease {
+  Chosen.design = Correct implies runsOnlyAfterRelease
 } for 4 but 8 steps expect 0
 
 /** A spawn through a parent that already holds an unrelated inheritable handle, with two requests of one source. */
@@ -209,4 +244,9 @@ check NegativeControlLowersLocally {
 /** Duplicates left in the parent outlive the spawn. */
 check NegativeControlKeepsRemote {
   Chosen.design = KeepsRemote implies leavesNoDuplicate
+} for 4 but 8 steps expect 1
+
+/** Resumed before the release, the child runs while the duplicates are still open. */
+check NegativeControlResumesFirst {
+  Chosen.design = ResumesFirst implies runsOnlyAfterRelease
 } for 4 but 8 steps expect 1

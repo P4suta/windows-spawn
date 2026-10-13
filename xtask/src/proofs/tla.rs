@@ -65,7 +65,7 @@ pub(crate) const CHECKS: &[Check] = &[
     },
     Check {
         spec: "OutputDrain",
-        config: "OutputDrainDetach",
+        config: "OutputDrainUnowned",
         verdict: Verdict::Liveness,
     },
 ];

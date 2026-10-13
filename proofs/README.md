@@ -46,29 +46,28 @@ The release needs the Rust toolchain its `version.json` names, and the gate inst
 ## Output draining
 
 `tla/OutputDrain.tla` models `wait_with_output` with a child that writes more than a pipe holds.
-It covers both drop policies, and a descendant that may keep a writer open.
+It covers a child that owns its tree and one that doesn't, and a descendant that may keep a writer open.
 `OutputDrain.cfg` proves that every supported case returns with every chunk.
-`OutputDrainWaitFirst.cfg` must deadlock, and `OutputDrainDetach.cfg` must violate the liveness property.
+`OutputDrainWaitFirst.cfg` must deadlock, and `OutputDrainUnowned.cfg` must violate the liveness property.
 
 ## Child lifecycle
 
-`quint/lifecycle.qnt` models a spawned process through `spawn_suspended`, `resume`, `wait`, `try_wait`, `kill`, and the drops under each `DropPolicy`.
+`quint/lifecycle.qnt` models a spawned process through `spawn_suspended`, `resume`, `wait`, `try_wait`, `kill`, and the drops, with and without `Command::own_process_tree`.
 It also injects a fault from outside the crate: another process terminates the probe, paused or running, at any step.
-Apalache proves that the invariant `inductive` holds at the start and after every step, and refutes `killNeverFails`.
+Apalache proves that the invariant `inductive` holds at the start and after every step, and refutes `droppingEndsTheProcess`.
 `cargo xtask proof-traces` regenerates `quint/traces/lifecycle.tsv` from seeded simulations, and the gate requires the held table to equal them.
 On Windows, `tests/lifecycle` replays every trace through the public API.
 After each step it compares the call's result and the process's state with the model, and observes the process through handles the crate doesn't own.
 The replay also runs four contradicting traces, which it must reject.
-After an exit that no call observed, `kill` returns the `ERROR_ACCESS_DENIED` of `TerminateProcess`, and `std::process::Child::kill` returns `Ok`.
-The model and the replay hold that behavior.
+After an exit that no call observed, `kill` returns `Ok`, as `std::process::Child::kill` does, and the model and the replay hold that behavior.
 
 ## Handle transfer
 
 `alloy/handle_transfer.als` models `HandleTransfer`.
-It covers the duplicates in the process the child inherits from, `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, and the release of every duplicate when the spawn ends or fails.
-Its checks hold for every configuration of four atoms and eight steps.
-Three negative controls each drop one decision, and the solver must find the defect.
-One inherits without the list, one duplicates into the creator while the spawn names a parent, and one keeps the parent's duplicates.
+It covers the duplicates in the process the child inherits from, `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, the release of every duplicate when the spawn ends or fails, and the resume of the main thread.
+Its checks hold for every configuration of four atoms and eight steps, including that the child runs no code before every duplicate is released.
+Four negative controls each drop one decision, and the solver must find the defect.
+One inherits without the list, one duplicates into the creator while the spawn names a parent, one keeps the parent's duplicates, and one resumes the child before the release.
 
 ## Program search
 
