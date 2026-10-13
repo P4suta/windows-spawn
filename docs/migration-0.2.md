@@ -4,6 +4,8 @@
 Most programs change in three places: the error type, the tree policy, and the creation flags.
 [ADR 0015](adr/0015-the-api-follows-std-and-ownership.md) records why.
 
+0.2 requires Rust 1.84, where 0.1 required Rust 1.75; [ADR 0018](adr/0018-lint-exceptions-expire-and-the-msrv-is-rust-1-84.md) records why.
+
 ## Errors
 
 Fallible calls return `windows_spawn::Result<T>`, whose error is `SpawnError`, instead of `std::io::Result<T>`.

@@ -34,7 +34,7 @@ impl Generator {
         Self(seed)
     }
 
-    pub(crate) fn next(&mut self) -> u64 {
+    pub(crate) const fn next(&mut self) -> u64 {
         let [first, second, third] = SHIFTS;
         let Self(state) = self;
         *state ^= state.wrapping_shr(first);

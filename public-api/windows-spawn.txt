@@ -686,10 +686,10 @@ impl windows_spawn::Command
 pub fn windows_spawn::Command::arg<S: core::convert::AsRef<std::ffi::os_str::OsStr>>(&mut self, S) -> &mut Self
 pub fn windows_spawn::Command::arg_handle<T: std::os::windows::io::handle::AsHandle>(&mut self, &T) -> windows_spawn::Result<&mut Self>
 pub fn windows_spawn::Command::args<I, S>(&mut self, I) -> &mut Self where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<std::ffi::os_str::OsStr>
-pub fn windows_spawn::Command::breakaway_from_job(&mut self) -> &mut Self
-pub fn windows_spawn::Command::console(&mut self, windows_spawn::ConsoleMode) -> &mut Self
+pub const fn windows_spawn::Command::breakaway_from_job(&mut self) -> &mut Self
+pub const fn windows_spawn::Command::console(&mut self, windows_spawn::ConsoleMode) -> &mut Self
 pub fn windows_spawn::Command::current_dir<P: core::convert::AsRef<std::path::Path>>(&mut self, P) -> &mut Self
-pub fn windows_spawn::Command::default_error_mode(&mut self) -> &mut Self
+pub const fn windows_spawn::Command::default_error_mode(&mut self) -> &mut Self
 pub fn windows_spawn::Command::env<K, V>(&mut self, K, V) -> &mut Self where K: core::convert::AsRef<std::ffi::os_str::OsStr>, V: core::convert::AsRef<std::ffi::os_str::OsStr>
 pub fn windows_spawn::Command::env_clear(&mut self) -> &mut Self
 pub fn windows_spawn::Command::env_handle<K: core::convert::AsRef<std::ffi::os_str::OsStr>, T: std::os::windows::io::handle::AsHandle>(&mut self, K, &T) -> windows_spawn::Result<&mut Self>
@@ -697,15 +697,15 @@ pub fn windows_spawn::Command::env_remove<K: core::convert::AsRef<std::ffi::os_s
 pub fn windows_spawn::Command::envs<I, K, V>(&mut self, I) -> &mut Self where I: core::iter::traits::collect::IntoIterator<Item = (K, V)>, K: core::convert::AsRef<std::ffi::os_str::OsStr>, V: core::convert::AsRef<std::ffi::os_str::OsStr>
 pub fn windows_spawn::Command::get_current_dir(&self) -> core::option::Option<&std::path::Path>
 pub fn windows_spawn::Command::get_program(&self) -> &std::ffi::os_str::OsStr
-pub fn windows_spawn::Command::inherit_parent_affinity(&mut self) -> &mut Self
-pub fn windows_spawn::Command::mitigation(&mut self, windows_spawn::MitigationPolicy) -> &mut Self
+pub const fn windows_spawn::Command::inherit_parent_affinity(&mut self) -> &mut Self
+pub const fn windows_spawn::Command::mitigation(&mut self, windows_spawn::MitigationPolicy) -> &mut Self
 pub fn windows_spawn::Command::new<S: core::convert::AsRef<std::ffi::os_str::OsStr>>(S) -> Self
-pub fn windows_spawn::Command::new_process_group(&mut self) -> &mut Self
+pub const fn windows_spawn::Command::new_process_group(&mut self) -> &mut Self
 pub fn windows_spawn::Command::output(&mut self) -> windows_spawn::Result<std::process::Output>
 pub fn windows_spawn::Command::output_with(&mut self, windows_spawn::SpawnOptions<'_>) -> windows_spawn::Result<std::process::Output>
-pub fn windows_spawn::Command::own_process_tree(&mut self) -> &mut Self
-pub fn windows_spawn::Command::preserve_code_authorization(&mut self) -> &mut Self
-pub fn windows_spawn::Command::priority(&mut self, windows_spawn::PriorityClass) -> &mut Self
+pub const fn windows_spawn::Command::own_process_tree(&mut self) -> &mut Self
+pub const fn windows_spawn::Command::preserve_code_authorization(&mut self) -> &mut Self
+pub const fn windows_spawn::Command::priority(&mut self, windows_spawn::PriorityClass) -> &mut Self
 pub fn windows_spawn::Command::raw_arg<S: core::convert::AsRef<std::ffi::os_str::OsStr>>(&mut self, S) -> &mut Self
 pub fn windows_spawn::Command::spawn(&mut self) -> windows_spawn::Result<windows_spawn::Child>
 pub fn windows_spawn::Command::spawn_suspended(&mut self) -> windows_spawn::Result<windows_spawn::SuspendedChild>

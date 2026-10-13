@@ -170,7 +170,7 @@ impl ProcessHandle {
     }
 
     /// Records that the main thread runs, so dropping the handle leaves the process running.
-    pub(crate) fn mark_started(&mut self) {
+    pub(crate) const fn mark_started(&mut self) {
         self.unstarted = false;
     }
 

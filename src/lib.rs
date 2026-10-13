@@ -28,7 +28,10 @@ mod plan;
 #[cfg(windows)]
 mod resource;
 #[cfg(windows)]
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "sys is the crate's only Win32 FFI boundary, and it holds BorrowedPseudoConsole::borrow_raw"
+)]
 mod sys;
 #[cfg(windows)]
 mod transaction;

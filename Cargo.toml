@@ -3,7 +3,7 @@ name = "windows-spawn"
 version = "0.1.0"
 authors = ["Yasunobu Sakashita"]
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.84"
 license = "MIT OR Apache-2.0"
 description = "Windows process creation with explicit handle, Job, mitigation, ConPTY, and child ownership"
 documentation = "https://docs.rs/windows-spawn"
@@ -62,7 +62,7 @@ features = ["Win32_System_LibraryLoader", "Win32_UI_Shell"]
 [workspace]
 members = ["xtask"]
 default-members = ["."]
-resolver = "2"
+resolver = "3"
 
 [workspace.lints.rust]
 future_incompatible = { level = "deny", priority = -1 }
@@ -80,6 +80,7 @@ trivial_numeric_casts = "deny"
 unreachable_pub = "deny"
 unsafe_op_in_unsafe_fn = "deny"
 unused_lifetimes = "deny"
+unfulfilled_lint_expectations = "deny"
 unused_qualifications = "deny"
 variant_size_differences = "deny"
 unexpected_cfgs = { level = "deny", check-cfg = ["cfg(fuzzing)", "cfg(kani)", "cfg(windows_spawn_vectors)"] }
@@ -89,6 +90,8 @@ all = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
 arithmetic_side_effects = "deny"
 as_conversions = "deny"
 clone_on_ref_ptr = "deny"

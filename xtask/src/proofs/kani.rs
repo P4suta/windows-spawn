@@ -68,6 +68,10 @@ pub(crate) const KANI_PROOFS: &[Proof] = &[
         covers: 1,
     },
     Proof {
+        name: "domain::conversion_rules::proofs::every_handle_value_round_trips",
+        covers: 2,
+    },
+    Proof {
         name: "domain::creation_flag_rules::proofs::the_word_holds_the_policy_one_console_one_priority_and_the_internal_flags",
         covers: 2,
     },

@@ -13,7 +13,7 @@ A change to ownership, handle inheritance, Job lifetime, ConPTY, mitigation, quo
 ## Development
 
 Tests require Windows 10 version 1809 or later.
-The crate supports Rust 1.75 and later.
+The crate supports Rust 1.84 and later.
 With the tool versions CI uses installed, run:
 
 ```powershell
@@ -67,7 +67,7 @@ cargo +nightly fuzz run environment-block -- -max_total_time=600 -max_len=16384
 - Keep the documented ownership and cleanup behavior, including on errors.
 - Give every `unsafe` block a specific safety justification.
 - Write only doc comments and `// SAFETY:` comments; the reason for a change goes in its commit message (ADR 0013).
-- Register every `#[allow]` in `xtask/src/gates.rs` with its reason; `just gates` checks the registry and the other repository laws.
+- Write a lint exception as `#[expect(lint, reason = "…")]` on the one item it concerns; `just gates` refuses every `allow` and checks the other repository laws (ADR 0018).
 - Add deterministic tests for behavior changes; tests wait for events, never for time (ADR 0010).
 - Change the public API snapshot only with an API change, and state its compatibility impact.
 - Update the crate docs, ADRs, or security boundary when a contract changes.

@@ -34,6 +34,8 @@ The 0.2 API follows `std::process` and places each choice on the type that owns 
 - `Job::assign` takes any process handle.
 - `Debug` prints a `Command` as std does.
 - `SuspendedChild::id` is `const`, like `Child::id`, and returns the identifier recorded at creation, so it cannot panic.
+- The MSRV is Rust 1.84, as ADR 0018 records.
+- `Command::own_process_tree`, `console`, `priority`, `mitigation`, and the creation-flag setters are `const fn`.
 
 ### Removed
 

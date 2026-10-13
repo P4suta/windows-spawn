@@ -129,7 +129,7 @@ impl Value<Creator> {
     /// The value of a handle in the current process's table.
     pub(crate) fn of(handle: BorrowedHandle<'_>) -> Self {
         Self {
-            raw: crate::sys::handle_value(handle.as_raw_handle()),
+            raw: crate::domain::conversion_rules::handle_value(handle.as_raw_handle()),
             table: PhantomData,
         }
     }

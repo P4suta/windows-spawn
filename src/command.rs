@@ -256,7 +256,7 @@ impl Command {
     /// The Job allows no breakaway, so a descendant that asks for `CREATE_BREAKAWAY_FROM_JOB` fails to start.
     /// A daemon that a build starts and expects to outlive it, such as `mspdbsrv.exe` or an `sccache` server, ends with the tree too.
     /// A [`SuspendedChild`] already runs in the Job, and dropping it terminates the child before it runs.
-    pub fn own_process_tree(&mut self) -> &mut Self {
+    pub const fn own_process_tree(&mut self) -> &mut Self {
         self.creation.owns_tree = true;
         self
     }
@@ -264,7 +264,7 @@ impl Command {
     /// Chooses the child's console.
     ///
     /// A pseudoconsole from [`SpawnOptions::pseudo_console`] is the child's console, so it combines only with [`ConsoleMode::Inherit`].
-    pub fn console(&mut self, mode: ConsoleMode) -> &mut Self {
+    pub const fn console(&mut self, mode: ConsoleMode) -> &mut Self {
         self.creation.console = mode;
         self
     }
@@ -272,43 +272,43 @@ impl Command {
     /// Chooses the child's scheduling priority class.
     ///
     /// Without a choice, the child gets the normal class, or the caller's when that is idle or below normal.
-    pub fn priority(&mut self, class: PriorityClass) -> &mut Self {
+    pub const fn priority(&mut self, class: PriorityClass) -> &mut Self {
         self.creation.set_priority(class);
         self
     }
 
     /// Applies a process-creation mitigation policy: `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`.
-    pub fn mitigation(&mut self, policy: MitigationPolicy) -> &mut Self {
+    pub const fn mitigation(&mut self, policy: MitigationPolicy) -> &mut Self {
         self.creation.mitigation = policy;
         self
     }
 
     /// Makes the child the root of a new process group, which `GenerateConsoleCtrlEvent` can signal: `CREATE_NEW_PROCESS_GROUP`.
-    pub fn new_process_group(&mut self) -> &mut Self {
+    pub const fn new_process_group(&mut self) -> &mut Self {
         self.creation.set(flags::NEW_PROCESS_GROUP);
         self
     }
 
     /// Gives the child its logical parent's processor affinity: `INHERIT_PARENT_AFFINITY`.
-    pub fn inherit_parent_affinity(&mut self) -> &mut Self {
+    pub const fn inherit_parent_affinity(&mut self) -> &mut Self {
         self.creation.set(flags::INHERIT_PARENT_AFFINITY);
         self
     }
 
     /// Lets the child leave the caller's Job where that Job allows it: `CREATE_BREAKAWAY_FROM_JOB`.
-    pub fn breakaway_from_job(&mut self) -> &mut Self {
+    pub const fn breakaway_from_job(&mut self) -> &mut Self {
         self.creation.set(flags::BREAKAWAY_FROM_JOB);
         self
     }
 
     /// Keeps the caller's code-authorization level for the child: `CREATE_PRESERVE_CODE_AUTHZ_LEVEL`.
-    pub fn preserve_code_authorization(&mut self) -> &mut Self {
+    pub const fn preserve_code_authorization(&mut self) -> &mut Self {
         self.creation.set(flags::PRESERVE_CODE_AUTHZ_LEVEL);
         self
     }
 
     /// Starts the child with the default hard-error mode instead of the caller's: `CREATE_DEFAULT_ERROR_MODE`.
-    pub fn default_error_mode(&mut self) -> &mut Self {
+    pub const fn default_error_mode(&mut self) -> &mut Self {
         self.creation.set(flags::DEFAULT_ERROR_MODE);
         self
     }
