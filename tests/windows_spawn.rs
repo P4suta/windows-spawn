@@ -341,18 +341,20 @@ fn requested_mitigation_is_visible_on_the_real_process() -> io::Result<()> {
     Ok(())
 }
 
+/// Returns the number of handles this process holds.
+fn handle_count() -> io::Result<u32> {
+    let mut count = 0;
+    // SAFETY: the pseudo-handle is valid and `count` is writable DWORD storage.
+    let success = unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) };
+    if success == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(count)
+    }
+}
+
 #[test]
 fn failed_transactions_do_not_leak_handles() -> io::Result<()> {
-    fn handle_count() -> io::Result<u32> {
-        let mut count = 0;
-        // SAFETY: the pseudo-handle is valid and `count` is writable DWORD storage.
-        let success = unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) };
-        if success == 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(count)
-        }
-    }
     fn fail_after_acquisition(missing_directory: &Path) {
         let mut command = cmd("exit /b 0");
         command
@@ -1120,6 +1122,211 @@ fn reusable_command_environment_and_accessors_work() -> io::Result<()> {
     command.env_clear().env("WINDOWS_SPAWN_ONE", "clear");
     let cleared = command.output()?;
     assert!(String::from_utf8_lossy(&cleared.stdout).contains("clear-"));
+    Ok(())
+}
+
+/// A way a spawn can go, which [`spawn_cleanup_stress`] takes in turn.
+#[derive(Clone, Copy, Debug)]
+enum StressMode {
+    Wait,
+    Resume,
+    DropSuspended,
+    Status,
+    Output,
+    Input,
+    KillTree,
+    TreeOutput,
+    Handles,
+    Job,
+    Parent,
+    FailedCreation,
+    FailedSearch,
+}
+
+impl StressMode {
+    const ALL: [Self; 13] = [
+        Self::Wait,
+        Self::Resume,
+        Self::DropSuspended,
+        Self::Status,
+        Self::Output,
+        Self::Input,
+        Self::KillTree,
+        Self::TreeOutput,
+        Self::Handles,
+        Self::Job,
+        Self::Parent,
+        Self::FailedCreation,
+        Self::FailedSearch,
+    ];
+}
+
+/// The exit code of the stress children, which no termination gives.
+const STRESS_EXIT: i32 = 3;
+
+/// Requires `status` to carry the stress children's exit code.
+fn stress_exit(status: std::process::ExitStatus) -> io::Result<()> {
+    if status.code() == Some(STRESS_EXIT) {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "exited with {status:?}, not {STRESS_EXIT}"
+        )))
+    }
+}
+
+/// Requires `spawned` to fail in `operation`.
+fn stress_failure<T>(spawned: windows_spawn::Result<T>, operation: Operation) -> io::Result<()> {
+    match spawned {
+        Err(SpawnError::Windows(failure)) if failure.operation() == operation => Ok(()),
+        Err(error) => Err(io::Error::other(format!(
+            "failed with {error}, not in {operation}"
+        ))),
+        Ok(_) => Err(io::Error::other(format!(
+            "succeeded, not failed in {operation}"
+        ))),
+    }
+}
+
+/// What the stress spawns borrow, created before the count starts.
+struct Stress {
+    nul: File,
+    job: Job,
+    parent: ParentProcess,
+    directory: TempDir,
+}
+
+impl Stress {
+    fn new() -> io::Result<Self> {
+        Ok(Self {
+            nul: File::options().read(true).write(true).open("NUL")?,
+            job: Job::create()?,
+            parent: ParentProcess::open(std::process::id())?,
+            directory: TempDir::new("stress")?,
+        })
+    }
+
+    fn run(&self, mode: StressMode) -> io::Result<()> {
+        let mut command = cmd("exit /b 3");
+        match mode {
+            StressMode::Wait => stress_exit(command.spawn()?.wait()?),
+            StressMode::Resume => stress_exit(command.spawn_suspended()?.resume()?.wait()?),
+            StressMode::DropSuspended => {
+                drop(command.spawn_suspended()?);
+                Ok(())
+            }
+            StressMode::Status => stress_exit(command.status()?),
+            StressMode::Output => {
+                let output = cmd("echo out& echo err 1>&2").output()?;
+                if output.stdout.starts_with(b"out") && output.stderr.starts_with(b"err") {
+                    Ok(())
+                } else {
+                    Err(io::Error::other(format!("read {output:?}")))
+                }
+            }
+            StressMode::Input => {
+                let mut sort = cmd("sort");
+                let mut child = sort.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
+                let mut input = child
+                    .stdin
+                    .take()
+                    .ok_or_else(|| io::Error::other("stdin is piped"))?;
+                input.write_all(b"typed\r\n")?;
+                drop(input);
+                let output = child.wait_with_output()?;
+                if output.stdout.starts_with(b"typed") {
+                    Ok(())
+                } else {
+                    Err(io::Error::other(format!("read {output:?}")))
+                }
+            }
+            StressMode::KillTree => {
+                let mut waiting = cmd("set /p x=");
+                let mut child = waiting.stdin(Stdio::piped()).own_process_tree().spawn()?;
+                child.kill()?;
+                match child.wait_tree()?.code() {
+                    Some(1) => Ok(()),
+                    code => Err(io::Error::other(format!(
+                        "a killed tree exited with {code:?}"
+                    ))),
+                }
+            }
+            StressMode::TreeOutput => {
+                let output = cmd("echo tree").own_process_tree().output()?;
+                if output.stdout.starts_with(b"tree") {
+                    Ok(())
+                } else {
+                    Err(io::Error::other(format!("read {output:?}")))
+                }
+            }
+            StressMode::Handles => {
+                command
+                    .arg_handle(&self.nul)?
+                    .env_handle("WINDOWS_SPAWN_HANDLE", &self.nul)?;
+                stress_exit(command.status()?)
+            }
+            StressMode::Job => {
+                stress_exit(command.status_with(SpawnOptions::new().job(&self.job))?)
+            }
+            StressMode::Parent => {
+                command
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                stress_exit(command.status_with(SpawnOptions::new().parent_process(&self.parent))?)
+            }
+            StressMode::FailedCreation => {
+                command
+                    .current_dir(self.directory.join("missing"))
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .own_process_tree();
+                stress_failure(command.spawn(), Operation::CreateProcess)
+            }
+            StressMode::FailedSearch => {
+                let mut missing = Command::new("windows-spawn-missing-program");
+                missing
+                    .env_clear()
+                    .stdout(Stdio::piped())
+                    .own_process_tree();
+                stress_failure(missing.spawn(), Operation::ResolveExecutable)
+            }
+        }
+    }
+}
+
+/// Spawns children in every [`StressMode`], `WINDOWS_SPAWN_STRESS_CASES` times in all, and requires this process's handle count not to grow.
+///
+/// Each mode runs twice before the count starts, so what the system creates once, such as a thread-pool worker, is already there.
+/// It runs only on request, and alone, because the count belongs to the process:
+/// `cargo test --test windows_spawn spawn_cleanup_stress -- --ignored --exact`.
+#[test]
+#[ignore = "set WINDOWS_SPAWN_STRESS_CASES, and run it alone"]
+fn spawn_cleanup_stress() -> io::Result<()> {
+    let cases: usize = std::env::var("WINDOWS_SPAWN_STRESS_CASES")
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+        .parse()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let stress = Stress::new()?;
+    for mode in StressMode::ALL.into_iter().chain(StressMode::ALL) {
+        stress.run(mode)?;
+    }
+    let before = handle_count()?;
+    for (case, mode) in StressMode::ALL.into_iter().cycle().take(cases).enumerate() {
+        stress
+            .run(mode)
+            .map_err(|error| io::Error::other(format!("case {case}, {mode:?}: {error}")))?;
+    }
+    let after = handle_count()?;
+    assert!(
+        after <= before,
+        "the handle count grew from {before} to {after} over {cases} spawns"
+    );
+    println!(
+        "{cases} spawns in {} modes: the handle count went from {before} to {after}",
+        StressMode::ALL.len()
+    );
     Ok(())
 }
 

@@ -2,7 +2,6 @@
 //!
 //! Seeded random environments then pass through the crate's block builder into children,
 //! which must hold exactly the variables the commands set, merged and ordered as Windows compares names.
-#![allow(clippy::as_conversions, clippy::expect_used, clippy::unwrap_in_result)]
 
 #[cfg(windows)]
 mod random;
@@ -15,7 +14,7 @@ mod windows {
     use std::io;
     use std::mem::size_of;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
-    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use std::ptr;
 
     use windows_spawn::{Command, Stdio};
@@ -31,60 +30,67 @@ mod windows {
         STARTUPINFOW,
     };
 
-    use crate::random::Generator;
+    use crate::random::{scaled, Generator};
 
     const OUTPUT: &str = "WINDOWS_SPAWN_ROUNDTRIP_OUTPUT";
     const VALUE: &str = "WINDOWS_SPAWN_ROUNDTRIP_VALUE";
     const MIXED: &str = "WINDOWS_SPAWN_ROUNDTRIP_MIXED";
     const REMOVE: &str = "WINDOWS_SPAWN_ROUNDTRIP_REMOVE";
 
-    fn append_os(buffer: &mut Vec<u8>, value: &OsStr) {
+    /// Writes `count` as the little-endian `DWORD` that precedes what it counts.
+    fn append_count(buffer: &mut Vec<u8>, count: usize) -> io::Result<()> {
+        let count = u32::try_from(count).map_err(io::Error::other)?;
+        buffer.extend_from_slice(&count.to_le_bytes());
+        Ok(())
+    }
+
+    fn append_os(buffer: &mut Vec<u8>, value: &OsStr) -> io::Result<()> {
         let wide: Vec<u16> = value.encode_wide().collect();
-        let length = u32::try_from(wide.len()).expect("test values fit in a DWORD");
-        buffer.extend_from_slice(&length.to_le_bytes());
+        append_count(buffer, wide.len())?;
         for unit in wide {
             buffer.extend_from_slice(&unit.to_le_bytes());
         }
+        Ok(())
+    }
+
+    /// Reads a variable the parent sets for the child.
+    fn parent_variable(name: &str) -> io::Result<OsString> {
+        std::env::var_os(name).ok_or_else(|| io::Error::other(format!("the parent sets {name}")))
     }
 
     fn child() -> io::Result<()> {
-        let output = std::env::var_os(OUTPUT).expect("parent supplies output path");
+        let output = parent_variable(OUTPUT)?;
         let arguments: Vec<OsString> = std::env::args_os().skip(2).collect();
-        let mut encoded = encode_arguments(&arguments);
-        append_os(
-            &mut encoded,
-            &std::env::var_os(VALUE).expect("parent supplies environment value"),
-        );
-        append_os(
-            &mut encoded,
-            &std::env::var_os(MIXED).expect("case-insensitive replacement survives"),
-        );
+        let mut encoded = encode_arguments(&arguments)?;
+        append_os(&mut encoded, &parent_variable(VALUE)?)?;
+        append_os(&mut encoded, &parent_variable(MIXED)?)?;
         encoded.push(u8::from(std::env::var_os(REMOVE).is_some()));
         fs::write(output, encoded)
     }
 
-    fn encode_arguments(arguments: &[OsString]) -> Vec<u8> {
+    fn encode_arguments(arguments: &[OsString]) -> io::Result<Vec<u8>> {
         let mut encoded = Vec::new();
-        let count = u32::try_from(arguments.len()).expect("test corpus fits in a DWORD");
-        encoded.extend_from_slice(&count.to_le_bytes());
+        append_count(&mut encoded, arguments.len())?;
         for argument in arguments {
-            append_os(&mut encoded, argument);
+            append_os(&mut encoded, argument)?;
         }
-        encoded
+        Ok(encoded)
     }
 
     fn broker_child() -> io::Result<()> {
         let mut arguments = std::env::args_os().skip(2);
-        let output = arguments.next().expect("parent supplies output path");
+        let output = arguments
+            .next()
+            .ok_or_else(|| io::Error::other("the parent passes the output path"))?;
         let arguments: Vec<OsString> = arguments.collect();
-        fs::write(output, encode_arguments(&arguments))
+        fs::write(output, encode_arguments(&arguments)?)
     }
 
     /// Starts `line` with a null application name, as a launch broker does.
     fn launch_like_a_broker(line: &OsStr) -> io::Result<u32> {
         let mut wide: Vec<u16> = line.encode_wide().chain(Some(0)).collect();
         let startup = STARTUPINFOW {
-            cb: u32::try_from(size_of::<STARTUPINFOW>()).expect("STARTUPINFOW fits in a DWORD"),
+            cb: u32::try_from(size_of::<STARTUPINFOW>()).map_err(io::Error::other)?,
             ..STARTUPINFOW::default()
         };
         let mut information = PROCESS_INFORMATION::default();
@@ -109,8 +115,8 @@ mod windows {
         // SAFETY: CreateProcessW succeeded, so both handles are new and owned here.
         let (process, _thread) = unsafe {
             (
-                OwnedHandle::from_raw_handle(information.hProcess as RawHandle),
-                OwnedHandle::from_raw_handle(information.hThread as RawHandle),
+                OwnedHandle::from_raw_handle(information.hProcess),
+                OwnedHandle::from_raw_handle(information.hThread),
             )
         };
         // SAFETY: the owned process handle stays open for the wait.
@@ -143,7 +149,7 @@ mod windows {
 
         let actual = fs::read(&output)?;
         fs::remove_file(output)?;
-        if actual != encode_arguments(&arguments) {
+        if actual != encode_arguments(&arguments)? {
             return Err(io::Error::other(
                 "a broker-launched command line decoded to different arguments",
             ));
@@ -205,9 +211,9 @@ mod windows {
             )));
         }
 
-        let mut expected = encode_arguments(&arguments);
-        append_os(&mut expected, &environment);
-        append_os(&mut expected, &mixed);
+        let mut expected = encode_arguments(&arguments)?;
+        append_os(&mut expected, &environment)?;
+        append_os(&mut expected, &mixed)?;
         expected.push(0);
 
         let actual = fs::read(&output)?;
@@ -234,9 +240,14 @@ mod windows {
     /// The unit a generated name gets in place of the separator.
     const UNDERSCORE: u16 = 0x5f;
 
-    /// The variables a tool sets inside every process it watches, which no generated name can match:
+    /// The variables a tool or Windows sets inside every process, which no generated name can match:
     /// Application Verifier's, so `cargo xtask verifier` can run this test, and the LLVM profile runtime's, so coverage can.
-    const TOOL_VARIABLES: [&str; 2] = ["OANOCACHE", "__LLVM_PROFILE_RT_INIT_ONCE"];
+    /// Windows on ARM64 also gives every process its architecture, even a process whose environment holds nothing else.
+    const INJECTED_VARIABLES: [&str; 3] = [
+        "OANOCACHE",
+        "__LLVM_PROFILE_RT_INIT_ONCE",
+        "PROCESSOR_ARCHITECTURE",
+    ];
 
     /// Units whose case Windows folds and units that look alike:
     /// `A`, `a`, `Z`, `z`, `_`, `0`, `É`, `é`, `ß`, `İ`, `ı`, `Ǆ`, `ǅ`, `ǆ`, `Σ`, `σ`, `ς`, Cyrillic capital and small zhe (U+0416 and U+0436), fullwidth `Ａ` and `ａ`,
@@ -260,9 +271,14 @@ mod windows {
     }
 
     /// Orders two names as the crate's environment map does, with the comparison Windows uses for names.
+    ///
+    /// A name too long for the comparison, which no generated name reaches, falls back to the order of its units, as an unknown result does.
     fn by_name(left: &[u16], right: &[u16]) -> Ordering {
-        let left_length = i32::try_from(left.len()).expect("names fit in an i32");
-        let right_length = i32::try_from(right.len()).expect("names fit in an i32");
+        let (Ok(left_length), Ok(right_length)) =
+            (i32::try_from(left.len()), i32::try_from(right.len()))
+        else {
+            return left.cmp(right);
+        };
         // SAFETY: both pointers are readable for their lengths.
         match unsafe {
             CompareStringOrdinal(left.as_ptr(), left_length, right.as_ptr(), right_length, 1)
@@ -314,7 +330,8 @@ mod windows {
         let mut generator = Generator::new(ENVIRONMENT_SEED);
         let profile = std::env::var_os("LLVM_PROFILE_FILE");
         let mut mismatches = Vec::new();
-        for _ in 0..RANDOM_ENVIRONMENTS {
+        let environments = scaled(RANDOM_ENVIRONMENTS)?;
+        for _ in 0..environments {
             let mut variables: Vec<(Vec<u16>, Vec<u16>)> = Vec::new();
             if let Some(profile) = &profile {
                 variables.push((
@@ -375,7 +392,7 @@ mod windows {
                 .map(|(name, value)| format!("std\t{}\t{}", hex(name), hex(value)))
                 .collect();
             let report = String::from_utf8_lossy(&output.stdout);
-            let prefixes: Vec<String> = TOOL_VARIABLES
+            let prefixes: Vec<String> = INJECTED_VARIABLES
                 .iter()
                 .flat_map(|name| {
                     let name = hex(&OsStr::new(name).encode_wide().collect::<Vec<_>>());
@@ -402,7 +419,7 @@ mod windows {
                 shown.join("\n")
             )));
         }
-        println!("{RANDOM_ENVIRONMENTS} random environments through the block builder: every child holds exactly its variables");
+        println!("{environments} random environments through the block builder: every child holds exactly its variables");
         Ok(())
     }
 

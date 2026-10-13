@@ -210,6 +210,9 @@ impl Command {
     }
 
     /// Clears the inherited environment and prior recorded modifications.
+    ///
+    /// The child receives only the variables set after this call.
+    /// Windows on ARM64 still adds `PROCESSOR_ARCHITECTURE` to every process it starts.
     pub fn env_clear(&mut self) -> &mut Self {
         self.env_clear = true;
         self.env_ops.clear();

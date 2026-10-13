@@ -63,24 +63,6 @@ const EXCEPTIONS: &[Exception] = &[
         count: 1,
         reason: "tests assert by panicking",
     },
-    Exception {
-        file: "tests/argv_roundtrip.rs",
-        lint: "clippy::as_conversions",
-        count: 1,
-        reason: "tests call Win32 directly with handle values",
-    },
-    Exception {
-        file: "tests/argv_roundtrip.rs",
-        lint: "clippy::expect_used",
-        count: 1,
-        reason: "tests assert by panicking",
-    },
-    Exception {
-        file: "tests/argv_roundtrip.rs",
-        lint: "clippy::unwrap_in_result",
-        count: 1,
-        reason: "tests assert by panicking",
-    },
 ];
 
 /// Identifiers that measure or wait on time (ADR 0010).
@@ -178,7 +160,7 @@ impl fmt::Display for Finding {
 /// Checks every Rust file under the repository's source directories.
 pub(crate) fn check(root: &Path) -> io::Result<Vec<Finding>> {
     let mut files = Vec::new();
-    for directory in ["src", "tests", "examples", "xtask/src"] {
+    for directory in ["src", "tests", "examples", "fuzz/fuzz_targets", "xtask/src"] {
         collect_rust_files(&root.join(directory), &mut files)?;
     }
     files.sort();
