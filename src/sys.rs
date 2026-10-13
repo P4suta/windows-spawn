@@ -417,7 +417,7 @@ const _: () = assert!(
 
 /// The identifiers of the Job's processes whose exit the Job hasn't recorded.
 ///
-/// A process leaves the list before its handle is signaled, so an empty list means that no process of the Job still runs.
+/// The Job can still list a process for a moment after a wait for it returns, but an empty list means that no process of the Job still runs.
 pub(crate) fn job_process_ids(job: Borrowed<'_, JobObject>) -> io::Result<Vec<usize>> {
     #[cfg(test)]
     fault::check(fault::Call::ListJob)?;
