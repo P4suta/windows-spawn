@@ -19,14 +19,7 @@ const EXCEPTIONS: &[Exception] = &[
         file: "src/lib.rs",
         lint: "unsafe_code",
         count: 1,
-        reason:
-            "sys is the only Win32 FFI boundary, and its test support holds the test pseudoconsoles",
-    },
-    Exception {
-        file: "src/handles.rs",
-        lint: "unsafe_code",
-        count: 1,
-        reason: "AsPseudoConsole is an unsafe trait whose implementors vouch for a live HPCON",
+        reason: "sys is the only Win32 FFI boundary; it holds BorrowedPseudoConsole::borrow_raw and the test pseudoconsoles",
     },
     Exception {
         file: "src/sys.rs",

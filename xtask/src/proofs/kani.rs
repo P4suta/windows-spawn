@@ -56,12 +56,8 @@ pub(crate) const KANI_PROOFS: &[Proof] = &[
         covers: 2,
     },
     Proof {
-        name: "domain::creation_flag_rules::proofs::internal_flags_follow_only_the_spawn_state",
+        name: "domain::creation_flag_rules::proofs::the_word_holds_the_policy_one_console_one_priority_and_the_internal_flags",
         covers: 2,
-    },
-    Proof {
-        name: "domain::creation_flag_rules::proofs::console_validation_admits_at_most_one_mode",
-        covers: 3,
     },
     Proof {
         name: "domain::environment_rules::proofs::built_blocks_lay_out_each_entry_before_the_terminator",
@@ -81,11 +77,7 @@ pub(crate) const KANI_PROOFS: &[Proof] = &[
     },
     Proof {
         name: "domain::plan_rules::proofs::plans_follow_the_documented_rules",
-        covers: 4,
-    },
-    Proof {
-        name: "domain::plan_rules::proofs::each_conflict_reports_its_own_message",
-        covers: 1,
+        covers: 5,
     },
     Proof {
         name: "mitigation::proofs::every_setter_writes_exactly_its_field",
@@ -108,7 +100,7 @@ pub(crate) const KANI_CONTROLS: &[Control] = &[
         marker: "NEGATIVE_COMMAND_LINE_CONTROL",
     },
     Control {
-        name: "domain::creation_flag_rules::proofs::negative_control_suspended_running_spawn",
+        name: "domain::creation_flag_rules::proofs::negative_control_a_spawn_that_runs_at_once",
         marker: "NEGATIVE_CREATION_FLAG_CONTROL",
     },
     Control {

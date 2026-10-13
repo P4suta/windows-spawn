@@ -1,4 +1,4 @@
-//! Resource-acquiring spawn transaction and rollback.
+//! The spawn transaction: acquire the resources, create the process suspended, release the temporary resources, then resume the process or hand it back suspended.
 
 use std::cmp::Ordering;
 use std::collections::btree_map::{BTreeMap, Entry};
@@ -15,15 +15,16 @@ use crate::command::{Arg, Command, EnvOp, EnvValue};
 use crate::domain::attribute_rules;
 use crate::domain::command_line_rules::{append_argument, append_program, NUL, QUOTE, SPACE};
 use crate::domain::environment_rules;
-use crate::handles::{Job, Stdio, StdioInner};
-use crate::options::DropPolicy;
-use crate::plan::{
-    validate_command, Running, Source, SpawnPlan, SpawnState, StandardIo, Streams, Suspended,
-};
+use crate::error::{InputField, Operation, Phase, Releases, Result, SpawnError, ValidationError};
+use crate::handles::{windows, Job, Stdio, StdioInner};
+use crate::plan::{validate_command, Running, Source, SpawnPlan, StandardIo, Streams, Suspended};
 use crate::sys::{self, NullAccess, StandardStream};
 
-/// Owns the process between `CreateProcessW` success and an explicit commit.
-/// Dropping before commit terminates the partially-created process.
+/// The UTF-16 units `CreateProcessW` accepts in `lpCommandLine`, its terminator included.
+const COMMAND_LINE_CAPACITY: usize = 32_767;
+
+/// Owns the suspended process between its creation and an explicit commit.
+/// Dropping before commit terminates the process, which never ran.
 pub(crate) struct SpawnTransaction<M> {
     created: Option<sys::CreatedProcess>,
     kill_job: Option<Job>,
@@ -32,9 +33,9 @@ pub(crate) struct SpawnTransaction<M> {
 }
 
 impl<M> SpawnTransaction<M> {
-    /// Borrows the created process's primary thread.
+    /// Borrows the created process's main thread.
     #[cfg(test)]
-    pub(crate) fn primary_thread(&self) -> BorrowedHandle<'_> {
+    pub(crate) fn main_thread(&self) -> BorrowedHandle<'_> {
         self.created
             .as_ref()
             .expect("an uncommitted transaction owns its process")
@@ -43,14 +44,33 @@ impl<M> SpawnTransaction<M> {
     }
 }
 
-impl<M: SpawnState> SpawnTransaction<M> {
-    #[allow(clippy::too_many_lines)]
-    pub(crate) fn new<'options>(plan: &SpawnPlan<'_, 'options, M>) -> io::Result<Self> {
+impl<M> SpawnTransaction<M> {
+    /// Acquires the resources of `plan`, creates the process suspended, and releases the temporary resources before it returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first failure, together with the failures of the releases that followed it.
+    /// A release that fails after the creation terminates the process, which never ran.
+    pub(crate) fn new<'options>(plan: &SpawnPlan<'_, 'options, M>) -> Result<Self> {
         let parent: Option<BorrowedHandle<'options>> = plan.options.parent.map(AsHandle::as_handle);
         let mut transfer = HandleTransfer::new(parent);
+        let created = Self::create(plan, &mut transfer);
+        let mut releases = Releases::default();
+        transfer.reclaim(&mut releases);
+        match created {
+            Ok(transaction) => releases.finish().map(|()| transaction),
+            Err(primary) => Err(releases.after(primary)),
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn create<'options>(
+        plan: &SpawnPlan<'_, 'options, M>,
+        transfer: &mut HandleTransfer<'options>,
+    ) -> Result<Self> {
         let (stdio_values, stdio) = match &plan.stdio {
             StandardIo::Ordinary(specs) => {
-                let prepared = prepare_standard_handles(specs, &mut transfer)?;
+                let prepared = prepare_standard_handles(specs, transfer)?;
                 let values = sys::StartupStdio::Ordinary(sys::StandardHandles {
                     stdin: prepared.stdin.child,
                     stdout: prepared.stdout.child,
@@ -72,7 +92,8 @@ impl<M: SpawnState> SpawnTransaction<M> {
                 },
             ),
         };
-        let kill_job = if plan.options.drop_policy == DropPolicy::KillTree {
+        let creation = &plan.command.creation;
+        let kill_job = if creation.owns_tree {
             let job = Job::create()?;
             job.set_kill_on_close(true)?;
             Some(job)
@@ -89,25 +110,34 @@ impl<M: SpawnState> SpawnTransaction<M> {
             job_values.push(sys::handle_value(job.as_handle().as_raw_handle()));
         }
 
-        let command_line = build_command_line(plan.command, &mut transfer)?;
-        let environment = build_environment(plan.command, &mut transfer)?;
+        let command_line = build_command_line(plan.command, transfer)?;
+        let environment = build_environment(plan.command, transfer)?;
         let child_path = environment.path.as_deref();
-        let application = resolve_executable(&plan.command.program, child_path)?;
+        let application = windows(
+            Phase::Preparation,
+            Operation::ResolveExecutable,
+            resolve_executable(&plan.command.program, child_path),
+        )?;
         let current_dir = plan
             .command
             .cwd
             .as_ref()
             .map(|path| wide_nul(path.as_os_str()))
-            .transpose()?;
+            .transpose()
+            .map_err(|_nul| {
+                SpawnError::from(ValidationError::InteriorNul {
+                    field: InputField::CurrentDirectory,
+                })
+            })?;
 
         let inherited_values = transfer.inherited_values().to_vec().into_boxed_slice();
         let parent_value = transfer
             .parent()
             .map(|handle| Box::new(sys::handle_value(handle.as_raw_handle())));
-        let mitigation_words = plan.options.mitigation.words();
+        let mitigation_words = creation.mitigation.words();
         let mitigation_value = (mitigation_words != [0, 0]).then(|| Box::new(mitigation_words));
         let job_values = job_values.into_boxed_slice();
-        let pseudoconsole = plan.options.pseudoconsole_raw();
+        let pseudoconsole = plan.options.pseudoconsole;
 
         let attribute_count = attribute_rules::count(&[
             !inherited_values.is_empty(),
@@ -119,23 +149,23 @@ impl<M: SpawnState> SpawnTransaction<M> {
         let mut attributes = if attribute_count == 0 {
             None
         } else {
-            Some(sys::AttributeList::new(attribute_count)?)
+            Some(configure(sys::AttributeList::new(attribute_count))?)
         };
         if let Some(list) = &mut attributes {
             if !inherited_values.is_empty() {
-                list.set_handle_list(&inherited_values)?;
+                configure(list.set_handle_list(&inherited_values))?;
             }
             if let Some(value) = &parent_value {
-                list.set_parent(value)?;
+                configure(list.set_parent(value))?;
             }
             if let Some(value) = &mitigation_value {
-                list.set_mitigation(value)?;
+                configure(list.set_mitigation(value))?;
             }
             if !job_values.is_empty() {
-                list.set_jobs(&job_values)?;
+                configure(list.set_jobs(&job_values))?;
             }
             if let Some(value) = pseudoconsole {
-                list.set_pseudoconsole(value)?;
+                configure(list.set_pseudoconsole(value))?;
             }
         }
 
@@ -147,14 +177,17 @@ impl<M: SpawnState> SpawnTransaction<M> {
             current_dir: current_dir.as_deref(),
             stdio: stdio_values,
             inherit_handles: !inherited_values.is_empty(),
-            creation_flags: plan.options.creation_flags.bits(),
-            suspended: M::SUSPENDED,
+            policy: creation.policy(),
+            console: creation.console_flag(),
+            priority: creation.priority_flag(),
             attributes: attributes.as_ref(),
         };
-        let created = sys::create_process(&mut request)?;
-
+        let created = windows(
+            Phase::Creation,
+            Operation::CreateProcess,
+            sys::create_process(&mut request),
+        )?;
         drop(attributes);
-        drop(transfer);
 
         Ok(Self {
             created: Some(created),
@@ -183,10 +216,25 @@ impl<M: SpawnState> SpawnTransaction<M> {
 }
 
 impl SpawnTransaction<Running> {
-    pub(crate) fn commit_child(self) -> Child {
+    /// Resumes the main thread and hands the running process to a [`Child`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a failed resume, or a suspend count other than one; the process is terminated then.
+    pub(crate) fn commit_child(self) -> Result<Child> {
+        if let Some(created) = &self.created {
+            let previous = windows(
+                Phase::Resume,
+                Operation::ResumeThread,
+                sys::resume_thread(created.thread.as_handle()),
+            )?;
+            if previous != 1 {
+                return Err(SpawnError::unexpected_suspend_count(previous));
+            }
+        }
         let (child, thread) = self.commit_parts();
         drop(thread);
-        child
+        Ok(child)
     }
 }
 
@@ -214,7 +262,7 @@ struct PreparedStdio {
 fn prepare_standard_handles(
     specs: &Streams<Source<&Stdio>>,
     transfer: &mut HandleTransfer<'_>,
-) -> io::Result<Streams<PreparedStdio>> {
+) -> Result<Streams<PreparedStdio>> {
     Ok(Streams {
         stdin: prepare_stdio(specs.stdin, StandardStream::Input, transfer)?,
         stdout: prepare_stdio(specs.stdout, StandardStream::Output, transfer)?,
@@ -226,13 +274,15 @@ fn prepare_stdio(
     spec: Source<&Stdio>,
     stream: StandardStream,
     transfer: &mut HandleTransfer<'_>,
-) -> io::Result<PreparedStdio> {
+) -> Result<PreparedStdio> {
     match spec {
         Source::Inherit => prepare_inherit(stream, transfer),
         Source::Null => prepare_null(stream, transfer),
         Source::Piped => prepare_pipe(stream, transfer),
         Source::Configured(stdio) => match &stdio.inner {
             StdioInner::Inherit => prepare_inherit(stream, transfer),
+            StdioInner::CallerStdout => prepare_inherit(StandardStream::Output, transfer),
+            StdioInner::CallerStderr => prepare_inherit(StandardStream::Error, transfer),
             StdioInner::Null => prepare_null(stream, transfer),
             StdioInner::Piped => prepare_pipe(stream, transfer),
             StdioInner::Owned(handle) => Ok(PreparedStdio {
@@ -246,8 +296,13 @@ fn prepare_stdio(
 fn prepare_inherit(
     stream: StandardStream,
     transfer: &mut HandleTransfer<'_>,
-) -> io::Result<PreparedStdio> {
-    match sys::standard_handle(stream)? {
+) -> Result<PreparedStdio> {
+    let standard = windows(
+        Phase::Preparation,
+        Operation::GetStandardHandle,
+        sys::standard_handle(stream),
+    )?;
+    match standard {
         Some(handle) => Ok(PreparedStdio {
             child: transfer.lower(handle.as_handle())?,
             parent: None,
@@ -262,12 +317,16 @@ fn prepare_inherit(
 fn prepare_null(
     stream: StandardStream,
     transfer: &mut HandleTransfer<'_>,
-) -> io::Result<PreparedStdio> {
+) -> Result<PreparedStdio> {
     let access = match stream {
         StandardStream::Input => NullAccess::Read,
         StandardStream::Output | StandardStream::Error => NullAccess::Write,
     };
-    let handle = sys::null_handle(access)?;
+    let handle = windows(
+        Phase::Preparation,
+        Operation::OpenNullDevice,
+        sys::null_handle(access),
+    )?;
     Ok(PreparedStdio {
         child: transfer.lower(handle.as_handle())?,
         parent: None,
@@ -277,8 +336,12 @@ fn prepare_null(
 fn prepare_pipe(
     stream: StandardStream,
     transfer: &mut HandleTransfer<'_>,
-) -> io::Result<PreparedStdio> {
-    let pipe = sys::create_pipe(!matches!(stream, StandardStream::Input))?;
+) -> Result<PreparedStdio> {
+    let pipe = windows(
+        Phase::Preparation,
+        Operation::CreatePipe,
+        sys::create_pipe(!matches!(stream, StandardStream::Input)),
+    )?;
     let child = transfer.lower(pipe.child.as_handle())?;
     Ok(PreparedStdio {
         child,
@@ -303,20 +366,40 @@ impl<'a> HandleTransfer<'a> {
         }
     }
 
-    fn lower(&mut self, source: BorrowedHandle<'_>) -> io::Result<isize> {
+    fn lower(&mut self, source: BorrowedHandle<'_>) -> Result<isize> {
         let value = if let Some(parent) = self.parent {
-            let handle = sys::duplicate_remote(source, parent, true)?;
+            let handle = windows(
+                Phase::Preparation,
+                Operation::DuplicateRemoteHandle,
+                sys::duplicate_remote(source, parent, true),
+            )?;
             let value = handle.value();
             self.remote.push(handle);
             value
         } else {
-            let handle = sys::duplicate_local(source, true)?;
+            let handle = windows(
+                Phase::Preparation,
+                Operation::DuplicateLocalHandle,
+                sys::duplicate_local(source, true),
+            )?;
             let value = sys::handle_value(handle.as_raw_handle());
             self.local.push(handle);
             value
         };
         self.inherited.push(value);
         Ok(value)
+    }
+
+    /// Closes every duplicate, recording each failure: the child holds its own copies once created, and none if the creation failed.
+    fn reclaim(self, releases: &mut Releases) {
+        for remote in self.remote {
+            releases.record(
+                Phase::Reclamation,
+                Operation::ReclaimRemoteHandle,
+                remote.close(),
+            );
+        }
+        drop(self.local);
     }
 
     const fn parent(&self) -> Option<BorrowedHandle<'a>> {
@@ -364,10 +447,16 @@ impl PartialEq for EnvKey {
 
 impl Eq for EnvKey {}
 
-fn build_environment(
-    command: &Command,
-    transfer: &mut HandleTransfer<'_>,
-) -> io::Result<Environment> {
+/// The caller's environment, read for a child that starts from it.
+fn caller_environment() -> Result<Vec<(OsString, OsString)>> {
+    windows(
+        Phase::Preparation,
+        Operation::ReadEnvironment,
+        sys::environment_strings(),
+    )
+}
+
+fn build_environment(command: &Command, transfer: &mut HandleTransfer<'_>) -> Result<Environment> {
     if !command.env_clear && command.env_ops.is_empty() {
         return Ok(Environment {
             block: None,
@@ -377,7 +466,7 @@ fn build_environment(
 
     let mut map: BTreeMap<EnvKey, OsString> = BTreeMap::new();
     if !command.env_clear {
-        for (key, value) in sys::environment_strings()? {
+        for (key, value) in caller_environment()? {
             map.insert(EnvKey::new(&key), value);
         }
     }
@@ -421,14 +510,14 @@ fn build_environment(
 /// Returns the `PATH` that [`build_environment`] would produce, without lowering handles.
 ///
 /// A `PATH` that a later operation replaces or removes does not matter, so only a final value set from a handle, which exists only inside a spawn, is an error.
-fn child_path(command: &Command) -> io::Result<Option<OsString>> {
+fn child_path(command: &Command) -> Result<Option<OsString>> {
     if !command.env_clear && command.env_ops.is_empty() {
         return Ok(None);
     }
     let path_key = EnvKey::new(OsStr::new("PATH"));
-    let mut path: Option<Result<OsString, ()>> = None;
+    let mut path: Option<std::result::Result<OsString, ()>> = None;
     if !command.env_clear {
-        for (key, value) in sys::environment_strings()? {
+        for (key, value) in caller_environment()? {
             if EnvKey::new(&key) == path_key {
                 path = Some(Ok(value));
             }
@@ -452,15 +541,14 @@ fn child_path(command: &Command) -> io::Result<Option<OsString>> {
         }
     }
     path.transpose().map_err(|()| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "a PATH set from a handle has a value only inside a spawn",
-        )
+        SpawnError::from(ValidationError::HandleNeedsSpawn {
+            field: InputField::EnvironmentValue,
+        })
     })
 }
 
 /// Implements [`Command::to_command_line`].
-pub(crate) fn broker_command_line(command: &Command) -> io::Result<OsString> {
+pub(crate) fn broker_command_line(command: &Command) -> Result<OsString> {
     validate_command(command)?;
     let mut arguments = Vec::new();
     for argument in &command.args {
@@ -469,32 +557,28 @@ pub(crate) fn broker_command_line(command: &Command) -> io::Result<OsString> {
             Arg::Text(text) => append_argument(&mut arguments, &wide(text)),
             Arg::Raw(text) => arguments.extend(text.encode_wide()),
             Arg::Handle(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "a handle argument has a value only inside a spawn",
-                ))
+                return Err(ValidationError::HandleNeedsSpawn {
+                    field: InputField::Argument,
+                }
+                .into())
             }
         }
     }
     let path = child_path(command)?;
-    let application = resolve_executable(&command.program, path.as_deref())?;
-    let absolute = sys::full_path(&application)?;
+    let resolve = |outcome| windows(Phase::Preparation, Operation::ResolveExecutable, outcome);
+    let application = resolve(resolve_executable(&command.program, path.as_deref()))?;
+    let absolute = resolve(sys::full_path(&application))?;
     if absolute.contains(&QUOTE) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "resolved program path contains a double quote",
-        ));
+        return Err(ValidationError::QuotedProgram.into());
     }
     let mut line = Vec::new();
     append_program(&mut line, &absolute);
     line.extend(arguments);
+    fits(line.len())?;
     Ok(OsString::from_wide(&line))
 }
 
-fn build_command_line(
-    command: &Command,
-    transfer: &mut HandleTransfer<'_>,
-) -> io::Result<Vec<u16>> {
+fn build_command_line(command: &Command, transfer: &mut HandleTransfer<'_>) -> Result<Vec<u16>> {
     let mut result = Vec::new();
     append_program(&mut result, &wide(&command.program));
     for argument in &command.args {
@@ -508,8 +592,23 @@ fn build_command_line(
             }
         }
     }
+    fits(result.len())?;
     result.push(NUL);
     Ok(result)
+}
+
+/// Types the outcome of building the attribute list.
+fn configure<T>(outcome: io::Result<T>) -> Result<T> {
+    windows(Phase::Preparation, Operation::ConfigureAttributes, outcome)
+}
+
+/// Rejects a command line of `units` UTF-16 units, before its terminator, that `CreateProcessW` would refuse.
+fn fits(units: usize) -> Result<()> {
+    if units < COMMAND_LINE_CAPACITY {
+        Ok(())
+    } else {
+        Err(ValidationError::CommandLineTooLong.into())
+    }
 }
 
 fn wide(text: &OsStr) -> Vec<u16> {
@@ -852,6 +951,33 @@ mod tests {
     }
 
     #[test]
+    fn a_command_line_longer_than_create_process_accepts_is_rejected() {
+        let line = |filler: usize| {
+            let mut command = Command::new("cmd.exe");
+            command.raw_arg("x".repeat(filler));
+            let built = build_command_line(&command, &mut HandleTransfer::new(None));
+            (command, built)
+        };
+        let base = line(0).1.unwrap().len();
+        let largest = COMMAND_LINE_CAPACITY.checked_sub(base).unwrap();
+        assert_eq!(line(largest).1.unwrap().len(), COMMAND_LINE_CAPACITY);
+
+        let (mut oversized, built) = line(largest.checked_add(1).unwrap());
+        assert!(matches!(
+            built,
+            Err(SpawnError::Validation(ValidationError::CommandLineTooLong))
+        ));
+        assert!(matches!(
+            oversized.spawn(),
+            Err(SpawnError::Validation(ValidationError::CommandLineTooLong))
+        ));
+        assert!(matches!(
+            broker_command_line(&oversized),
+            Err(SpawnError::Validation(ValidationError::CommandLineTooLong))
+        ));
+    }
+
+    #[test]
     fn broker_command_line_makes_a_relative_program_absolute() {
         let command = Command::new(r"nested\tool.exe");
         let expected = env::current_dir().unwrap().join(r"nested\tool.exe");
@@ -871,11 +997,25 @@ mod tests {
         handle_path.env_handle("Path", &file).unwrap();
         let mut batch = Command::new("script.cmd");
         batch.arg("value");
-        for command in [handle_argument, handle_path, batch] {
-            assert_eq!(
-                broker_command_line(&command).unwrap_err().kind(),
-                io::ErrorKind::InvalidInput
-            );
+        for (command, expected) in [
+            (
+                handle_argument,
+                ValidationError::HandleNeedsSpawn {
+                    field: InputField::Argument,
+                },
+            ),
+            (
+                handle_path,
+                ValidationError::HandleNeedsSpawn {
+                    field: InputField::EnvironmentValue,
+                },
+            ),
+            (batch, ValidationError::BatchFile),
+        ] {
+            assert!(matches!(
+                broker_command_line(&command),
+                Err(SpawnError::Validation(error)) if error == expected
+            ));
         }
 
         let mut other_handle = Command::new("cmd.exe");
@@ -886,10 +1026,11 @@ mod tests {
 
         let mut missing = Command::new("windows-spawn-missing-program");
         missing.env_clear();
-        assert_eq!(
-            broker_command_line(&missing).unwrap_err().kind(),
-            io::ErrorKind::NotFound
-        );
+        let Err(SpawnError::Windows(not_found)) = broker_command_line(&missing) else {
+            panic!("a missing program is a failed search");
+        };
+        assert_eq!(not_found.operation(), Operation::ResolveExecutable);
+        assert_eq!(not_found.io_error().kind(), io::ErrorKind::NotFound);
     }
 
     #[test]
@@ -1037,14 +1178,13 @@ mod tests {
     }
 
     #[test]
-    fn uncommitted_running_transaction_rolls_back() {
-        let (gate_reader, gate_writer) = pipe();
+    fn uncommitted_running_transaction_rolls_back_before_the_child_runs() {
         let (ready_reader, ready_writer) = pipe();
         let mut command = Command::new("cmd.exe");
         command
             .args(["/D", "/S", "/C"])
-            .raw_arg("echo r&set /p x=&exit 77")
-            .stdin(Stdio::from(gate_reader))
+            .raw_arg("echo r&exit 77")
+            .stdin(Stdio::null())
             .stdout(Stdio::from(ready_writer))
             .stderr(Stdio::null());
         let plan = SpawnPlan::new_running(
@@ -1058,22 +1198,20 @@ mod tests {
         let mut process = ProcessExitGuard::watch(created.process.as_handle());
         assert_eq!(
             suspend_count(created.thread.as_handle()),
-            0,
-            "a running spawn must not start suspended"
+            1,
+            "a running spawn stays suspended until its commit"
         );
         drop(plan);
         drop(command);
-
-        let mut ready = [0_u8; 1];
-        File::from(ready_reader).read_exact(&mut ready).unwrap();
-        assert_eq!(&ready, b"r");
         drop(transaction);
-        drop(gate_writer);
         assert_eq!(
             process.exit_code(),
             1,
-            "rollback did not terminate its running process"
+            "rollback did not terminate its process"
         );
+        let mut ran = Vec::new();
+        File::from(ready_reader).read_to_end(&mut ran).unwrap();
+        assert!(ran.is_empty(), "the rolled-back process ran");
     }
 
     #[test]

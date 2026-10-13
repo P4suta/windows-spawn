@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 use std::ffi::{c_void, OsString};
 use std::io;
-use std::mem::{size_of, size_of_val};
+use std::mem::{size_of, size_of_val, ManuallyDrop};
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
 use std::process::ExitStatus;
@@ -11,8 +11,8 @@ use std::ptr;
 
 use windows_sys::Win32::Foundation::{
     DuplicateHandle, DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, ERROR_BROKEN_PIPE,
-    ERROR_HANDLE_EOF, ERROR_INSUFFICIENT_BUFFER, GENERIC_READ, GENERIC_WRITE, HANDLE,
-    INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    ERROR_HANDLE_EOF, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, ERROR_MORE_DATA,
+    GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Globalization::{
     CompareStringOrdinal, CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN,
@@ -27,9 +27,10 @@ use windows_sys::Win32::System::Console::{
 };
 use windows_sys::Win32::System::Environment::{FreeEnvironmentStringsW, GetEnvironmentStringsW};
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JobObjectBasicProcessIdList,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
@@ -38,14 +39,16 @@ use windows_sys::Win32::System::Threading::{
     GetProcessId, InitializeProcThreadAttributeList, OpenProcess, ResumeThread, TerminateProcess,
     UpdateProcThreadAttribute, WaitForSingleObject, INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST,
     PROCESS_CREATE_PROCESS, PROCESS_DUP_HANDLE, PROCESS_INFORMATION,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
-    PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS,
-    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+    PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
 };
 
 use crate::domain::attribute_rules::{self, SizeFault};
-use crate::domain::creation_flag_rules::creation_word;
+use crate::domain::creation_flag_rules::{creation_word, ConsoleFlag, PriorityFlag};
 use crate::domain::environment_rules;
+use crate::handles::BorrowedPseudoConsole;
 
 pub(crate) const INVALID_RAW_HANDLE: isize = -1;
 
@@ -144,20 +147,33 @@ impl RemoteHandle<'_> {
     pub(crate) fn value(&self) -> isize {
         handle_value(self.value)
     }
-}
 
-/// Moves the remote value back with close-source duplication and closes the local copy.
-impl Drop for RemoteHandle<'_> {
-    fn drop(&mut self) {
+    /// Closes the remote value and reports a failure, which the drop would discard.
+    pub(crate) fn close(self) -> io::Result<()> {
+        ManuallyDrop::new(self).reclaim()
+    }
+
+    /// Moves the remote value back with close-source duplication and closes the local copy.
+    fn reclaim(&self) -> io::Result<()> {
+        #[cfg(test)]
+        fault::check(fault::Call::ReclaimRemote)?;
         // SAFETY: `GetCurrentProcess` cannot fail and returns a pseudo-handle that stays valid and is never closed.
         let current = unsafe { GetCurrentProcess() };
-        drop(duplicate_between(
+        duplicate_between(
             raw(self.process),
             self.value,
             current,
             false,
             DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE,
-        ));
+        )
+        .map(drop)
+    }
+}
+
+/// Closes a remote value that no explicit close reached.
+impl Drop for RemoteHandle<'_> {
+    fn drop(&mut self) {
+        drop(self.reclaim());
     }
 }
 
@@ -363,6 +379,93 @@ pub(crate) fn terminate_job(job: BorrowedHandle<'_>, exit_code: u32) -> io::Resu
     bool_result(unsafe { TerminateJobObject(raw(job), exit_code) })
 }
 
+/// The `usize` slots of the two-`DWORD` header that `JOBOBJECT_BASIC_PROCESS_ID_LIST` puts before its identifiers.
+const PROCESS_ID_LIST_HEADER: usize = size_of::<[u32; 2]>() / size_of::<usize>();
+/// The identifiers the first query has room for.
+const PROCESS_ID_LIST_ROOM: usize = 16;
+/// The factor by which the room grows when processes joined the Job between two queries.
+const PROCESS_ID_LIST_GROWTH: usize = 2;
+
+const _: () = assert!(
+    size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>()
+        == size_of::<usize>() * (PROCESS_ID_LIST_HEADER + 1),
+    "the identifiers of JOBOBJECT_BASIC_PROCESS_ID_LIST follow the header slots"
+);
+
+/// The identifiers of the Job's processes whose exit the Job hasn't recorded.
+///
+/// A process leaves the list before its handle is signaled, so an empty list means that no process of the Job still runs.
+pub(crate) fn job_process_ids(job: BorrowedHandle<'_>) -> io::Result<Vec<usize>> {
+    #[cfg(test)]
+    fault::check(fault::Call::ListJob)?;
+    let mut room = PROCESS_ID_LIST_ROOM;
+    loop {
+        let mut buffer = vec![0_usize; PROCESS_ID_LIST_HEADER.saturating_add(room)];
+        let bytes = u32::try_from(size_of_val(buffer.as_slice()))
+            .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
+        // SAFETY: `buffer` is writable for `bytes` bytes and aligned for JOBOBJECT_BASIC_PROCESS_ID_LIST, and the returned-size pointer is null.
+        let listed = unsafe {
+            QueryInformationJobObject(
+                raw(job),
+                JobObjectBasicProcessIdList,
+                buffer.as_mut_ptr().cast(),
+                bytes,
+                ptr::null_mut(),
+            )
+        };
+        let failure = (listed == 0).then(io::Error::last_os_error);
+        // SAFETY: `buffer` holds at least one JOBOBJECT_BASIC_PROCESS_ID_LIST, whose header the query wrote or left zero.
+        let header = unsafe {
+            buffer
+                .as_ptr()
+                .cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>()
+                .read()
+        };
+        match failure {
+            None => {
+                return Ok(buffer
+                    .into_iter()
+                    .skip(PROCESS_ID_LIST_HEADER)
+                    .take(widen(header.NumberOfProcessIdsInList))
+                    .collect());
+            }
+            Some(error) if is_win32_error(&error, ERROR_MORE_DATA) => {
+                room = widen(header.NumberOfAssignedProcesses)
+                    .max(room.saturating_mul(PROCESS_ID_LIST_GROWTH));
+            }
+            Some(error) => return Err(error),
+        }
+    }
+}
+
+/// Opens a process of the Job to wait for it, or returns `None` if it has exited or its identifier now names a process outside the Job.
+pub(crate) fn open_job_process(
+    id: usize,
+    job: BorrowedHandle<'_>,
+) -> io::Result<Option<OwnedHandle>> {
+    #[cfg(test)]
+    fault::check(fault::Call::OpenJobProcess)?;
+    let id =
+        u32::try_from(id).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    // SAFETY: OpenProcess has no pointer preconditions.
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            id,
+        )
+    };
+    let process = match owned(handle) {
+        Ok(process) => process,
+        Err(error) if is_win32_error(&error, ERROR_INVALID_PARAMETER) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut member = 0;
+    // SAFETY: both handles are valid for the query and `member` is writable.
+    bool_result(unsafe { IsProcessInJob(process.as_raw_handle(), raw(job), &mut member) })?;
+    Ok((member != 0).then_some(process))
+}
+
 pub(crate) struct AttributeList {
     storage: Box<[usize]>,
 }
@@ -443,10 +546,13 @@ impl AttributeList {
     }
 
     /// Unlike the other attributes, `lpValue` is the `HPCON` value itself, not its address.
-    pub(crate) fn set_pseudoconsole(&mut self, pseudoconsole: isize) -> io::Result<()> {
+    pub(crate) fn set_pseudoconsole(
+        &mut self,
+        pseudoconsole: BorrowedPseudoConsole<'_>,
+    ) -> io::Result<()> {
         self.update(
             PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-            handle_from_value(pseudoconsole).cast_const(),
+            handle_from_value(pseudoconsole.as_raw()).cast_const(),
             size_of::<isize>(),
         )
     }
@@ -488,6 +594,23 @@ impl Drop for AttributeList {
     }
 }
 
+impl BorrowedPseudoConsole<'_> {
+    /// Borrows a raw `HPCON`, for the lifetime the caller chooses.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be a pseudoconsole that `CreatePseudoConsole` returned, and it must stay open for as long as the result lives.
+    /// Zero is never one, and `ClosePseudoConsole` ends one.
+    /// `CreateProcessW` reads the pseudoconsole behind the value, so a value that breaks this is undefined behavior.
+    #[must_use]
+    pub const unsafe fn borrow_raw(raw: isize) -> Self {
+        Self {
+            raw,
+            owner: std::marker::PhantomData,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct StandardHandles {
     pub(crate) stdin: isize,
@@ -508,8 +631,10 @@ pub(crate) struct ProcessRequest<'a> {
     pub(crate) current_dir: Option<&'a [u16]>,
     pub(crate) stdio: StartupStdio,
     pub(crate) inherit_handles: bool,
-    pub(crate) creation_flags: u32,
-    pub(crate) suspended: bool,
+    /// The policy flags the command chose.
+    pub(crate) policy: u32,
+    pub(crate) console: ConsoleFlag,
+    pub(crate) priority: PriorityFlag,
     pub(crate) attributes: Option<&'a AttributeList>,
 }
 
@@ -519,6 +644,7 @@ pub(crate) struct CreatedProcess {
     pub(crate) pid: u32,
 }
 
+/// Creates the process suspended, so the caller releases its temporary resources before the main thread runs.
 pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<CreatedProcess> {
     #[cfg(test)]
     fault::check(fault::Call::CreateProcess)?;
@@ -531,9 +657,10 @@ pub(crate) fn create_process(request: &mut ProcessRequest<'_>) -> io::Result<Cre
     }
     set_standard_handles(&mut startup, request.stdio);
     let flags = creation_word(
-        request.creation_flags,
+        request.policy,
+        request.console,
+        request.priority,
         request.attributes.is_some(),
-        request.suspended,
     );
     let environment = request
         .environment
@@ -616,6 +743,7 @@ pub(crate) mod fault {
     pub(crate) enum Call {
         DuplicateLocal,
         DuplicateRemote,
+        ReclaimRemote,
         StandardHandle,
         NullHandle,
         CreatePipe,
@@ -626,6 +754,8 @@ pub(crate) mod fault {
         SetJob,
         AssignJob,
         TerminateJob,
+        ListJob,
+        OpenJobProcess,
         AttributeList,
         AllocateAttributes,
         UpdateAttribute,
@@ -964,20 +1094,20 @@ pub(crate) mod test_support {
         }
     }
 
-    // SAFETY: TestConsole owns a live HPCON for every borrow and keeps ownership.
-    unsafe impl crate::AsPseudoConsole for TestConsole {
-        fn raw_pseudoconsole(&self) -> isize {
-            self.value
+    impl crate::AsPseudoConsole for TestConsole {
+        fn as_pseudo_console(&self) -> crate::BorrowedPseudoConsole<'_> {
+            // SAFETY: TestConsole owns the HPCON CreatePseudoConsole returned until it drops, which the borrow of `self` outlives.
+            unsafe { crate::BorrowedPseudoConsole::borrow_raw(self.value) }
         }
     }
 
     /// A pseudoconsole value that a test changes after lending it, to show that options read it once.
     pub(crate) struct ChangingPseudoConsole(pub(crate) Cell<isize>);
 
-    // SAFETY: only the snapshot test of `SpawnOptions::pseudoconsole` lends it, and that test never spawns, so the value never reaches Win32.
-    unsafe impl crate::AsPseudoConsole for ChangingPseudoConsole {
-        fn raw_pseudoconsole(&self) -> isize {
-            self.0.get()
+    impl crate::AsPseudoConsole for ChangingPseudoConsole {
+        fn as_pseudo_console(&self) -> crate::BorrowedPseudoConsole<'_> {
+            // SAFETY: only the snapshot test of `SpawnOptions::pseudo_console` lends it, and that test never spawns, so the value never reaches Win32.
+            unsafe { crate::BorrowedPseudoConsole::borrow_raw(self.0.get()) }
         }
     }
 }
@@ -1327,7 +1457,9 @@ mod tests {
         drop(attributes);
 
         let mut pseudoconsole = AttributeList::new(1)?;
-        drop(pseudoconsole.set_pseudoconsole(1));
+        // SAFETY: UpdateProcThreadAttribute stores the value without reading the pseudoconsole, and no process is created from this list.
+        let unread = unsafe { BorrowedPseudoConsole::borrow_raw(1) };
+        drop(pseudoconsole.set_pseudoconsole(unread));
         drop(pseudoconsole);
         assert!(ATTRIBUTE_LIST_DROPS.load(std::sync::atomic::Ordering::Relaxed) > drops_before);
 

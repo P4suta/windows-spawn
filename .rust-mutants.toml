@@ -28,7 +28,7 @@ outcome = "survived"
 
 [[mutation.expect]]
 path = "src/sys.rs"
-item = "<RemoteHandle as Drop>::drop"
+item = "RemoteHandle::reclaim"
 rule = "false-to-true"
 original = "false"
 reason = "Equivalence: the local copy closes as the call returns; its inheritability matters only to a concurrent broad-inheritance spawn (ADR 0005)."
@@ -60,7 +60,7 @@ outcome = "survived"
 
 [[mutation.expect]]
 path = "src/transaction.rs"
-item = "SpawnTransaction::new"
+item = "SpawnTransaction::create"
 rule = "condition-to-false"
 original = "attribute_count == 0"
 reason = "Equivalence: CreateProcessW accepts an empty attribute list."
@@ -94,20 +94,20 @@ outcome = "survived"
 
 [[mutation.skip]]
 path = "src/sys.rs"
-lines = "1006-1006"
+lines = "1210-1210"
 reason = "Unreachable: GetEnvironmentStringsW returns null only when out of memory."
 
 [[mutation.skip]]
 path = "src/sys.rs"
-lines = "1015-1015"
+lines = "1219-1219"
 reason = "Hang-only: continuing past the block terminator loops forever."
 
 [[mutation.skip]]
 path = "src/transaction.rs"
-lines = "484-487"
+lines = "572-572"
 reason = "Unreachable: GetFullPathNameW cannot return a double quote."
 
 [[mutation.skip]]
 path = "src/transaction.rs"
-lines = "101-101"
+lines = "127-131"
 reason = "Unreachable: wide_nul fails only on an interior NUL, which validate_command rejects first; rejects_every_malformed_text_component holds it."

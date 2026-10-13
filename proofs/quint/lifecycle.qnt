@@ -4,16 +4,16 @@
 
 /// The lifecycle of one spawned process through the public API of windows-spawn:
 /// `spawn_suspended` and `spawn_with`, `SuspendedChild::resume` and its drop,
-/// `Child::wait`, `try_wait`, `kill`, and its drop under each `DropPolicy`.
+/// `Child::wait`, `try_wait`, `kill`, and its drop, with and without `Command::own_process_tree`.
 ///
 /// Each action is one API call or one event of the process, and `outcome` is what the call returned.
-/// `tests/lifecycle_traces.rs` replays traces of this model against the crate on Windows,
+/// `tests/lifecycle` replays traces of this model against the crate on Windows,
 /// and after every step requires the call's result and the process's real state to match.
 module lifecycle {
   /// The exit codes the probe process chooses for itself when the test lets it go.
   pure val CODES = Set(0, 3, 77)
 
-  /// The exit code `TerminateProcess` gets from `Child::kill` and from dropping a `SuspendedChild`.
+  /// The exit code that `Child::kill` and a dropped `SuspendedChild` give the process.
   pure val TERMINATED = 1
 
   /// The exit code another process gives the probe when it terminates the probe from outside the crate.
@@ -22,7 +22,8 @@ module lifecycle {
   /// The most extra suspensions a trace stacks on the primary thread.
   pure val EXTRA_SUSPENSIONS = 2
 
-  type Policy = Detach | KillTree
+  /// Whether the command chose `Command::own_process_tree`.
+  type Policy = Unowned | OwnsTree
 
   /// Which wrapper owns the process handle.
   type Owner = Suspended | Owned | Dropped
@@ -41,7 +42,6 @@ module lifecycle {
     | InvalidData
     | Status(int)
     | NoStatus
-    | Denied
 
   var policy: Policy
   var owner: Owner
@@ -63,7 +63,7 @@ module lifecycle {
   }
 
   action init = {
-    nondet chosen = Set(Detach, KillTree).oneOf()
+    nondet chosen = Set(Unowned, OwnsTree).oneOf()
     nondet suspended = Set(true, false).oneOf()
     all {
       policy' = chosen,
@@ -176,27 +176,23 @@ module lifecycle {
     suspensions' = suspensions,
   }
 
-  /// `kill` terminates a running process, does nothing after an observed exit,
-  /// and returns the error of `TerminateProcess` for an exit nobody observed.
+  /// `kill` terminates a running process, under `OwnsTree` through its private Job,
+  /// and returns `Ok` once the process has exited, whether or not a call observed the exit, as `std` does.
   action kill = all {
     owner == Owned,
-    match cache {
-      | Seen(_) => all { outcome' = Done, process' = process }
-      | Unseen =>
-        if (process == Running) all { outcome' = Done, process' = Exited(TERMINATED) }
-        else all { outcome' = Denied, process' = process }
-    },
+    outcome' = Done,
+    process' = if (process == Running) Exited(TERMINATED) else process,
     policy' = policy,
     owner' = owner,
     suspensions' = suspensions,
     cache' = cache,
   }
 
-  /// Dropping a `Child` detaches by default; under `KillTree` its private Job ends the process.
+  /// Dropping a `Child` leaves its process running; under `OwnsTree` closing its private Job ends the process.
   action dropChild = all {
     owner == Owned,
     owner' = Dropped,
-    process' = if (process == Running and policy == KillTree) Killed else process,
+    process' = if (process == Running and policy == OwnsTree) Killed else process,
     outcome' = Done,
     policy' = policy,
     suspensions' = suspensions,
@@ -227,9 +223,9 @@ module lifecycle {
   /// A refused resume leaves no process running.
   val refusedResumeTerminates = outcome == InvalidData implies exited(process)
 
-  /// A dropped `KillTree` child leaves no process running.
-  val killTreeLeavesNothing =
-    (owner == Dropped and policy == KillTree) implies exited(process)
+  /// A child dropped under `OwnsTree` leaves no process running.
+  val killedTreeLeavesNothing =
+    (owner == Dropped and policy == OwnsTree) implies exited(process)
 
   /// `try_wait` and `wait` report a status only once the process has exited.
   val statusOnlyAfterExit = match outcome {
@@ -241,7 +237,7 @@ module lifecycle {
     suspendedIsPaused,
     cacheIsTrue,
     refusedResumeTerminates,
-    killTreeLeavesNothing,
+    killedTreeLeavesNothing,
     statusOnlyAfterExit,
     suspensions >= 0,
   }
@@ -251,13 +247,13 @@ module lifecycle {
 
   /// The values each variable can take.
   val typeOK = and {
-    policy.in(Set(Detach, KillTree)),
+    policy.in(Set(Unowned, OwnsTree)),
     owner.in(Set(Suspended, Owned, Dropped)),
     process.in(Set(Paused, Running, Killed).union(ALL_CODES.map(c => Exited(c)))),
     suspensions.in(0.to(EXTRA_SUSPENSIONS + 1)),
     cache.in(Set(Unseen).union(ALL_CODES.map(c => Seen(c)))),
     outcome.in(
-      Set(Started, Done, Resumed, InvalidData, NoStatus, Denied).union(ALL_CODES.map(c => Status(c)))
+      Set(Started, Done, Resumed, InvalidData, NoStatus).union(ALL_CODES.map(c => Status(c)))
     ),
   }
 
@@ -268,15 +264,14 @@ module lifecycle {
     owner == Suspended implies suspensions >= 1,
     owner == Owned implies suspensions == 0,
     process == Paused implies owner == Suspended,
-    process == Killed implies (owner == Dropped and policy == KillTree),
+    process == Killed implies (owner == Dropped and policy == OwnsTree),
   }
 
-  /// A false claim the bounded check must refute: `kill` fails after an exit nobody observed.
-  val killNeverFails = outcome != Denied
+  /// A false claim the bounded check must refute: dropping a `Child` ends its process, which only `OwnsTree` promises.
+  val droppingEndsTheProcess = owner == Dropped implies exited(process)
 
   /// Traces reach every outcome; `quint run --witnesses` counts the traces that do.
   val reachesRefusedResume = outcome == InvalidData
-  val reachesDeniedKill = outcome == Denied
   val reachesCachedStatus = match outcome {
     | Status(c) => cache == Seen(c)
     | _ => false

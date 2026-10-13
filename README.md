@@ -2,10 +2,11 @@
 
 [![CI](https://github.com/P4suta/windows-spawn/actions/workflows/ci.yml/badge.svg)](https://github.com/P4suta/windows-spawn/actions/workflows/ci.yml)
 
-Windows process creation with explicit handle transfer, ordered Job attachment, mitigation policies, ConPTY, and suspended inspection.
+Windows process creation with the API of `std::process::Command`, plus what `CreateProcessW` offers beyond it:
+process trees that end with their owner, Jobs, pseudoconsoles, handle handoff, suspended inspection, alternate parents, priority classes, and mitigation policies.
 
 Use `std::process::Command` for portable child processes.
-Use this crate when `CreateProcessW` features need explicit ownership and rollback.
+Use this crate when a Windows program needs one of these, or a spawn that passes the child no stray handle and releases everything when a step fails.
 
 Requires Windows 10 version 1809 or later and Rust 1.75 or later.
 Non-Windows targets expose no API.
@@ -20,22 +21,26 @@ cargo add windows-spawn
 
 ## Example
 
+Run a tool, collect its output, and end every process it started:
+
 ```rust
-use windows_spawn::{Command, DropPolicy, SpawnOptions};
+use windows_spawn::Command;
 
-let mut command = Command::new(r"C:\Windows\System32\cmd.exe");
-command.args(["/D", "/S", "/C"]).raw_arg("echo hello");
-
-let output = command.output_with(
-    SpawnOptions::new().drop_policy(DropPolicy::KillTree),
-)?;
+let output = Command::new("cmd.exe")
+    .args(["/D", "/C", "echo hello"])
+    .own_process_tree()
+    .output()?;
 assert!(output.status.success());
-# Ok::<(), std::io::Error>(())
+# Ok::<(), windows_spawn::SpawnError>(())
 ```
+
+The crate documentation leads with one example for each common task:
+ending a process tree, running a console tool from a GUI program, running a batch script, attaching a pseudoconsole, and more.
 
 ## Documentation
 
-- [API and contracts](https://docs.rs/windows-spawn)
+- [API, common tasks, and contracts](https://docs.rs/windows-spawn)
+- [Migrating from 0.1](https://github.com/P4suta/windows-spawn/blob/main/docs/migration-0.2.md)
 - [Examples](https://github.com/P4suta/windows-spawn/tree/main/examples)
 - [Architecture decisions](https://github.com/P4suta/windows-spawn/tree/main/docs/adr)
 - [Verification layers](https://github.com/P4suta/windows-spawn/blob/main/proofs/README.md)

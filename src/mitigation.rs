@@ -1,5 +1,38 @@
 //! Typed process-creation mitigation policy encoding.
 
+/// The legacy one-bit DEP state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+#[repr(u64)]
+pub enum Dep {
+    /// Leave DEP to the child executable and operating system.
+    Defer = 0,
+    /// Enable DEP.
+    Enable = 1,
+}
+
+/// The legacy one-bit DEP ATL-thunk-emulation state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+#[repr(u64)]
+pub enum AtlThunkEmulation {
+    /// Leave ATL thunk emulation to the child executable and operating system.
+    Defer = 0,
+    /// Emulate the ATL thunks that DEP would stop; Windows accepts it only with DEP enabled.
+    Enable = 1,
+}
+
+/// The legacy one-bit SEHOP state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+#[repr(u64)]
+pub enum Sehop {
+    /// Leave structured exception handler overwrite protection to the child executable and operating system.
+    Defer = 0,
+    /// Enable structured exception handler overwrite protection.
+    Enable = 1,
+}
+
 /// The ordinary two-bit mitigation states used by the Windows SDK.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
@@ -77,7 +110,7 @@ pub enum SignedBinaries {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
 #[repr(u64)]
-pub enum FontDisable {
+pub enum NonSystemFonts {
     /// Defer to the child.
     Defer = 0,
     /// Block non-system fonts.
@@ -199,6 +232,9 @@ macro_rules! policy_field {
     };
 }
 
+policy_field!(Dep { Defer => DEFER, Enable => ALWAYS_ON });
+policy_field!(AtlThunkEmulation { Defer => DEFER, Enable => ALWAYS_ON });
+policy_field!(Sehop { Defer => DEFER, Enable => ALWAYS_ON });
 policy_field!(Mitigation { Defer => DEFER, AlwaysOn => ALWAYS_ON, AlwaysOff => ALWAYS_OFF });
 policy_field!(RelocateImages {
     Defer => DEFER,
@@ -224,7 +260,7 @@ policy_field!(SignedBinaries {
     AlwaysOff => ALWAYS_OFF,
     MicrosoftAndStore => FOURTH_STATE,
 });
-policy_field!(FontDisable {
+policy_field!(NonSystemFonts {
     Defer => DEFER,
     Block => ALWAYS_ON,
     Allow => ALWAYS_OFF,
@@ -421,15 +457,6 @@ const LAYOUT: () = assert!(
     "mitigation fields fit their words and share no bit"
 );
 
-/// The one-bit value of a legacy flag.
-const fn flag(enable: bool) -> u64 {
-    if enable {
-        ONE_BIT
-    } else {
-        0
-    }
-}
-
 /// A complete SDK 10.0.22621 process-creation mitigation policy.
 ///
 /// Each setter replaces one field.
@@ -469,22 +496,22 @@ impl MitigationPolicy {
         Self { words }
     }
 
-    /// Enables or removes the legacy DEP-enable bit.
+    /// Sets the legacy DEP bit.
     #[must_use]
-    pub const fn dep(self, enable: bool) -> Self {
-        self.with(DEP, flag(enable))
+    pub const fn dep(self, value: Dep) -> Self {
+        self.with(DEP, value.bits())
     }
 
-    /// Enables or removes the legacy DEP ATL-thunk-emulation bit.
+    /// Sets the legacy DEP ATL-thunk-emulation bit.
     #[must_use]
-    pub const fn dep_atl_thunk(self, enable: bool) -> Self {
-        self.with(DEP_ATL_THUNK, flag(enable))
+    pub const fn dep_atl_thunk(self, value: AtlThunkEmulation) -> Self {
+        self.with(DEP_ATL_THUNK, value.bits())
     }
 
-    /// Enables or removes the legacy SEHOP bit.
+    /// Sets the legacy SEHOP bit.
     #[must_use]
-    pub const fn sehop(self, enable: bool) -> Self {
-        self.with(SEHOP, flag(enable))
+    pub const fn sehop(self, value: Sehop) -> Self {
+        self.with(SEHOP, value.bits())
     }
 
     /// Sets mandatory image relocation.
@@ -549,7 +576,7 @@ impl MitigationPolicy {
 
     /// Sets non-system-font policy.
     #[must_use]
-    pub const fn font_disable(self, value: FontDisable) -> Self {
+    pub const fn non_system_fonts(self, value: NonSystemFonts) -> Self {
         self.with(FONT_DISABLE, value.bits())
     }
 
@@ -664,13 +691,7 @@ mod proofs {
     ///
     /// Returns the result, the field the setter writes, and the value the caller passed, read from its declared discriminant.
     fn set(policy: MitigationPolicy, selector: usize) -> (MitigationPolicy, Field, u64) {
-        macro_rules! legacy {
-            ($setter:ident, $field:ident) => {{
-                let enable: bool = kani::any();
-                (policy.$setter(enable), $field, u64::from(enable))
-            }};
-        }
-        macro_rules! two_bit {
+        macro_rules! typed {
             ($setter:ident, $kind:ty, $field:ident) => {{
                 let value: $kind = kani::any();
                 assert_eq!(
@@ -682,69 +703,69 @@ mod proofs {
             }};
         }
         match selector {
-            0 => legacy!(dep, DEP),
-            1 => legacy!(dep_atl_thunk, DEP_ATL_THUNK),
-            2 => legacy!(sehop, SEHOP),
-            3 => two_bit!(relocate_images, RelocateImages, RELOCATE_IMAGES),
-            4 => two_bit!(heap_terminate, Mitigation, HEAP_TERMINATE),
-            5 => two_bit!(bottom_up_aslr, Mitigation, BOTTOM_UP_ASLR),
-            6 => two_bit!(high_entropy_aslr, Mitigation, HIGH_ENTROPY_ASLR),
-            7 => two_bit!(strict_handle_checks, Mitigation, STRICT_HANDLE_CHECKS),
-            8 => two_bit!(disable_win32k_system_calls, Mitigation, WIN32K_SYSTEM_CALLS),
-            9 => two_bit!(disable_extension_points, Mitigation, EXTENSION_POINTS),
-            10 => two_bit!(dynamic_code, DynamicCode, DYNAMIC_CODE),
-            11 => two_bit!(control_flow_guard, ControlFlowGuard, CONTROL_FLOW_GUARD),
-            12 => two_bit!(signed_binaries, SignedBinaries, SIGNED_BINARIES),
-            13 => two_bit!(font_disable, FontDisable, FONT_DISABLE),
-            14 => two_bit!(block_remote_images, Mitigation, REMOTE_IMAGES),
-            15 => two_bit!(block_low_label_images, Mitigation, LOW_LABEL_IMAGES),
-            16 => two_bit!(prefer_system32_images, Mitigation, PREFER_SYSTEM32_IMAGES),
-            17 => two_bit!(loader_integrity, LoaderIntegrity, LOADER_INTEGRITY),
-            18 => two_bit!(
+            0 => typed!(dep, Dep, DEP),
+            1 => typed!(dep_atl_thunk, AtlThunkEmulation, DEP_ATL_THUNK),
+            2 => typed!(sehop, Sehop, SEHOP),
+            3 => typed!(relocate_images, RelocateImages, RELOCATE_IMAGES),
+            4 => typed!(heap_terminate, Mitigation, HEAP_TERMINATE),
+            5 => typed!(bottom_up_aslr, Mitigation, BOTTOM_UP_ASLR),
+            6 => typed!(high_entropy_aslr, Mitigation, HIGH_ENTROPY_ASLR),
+            7 => typed!(strict_handle_checks, Mitigation, STRICT_HANDLE_CHECKS),
+            8 => typed!(disable_win32k_system_calls, Mitigation, WIN32K_SYSTEM_CALLS),
+            9 => typed!(disable_extension_points, Mitigation, EXTENSION_POINTS),
+            10 => typed!(dynamic_code, DynamicCode, DYNAMIC_CODE),
+            11 => typed!(control_flow_guard, ControlFlowGuard, CONTROL_FLOW_GUARD),
+            12 => typed!(signed_binaries, SignedBinaries, SIGNED_BINARIES),
+            13 => typed!(non_system_fonts, NonSystemFonts, FONT_DISABLE),
+            14 => typed!(block_remote_images, Mitigation, REMOTE_IMAGES),
+            15 => typed!(block_low_label_images, Mitigation, LOW_LABEL_IMAGES),
+            16 => typed!(prefer_system32_images, Mitigation, PREFER_SYSTEM32_IMAGES),
+            17 => typed!(loader_integrity, LoaderIntegrity, LOADER_INTEGRITY),
+            18 => typed!(
                 strict_control_flow_guard,
                 Mitigation,
                 STRICT_CONTROL_FLOW_GUARD
             ),
-            19 => two_bit!(module_tampering, ModuleTampering, MODULE_TAMPERING),
-            20 => two_bit!(
+            19 => typed!(module_tampering, ModuleTampering, MODULE_TAMPERING),
+            20 => typed!(
                 restrict_indirect_branch_prediction,
                 Mitigation,
                 INDIRECT_BRANCH_PREDICTION
             ),
-            21 => two_bit!(
+            21 => typed!(
                 allow_downgrade_dynamic_code,
                 Mitigation,
                 DYNAMIC_CODE_DOWNGRADE
             ),
-            22 => two_bit!(
+            22 => typed!(
                 disable_speculative_store_bypass,
                 Mitigation,
                 SPECULATIVE_STORE_BYPASS
             ),
-            23 => two_bit!(cet_user_shadow_stacks, CetShadowStacks, CET_SHADOW_STACKS),
-            24 => two_bit!(
+            23 => typed!(cet_user_shadow_stacks, CetShadowStacks, CET_SHADOW_STACKS),
+            24 => typed!(
                 user_cet_context_ip_validation,
                 UserCetContextIpValidation,
                 CET_CONTEXT_IP_VALIDATION
             ),
-            25 => two_bit!(
+            25 => typed!(
                 block_non_cet_binaries,
                 BlockNonCetBinaries,
                 NON_CET_BINARIES
             ),
-            26 => two_bit!(
+            26 => typed!(
                 extended_control_flow_guard,
                 Mitigation,
                 EXTENDED_CONTROL_FLOW_GUARD
             ),
-            27 => two_bit!(pointer_authentication, Mitigation, POINTER_AUTHENTICATION),
-            28 => two_bit!(
+            27 => typed!(pointer_authentication, Mitigation, POINTER_AUTHENTICATION),
+            28 => typed!(
                 cet_dynamic_apis_out_of_process,
                 Mitigation,
                 CET_DYNAMIC_APIS
             ),
-            29 => two_bit!(restrict_core_sharing, Mitigation, CORE_SHARING),
-            _ => two_bit!(disable_fsctl_system_calls, Mitigation, FSCTL_SYSTEM_CALLS),
+            29 => typed!(restrict_core_sharing, Mitigation, CORE_SHARING),
+            _ => typed!(disable_fsctl_system_calls, Mitigation, FSCTL_SYSTEM_CALLS),
         }
     }
 
@@ -806,7 +827,7 @@ mod tests {
     fn setters_replace_only_their_field() {
         let first = MitigationPolicy::new()
             .dynamic_code(DynamicCode::ProhibitWithOptOut)
-            .font_disable(FontDisable::Audit)
+            .non_system_fonts(NonSystemFonts::Audit)
             .dynamic_code(DynamicCode::Allow);
         assert_eq!(first.words(), [(2_u64 << 36) | (3_u64 << 48), 0]);
 
@@ -820,14 +841,23 @@ mod tests {
     fn legacy_bits_do_not_touch_two_bit_fields() {
         let policy = MitigationPolicy::new()
             .relocate_images(RelocateImages::RequireRelocations)
-            .dep(true)
-            .dep_atl_thunk(true)
-            .sehop(true);
+            .dep(Dep::Enable)
+            .dep_atl_thunk(AtlThunkEmulation::Enable)
+            .sehop(Sehop::Enable);
         assert_eq!(policy.words()[0], 7 | (3_u64 << 8));
 
-        let cleared = policy.dep(false).dep_atl_thunk(false).sehop(false);
+        let cleared = policy
+            .dep(Dep::Defer)
+            .dep_atl_thunk(AtlThunkEmulation::Defer)
+            .sehop(Sehop::Defer);
         assert_eq!(cleared.words()[0], 3_u64 << 8);
-        assert_eq!(MitigationPolicy::new().dep(true).dep(true).words()[0], 1);
+        assert_eq!(
+            MitigationPolicy::new()
+                .dep(Dep::Enable)
+                .dep(Dep::Enable)
+                .words()[0],
+            1
+        );
     }
 
     /// One setter applied to a policy.
@@ -837,9 +867,14 @@ mod tests {
     ///
     /// The test calls each setter, rather than a constant holding the policies, so coverage counts them.
     const SDK_22621: [(Setter, usize, u32, u64); 31] = [
-        (|policy| policy.dep(true), 0, 0, 1),
-        (|policy| policy.dep_atl_thunk(true), 0, 1, 1),
-        (|policy| policy.sehop(true), 0, 2, 1),
+        (|policy| policy.dep(Dep::Enable), 0, 0, 1),
+        (
+            |policy| policy.dep_atl_thunk(AtlThunkEmulation::Enable),
+            0,
+            1,
+            1,
+        ),
+        (|policy| policy.sehop(Sehop::Enable), 0, 2, 1),
         (
             |policy| policy.relocate_images(RelocateImages::RequireRelocations),
             0,
@@ -900,7 +935,12 @@ mod tests {
             44,
             3,
         ),
-        (|policy| policy.font_disable(FontDisable::Audit), 0, 48, 3),
+        (
+            |policy| policy.non_system_fonts(NonSystemFonts::Audit),
+            0,
+            48,
+            3,
+        ),
         (
             |policy| policy.block_remote_images(Mitigation::AlwaysOn),
             0,

@@ -11,6 +11,7 @@ mod support;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::mem::size_of_val;
+use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::Path;
 use std::sync::mpsc;
@@ -22,13 +23,14 @@ use support::{
 };
 
 use windows_spawn::{
-    AsPseudoConsole, Command, CreationFlags, DropPolicy, Job, Mitigation, MitigationPolicy,
-    ParentProcess, SpawnOptions, Stdio,
+    AsPseudoConsole, BorrowedPseudoConsole, Command, ConsoleMode, Dep, Job, Mitigation,
+    MitigationPolicy, Operation, ParentProcess, PriorityClass, SpawnError, SpawnOptions, Stdio,
+    ValidationError,
 };
 use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileInformationByHandle, GetFileType, ReadFile, WriteFile, BY_HANDLE_FILE_INFORMATION,
-    FILE_TYPE_UNKNOWN,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_UNKNOWN,
 };
 use windows_sys::Win32::System::Console::{
     ClosePseudoConsole, CreatePseudoConsole, GetConsoleCP, GetConsoleScreenBufferInfo,
@@ -46,6 +48,8 @@ const PCON_STDIO_PROBE: &str = "WINDOWS_SPAWN_PCON_STDIO_PROBE";
 const PCON_STDIN_MARKER: &[u8] = b"windows-spawn-pcon-stdin";
 const PCON_STDOUT_MARKER: &[u8] = b"windows-spawn-pcon-stdout";
 const PCON_STDERR_MARKER: &[u8] = b"windows-spawn-pcon-stderr";
+const CALLER_STDERR_HELPER: &str = "WINDOWS_SPAWN_CALLER_STDERR_HELPER";
+const CALLER_STDERR_MARKER: &str = "windows-spawn-caller-stderr";
 /// An unusual pseudoconsole size, so a probe can tell it is attached to the test's pseudoconsole.
 const PCON_SIZE: COORD = COORD { X: 97, Y: 31 };
 
@@ -145,13 +149,13 @@ fn suspended_child_resumes_once_into_normal_state() -> io::Result<()> {
     let (probe, mut gate, mut report) = ProbeCommand::new(Role::Gate)?;
     let suspended = probe.spawn_suspended()?;
     let mut process = ProcessExitGuard::watch(&suspended)?;
-    let thread = local_duplicate(&suspended.primary_thread_handle(), false)?;
+    let thread = local_duplicate(&suspended.main_thread_handle(), false)?;
     let pid = suspended.id();
     let process_handle = suspended.as_handle().as_raw_handle();
-    let thread_handle = suspended.primary_thread_handle().as_raw_handle();
+    let thread_handle = suspended.main_thread_handle().as_raw_handle();
     // SAFETY: SuspendedChild owns both handles for these read-only queries.
     assert_eq!(unsafe { GetProcessId(process_handle) }, pid);
-    // SAFETY: the primary thread handle is valid until resume consumes it.
+    // SAFETY: the main thread handle is valid until resume consumes it.
     assert_ne!(unsafe { GetThreadId(thread_handle) }, 0);
 
     let mut child = suspended.resume()?;
@@ -171,14 +175,19 @@ fn resume_rejects_an_externally_changed_suspend_count() -> io::Result<()> {
     let (probe, _gate, report) = ProbeCommand::new(Role::Ran)?;
     let suspended = probe.spawn_suspended()?;
     let mut process = ProcessExitGuard::watch(&suspended)?;
-    let thread = local_duplicate(&suspended.primary_thread_handle(), false)?;
+    let thread = local_duplicate(&suspended.main_thread_handle(), false)?;
     // SAFETY: the duplicate has THREAD_SUSPEND_RESUME access.
     assert_eq!(unsafe { SuspendThread(thread.as_raw_handle()) }, 1);
 
-    assert_eq!(
-        suspended.resume().unwrap_err().kind(),
-        io::ErrorKind::InvalidData
-    );
+    let refused = suspended
+        .resume()
+        .expect_err("a suspend count of two is refused");
+    assert!(matches!(
+        &refused,
+        SpawnError::Windows(error) if error.operation() == Operation::ResumeThread
+    ));
+    assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
+    assert!(refused.to_string().contains("suspend count was 2"));
     tempt_resume(thread.as_handle());
     assert_eq!(
         process.exit_code()?,
@@ -289,8 +298,9 @@ fn kill_tree_output_terminates_a_descendant_holding_stdout() -> io::Result<()> {
     probe
         .command_mut()
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let output = probe.output_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
+        .stderr(Stdio::piped())
+        .own_process_tree();
+    let output = probe.output_with(SpawnOptions::new())?;
     gate.release();
     assert!(output.status.success());
     assert!(output
@@ -302,9 +312,11 @@ fn kill_tree_output_terminates_a_descendant_holding_stdout() -> io::Result<()> {
 
 #[test]
 fn requested_mitigation_is_visible_on_the_real_process() -> io::Result<()> {
-    let (probe, mut gate, mut report) = ProbeCommand::new(Role::Gate)?;
-    let mitigation = MitigationPolicy::new().disable_extension_points(Mitigation::AlwaysOn);
-    let mut child = probe.spawn_with(SpawnOptions::new().mitigation(mitigation))?;
+    let (mut probe, mut gate, mut report) = ProbeCommand::new(Role::Gate)?;
+    probe
+        .command_mut()
+        .mitigation(MitigationPolicy::new().disable_extension_points(Mitigation::AlwaysOn));
+    let mut child = probe.spawn_with(SpawnOptions::new())?;
     let mut process = ProcessExitGuard::watch(&child)?;
     report.expect(b"r")?;
     let mut flags = 0_u32;
@@ -347,11 +359,15 @@ fn failed_transactions_do_not_leak_handles() -> io::Result<()> {
             .current_dir(missing_directory)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .own_process_tree();
         let error = command
-            .spawn_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))
+            .spawn()
             .expect_err("a missing current directory must fail after resources are acquired");
-        assert_ne!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            matches!(&error, SpawnError::Windows(failure) if failure.operation() == Operation::CreateProcess),
+            "{error}"
+        );
     }
 
     if !support::isolated("failed_transactions_do_not_leak_handles")? {
@@ -376,10 +392,13 @@ fn failed_transactions_do_not_leak_handles() -> io::Result<()> {
 #[test]
 fn validation_happens_before_process_creation() {
     let mut batch = Command::new("script.CMD");
-    assert_eq!(
-        batch.spawn().unwrap_err().kind(),
-        io::ErrorKind::InvalidInput
-    );
+    let error = batch.spawn().unwrap_err();
+    assert!(matches!(
+        error,
+        SpawnError::Validation(ValidationError::BatchFile)
+    ));
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(io::Error::from(error).kind(), io::ErrorKind::InvalidInput);
 }
 
 #[test]
@@ -557,15 +576,6 @@ fn child_pipes_try_wait_and_cached_lifecycle_work() -> io::Result<()> {
     Ok(())
 }
 
-struct InvalidPseudoConsole;
-
-// SAFETY: only validation tests use this value, and they fail before it reaches Win32.
-unsafe impl AsPseudoConsole for InvalidPseudoConsole {
-    fn raw_pseudoconsole(&self) -> isize {
-        1
-    }
-}
-
 /// A pseudoconsole whose output a detached thread drains from creation on.
 struct TestPseudoConsole {
     value: HPCON,
@@ -688,10 +698,10 @@ impl Drop for TestPseudoConsole {
     }
 }
 
-// SAFETY: TestPseudoConsole owns a live HPCON for every borrow and keeps ownership.
-unsafe impl AsPseudoConsole for TestPseudoConsole {
-    fn raw_pseudoconsole(&self) -> isize {
-        self.value
+impl AsPseudoConsole for TestPseudoConsole {
+    fn as_pseudo_console(&self) -> BorrowedPseudoConsole<'_> {
+        // SAFETY: TestPseudoConsole owns the HPCON until it drops, which the borrow of `self` outlives.
+        unsafe { BorrowedPseudoConsole::borrow_raw(self.value) }
     }
 }
 
@@ -702,7 +712,7 @@ fn pseudoconsole_attribute_connects_the_child_console() -> io::Result<()> {
     command
         .args(["--exact", "pseudoconsole_child_probe", "--nocapture"])
         .env("WINDOWS_SPAWN_PCON_PROBE", "1");
-    let child = command.spawn_with(SpawnOptions::new().pseudoconsole(&pseudoconsole))?;
+    let child = command.spawn_with(SpawnOptions::new().pseudo_console(&pseudoconsole))?;
     assert_eq!(ProcessExitGuard::watch(&child)?.exit_code()?, 0);
     assert!(pseudoconsole.wait_for_output_markers(&[b"windows-spawn-pcon-attached"]));
     Ok(())
@@ -734,8 +744,9 @@ fn pseudoconsole_regular_stdio_stays_off_parent_pipes() -> io::Result<()> {
         .env(PCON_ISOLATION_HELPER, "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = helper.spawn_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
+        .stderr(Stdio::piped())
+        .own_process_tree();
+    let mut child = helper.spawn()?;
     let (sender, events) = mpsc::channel();
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
@@ -784,6 +795,35 @@ fn forward<R: Read + Send + 'static>(
     }));
 }
 
+/// The helper's standard error is a pipe this test reads, so the marker arrives there only if the grandchild wrote its standard output into it.
+#[test]
+fn a_child_writes_its_output_to_the_callers_standard_error() -> io::Result<()> {
+    let output = Command::new(std::env::current_exe()?)
+        .args(["--exact", "caller_stderr_helper", "--nocapture"])
+        .env(CALLER_STDERR_HELPER, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()?;
+    assert!(output.status.success());
+    assert!(contains(&output.stderr, CALLER_STDERR_MARKER.as_bytes()));
+    Ok(())
+}
+
+#[test]
+fn caller_stderr_helper() -> io::Result<()> {
+    if std::env::var_os(CALLER_STDERR_HELPER).is_none() {
+        return Ok(());
+    }
+    let status = cmd(&format!("echo {CALLER_STDERR_MARKER}"))
+        .stdin(Stdio::null())
+        .stdout(io::stderr())
+        .stderr(Stdio::null())
+        .status()?;
+    assert!(status.success());
+    Ok(())
+}
+
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
@@ -805,7 +845,7 @@ fn pseudoconsole_stdio_isolation_helper() -> io::Result<()> {
             "--nocapture",
         ])
         .env(PCON_STDIO_PROBE, "1");
-    let child = command.spawn_with(SpawnOptions::new().pseudoconsole(&pseudoconsole))?;
+    let child = command.spawn_with(SpawnOptions::new().pseudo_console(&pseudoconsole))?;
     let mut input = PCON_STDIN_MARKER.to_vec();
     input.extend_from_slice(b"\r\n");
     pseudoconsole.write_input(&input)?;
@@ -858,25 +898,47 @@ fn capability_wrappers_and_all_option_builders_are_exercised() -> io::Result<()>
     let _ = duplicate_job.as_handle();
     assert!(format!("{duplicate_job:?}").contains("Job"));
 
-    let mut flags = CreationFlags::NEW_PROCESS_GROUP;
-    flags |= CreationFlags::DEFAULT_ERROR_MODE;
-    let pseudoconsole = InvalidPseudoConsole;
+    // SAFETY: only this validation test borrows the value, and validation rejects every spawn that names it before it reaches Win32.
+    let pseudoconsole = unsafe { BorrowedPseudoConsole::borrow_raw(1) };
     let options = SpawnOptions::new()
         .job(&job)
         .parent_process(&parent)
-        .mitigation(MitigationPolicy::new().dep(true))
-        .pseudoconsole(&pseudoconsole)
-        .creation_flags(flags)
-        .drop_policy(DropPolicy::KillTree);
-    let rendered = format!("{options:?}");
-    assert!(rendered.contains("borrowed") && rendered.contains("KillTree"));
+        .pseudo_console(pseudoconsole);
+    assert!(format!("{options:?}").contains("BorrowedPseudoConsole"));
 
     let mut invalid = cmd("exit /b 0");
-    invalid.stdout(Stdio::null());
-    assert_eq!(
-        invalid.spawn_with(options).unwrap_err().kind(),
-        io::ErrorKind::InvalidInput
-    );
+    invalid
+        .mitigation(MitigationPolicy::new().dep(Dep::Enable))
+        .priority(PriorityClass::BelowNormal)
+        .new_process_group()
+        .inherit_parent_affinity()
+        .breakaway_from_job()
+        .preserve_code_authorization()
+        .default_error_mode()
+        .own_process_tree()
+        .stdout(Stdio::null());
+    let rendered = format!("{invalid:#?}");
+    assert!(rendered.contains("BelowNormal") && rendered.contains("owns_tree: true"));
+    assert!(matches!(
+        invalid.spawn_with(options.clone()),
+        Err(SpawnError::Validation(
+            ValidationError::PseudoConsoleWithStdio
+        ))
+    ));
+    invalid.console(ConsoleMode::NoWindow);
+    assert!(matches!(
+        invalid.spawn_with(options.clone()),
+        Err(SpawnError::Validation(
+            ValidationError::PseudoConsoleWithConsoleMode
+        ))
+    ));
+    let without_console = SpawnOptions::new().parent_process(&parent);
+    assert!(matches!(
+        invalid.spawn_with(without_console),
+        Err(SpawnError::Validation(
+            ValidationError::AlternateParentNeedsStdio
+        ))
+    ));
 
     let assigned_job = Job::create()?;
     let (probe, mut gate, mut report) = ProbeCommand::new(Role::Gate)?;
@@ -950,9 +1012,10 @@ fn handle_list_excludes_an_unlisted_inheritable_handle() -> io::Result<()> {
 }
 
 #[test]
-fn dropping_a_kill_tree_child_terminates_the_tree() -> io::Result<()> {
-    let (probe, mut gate, mut report) = ProbeCommand::new(Role::TreeHold)?;
-    let child = probe.spawn_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
+fn dropping_a_tree_owner_terminates_the_tree() -> io::Result<()> {
+    let (mut probe, mut gate, mut report) = ProbeCommand::new(Role::TreeHold)?;
+    probe.command_mut().own_process_tree();
+    let child = probe.spawn_with(SpawnOptions::new())?;
     let mut root = ProcessExitGuard::watch(&child)?;
     report.expect(b"rr")?;
     drop(child);
@@ -962,6 +1025,50 @@ fn dropping_a_kill_tree_child_terminates_the_tree() -> io::Result<()> {
         "a process in the tree outlived the drop"
     );
     assert!(!SELF_EXIT_CODES.contains(&root.exit_code()?));
+    Ok(())
+}
+
+#[test]
+fn killing_a_tree_owner_ends_every_process_in_the_tree() -> io::Result<()> {
+    let (mut probe, mut gate, mut report) = ProbeCommand::new(Role::TreeHold)?;
+    probe.command_mut().own_process_tree();
+    let mut child = probe.spawn_with(SpawnOptions::new())?;
+    let mut root = ProcessExitGuard::watch(&child)?;
+    report.expect(b"rr")?;
+    child.kill()?;
+    assert_eq!(child.wait_tree()?.code(), Some(1));
+    gate.release();
+    assert!(
+        report.rest()?.is_empty(),
+        "a process in the tree outlived the kill"
+    );
+    assert_eq!(root.exit_code()?, 1);
+    child.kill()?;
+    Ok(())
+}
+
+/// Both probes hold a file that refuses deletion while any handle to it is open, so deleting it right after `wait_tree` shows that no process of the tree still held it.
+#[test]
+fn a_killed_tree_releases_its_files_once_wait_tree_returns() -> io::Result<()> {
+    let directory = TempDir::new("wait-tree")?;
+    let held = directory.join("held");
+    let file = File::options()
+        .write(true)
+        .create_new(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(&held)?;
+    let (mut probe, mut gate, mut report) = ProbeCommand::new(Role::TreeHold)?;
+    probe.command_mut().stdout(file).own_process_tree();
+    let mut child = probe.spawn_with(SpawnOptions::new())?;
+    report.expect(b"rr")?;
+    child.kill()?;
+    assert_eq!(child.wait_tree()?.code(), Some(1));
+    fs::remove_file(&held)?;
+    gate.release();
+    assert!(
+        report.rest()?.is_empty(),
+        "a process in the tree outlived the kill"
+    );
     Ok(())
 }
 
@@ -1021,7 +1128,7 @@ fn dropping_suspended_child_prevents_execution() -> io::Result<()> {
     let (probe, _gate, report) = ProbeCommand::new(Role::Ran)?;
     let suspended = probe.spawn_suspended()?;
     let mut process = ProcessExitGuard::watch(&suspended)?;
-    let thread = local_duplicate(&suspended.primary_thread_handle(), false)?;
+    let thread = local_duplicate(&suspended.main_thread_handle(), false)?;
     drop(suspended);
     tempt_resume(thread.as_handle());
     assert_eq!(

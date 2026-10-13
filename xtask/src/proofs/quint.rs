@@ -21,15 +21,17 @@ const FIRST: usize = 40;
 const RARE: usize = 5;
 /// The steps the bounded check explores beyond what the inductive invariant covers.
 const VERIFY_STEPS: &str = "10";
+/// The model's false claim, which the bounded check must refute.
+const NEGATIVE_CONTROL: &str = "droppingEndsTheProcess";
 /// What the traces the repository holds must reach, so the replay exercises every outcome.
 const COVERAGE: [&str; 7] = [
     "\tInvalidData\t",
-    "\tDenied\t",
     "\tStatus ",
     "\tKilled",
     "\texternalKill\t",
     "\tresume\t-\tInvalidData\tExited 9",
     "\tdropSuspended\t-\tDone\tExited 9",
+    "\tkill\t-\tDone\tExited 9",
 ];
 /// The replay table, beside the model; `tests/lifecycle` replays it on Windows.
 const TABLE: &str = "proofs/quint/traces/lifecycle.tsv";
@@ -103,7 +105,7 @@ pub(crate) fn quint(root: &Path) -> Result<()> {
         "verify",
         &[
             "--invariant",
-            "killNeverFails",
+            NEGATIVE_CONTROL,
             "--max-steps",
             VERIFY_STEPS,
             "--apalache-version",
@@ -113,7 +115,7 @@ pub(crate) fn quint(root: &Path) -> Result<()> {
     let report = String::from_utf8_lossy(&refuted.stdout);
     if refuted.status.success() || !report.contains("[violation]") {
         return fail(format!(
-            "Apalache did not refute the negative control killNeverFails:\n{report}"
+            "Apalache did not refute the negative control {NEGATIVE_CONTROL}:\n{report}"
         ));
     }
 
@@ -287,7 +289,7 @@ mod tests {
     fn traces_become_replay_rows() {
         let trace = json!({"states": [
             {"mbt::actionTaken": "init",
-             "mbt::nondetPicks": {"chosen": {"tag": "Some", "value": {"tag": "KillTree", "value": {"#tup": []}}},
+             "mbt::nondetPicks": {"chosen": {"tag": "Some", "value": {"tag": "OwnsTree", "value": {"#tup": []}}},
                                   "suspended": {"tag": "Some", "value": true}},
              "outcome": {"tag": "Started", "value": {"#tup": []}},
              "process": {"tag": "Paused", "value": {"#tup": []}},
@@ -309,7 +311,7 @@ mod tests {
         ]});
         assert_eq!(
             rows(3, &trace).unwrap(),
-            "3\t0\tinit\tKillTree suspended\tStarted\tPaused 1\n3\t1\tresume\t-\tResumed\tRunning\n3\t2\texits\t77\tDone\tExited 77\n3\t3\twait\t-\tStatus 77\tExited 77\n"
+            "3\t0\tinit\tOwnsTree suspended\tStarted\tPaused 1\n3\t1\tresume\t-\tResumed\tRunning\n3\t2\texits\t77\tDone\tExited 77\n3\t3\twait\t-\tStatus 77\tExited 77\n"
         );
         assert!(rows(0, &json!({})).is_err());
 

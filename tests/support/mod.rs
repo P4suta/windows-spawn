@@ -168,15 +168,15 @@ impl ProbeCommand {
     }
 
     pub(crate) fn spawn_with(mut self, options: SpawnOptions<'_>) -> io::Result<Child> {
-        self.command.spawn_with(options)
+        Ok(self.command.spawn_with(options)?)
     }
 
     pub(crate) fn spawn_suspended(mut self) -> io::Result<SuspendedChild> {
-        self.command.spawn_suspended()
+        Ok(self.command.spawn_suspended()?)
     }
 
     pub(crate) fn output_with(mut self, options: SpawnOptions<'_>) -> io::Result<Output> {
-        self.command.output_with(options)
+        Ok(self.command.output_with(options)?)
     }
 }
 

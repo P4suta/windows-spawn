@@ -10,8 +10,8 @@ use std::fmt::Display;
 use std::io;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
 
-use windows_spawn::{Child, DropPolicy, SpawnOptions, SuspendedChild};
-use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_spawn::{Child, SpawnError, SpawnOptions, SuspendedChild};
+use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Threading::{SuspendThread, TerminateProcess, WaitForSingleObject};
 
 use crate::support::{
@@ -47,20 +47,22 @@ struct Replay {
 }
 
 impl Replay {
-    /// Spawns the probe as `init` chose: under a drop policy, suspended or running.
+    /// Spawns the probe as `init` chose: owning its tree or not, suspended or running.
     ///
     /// The probe command drops before the replay reads the report, because it holds copies of the pipe ends and a read waits for every writer to close.
     fn start(argument: &str) -> io::Result<Self> {
         let (policy, start) = argument
             .split_once(' ')
             .ok_or_else(|| malformed(format!("init names no start: {argument}")))?;
-        let policy = match policy {
-            "Detach" => DropPolicy::Detach,
-            "KillTree" => DropPolicy::KillTree,
-            other => return Err(malformed(format!("unknown drop policy {other}"))),
-        };
-        let options = SpawnOptions::new().drop_policy(policy);
         let (mut probe, gate, report) = ProbeCommand::new(Role::Gate)?;
+        match policy {
+            "Unowned" => {}
+            "OwnsTree" => {
+                probe.command_mut().own_process_tree();
+            }
+            other => return Err(malformed(format!("unknown policy {other}"))),
+        }
+        let options = SpawnOptions::new();
         let (owner, process, observer) = match start {
             "suspended" => {
                 let suspended = probe.command_mut().spawn_suspended_with(options)?;
@@ -92,9 +94,9 @@ impl Replay {
         let owner = std::mem::replace(&mut self.owner, Owner::Dropped);
         let (owner, outcome) = match (action, owner) {
             ("suspendAgain", Owner::Suspended(suspended)) => {
-                // SAFETY: the primary thread handle is valid while `suspended` lives.
+                // SAFETY: the main thread handle is valid while `suspended` lives.
                 let previous =
-                    unsafe { SuspendThread(suspended.primary_thread_handle().as_raw_handle()) };
+                    unsafe { SuspendThread(suspended.main_thread_handle().as_raw_handle()) };
                 if previous == u32::MAX {
                     return Err(io::Error::last_os_error());
                 }
@@ -102,10 +104,12 @@ impl Replay {
             }
             ("resume", Owner::Suspended(suspended)) => match suspended.resume() {
                 Ok(child) => (Owner::Owned(child), "Resumed".to_owned()),
-                Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                Err(SpawnError::Windows(error))
+                    if error.io_error().kind() == io::ErrorKind::InvalidData =>
+                {
                     (Owner::Dropped, "InvalidData".to_owned())
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.into()),
             },
             ("dropSuspended", Owner::Suspended(suspended)) => {
                 drop(suspended);
@@ -129,16 +133,8 @@ impl Replay {
                 (Owner::Owned(child), outcome)
             }
             ("kill", Owner::Owned(mut child)) => {
-                let outcome = match child.kill() {
-                    Ok(()) => "Done".to_owned(),
-                    Err(error)
-                        if error.raw_os_error() == i32::try_from(ERROR_ACCESS_DENIED).ok() =>
-                    {
-                        "Denied".to_owned()
-                    }
-                    Err(error) => return Err(error),
-                };
-                (Owner::Owned(child), outcome)
+                child.kill()?;
+                (Owner::Owned(child), "Done".to_owned())
             }
             ("dropChild", Owner::Owned(child)) => {
                 drop(child);
@@ -177,7 +173,7 @@ impl Replay {
                 let expected: u32 = value
                     .parse()
                     .map_err(|error| malformed(format!("suspend count {value}: {error}")))?;
-                let actual = suspend_count(suspended.primary_thread_handle())?;
+                let actual = suspend_count(suspended.main_thread_handle())?;
                 if actual != expected {
                     return Err(differs("the suspend count", expected, actual));
                 }
@@ -303,20 +299,20 @@ fn the_crate_follows_every_lifecycle_trace() -> io::Result<()> {
 /// so the replay shows it can fail.
 const CONTRADICTIONS: [(&str, &str); 4] = [
     (
-        "`kill` after an exit nobody observed returns the error of `TerminateProcess`",
-        "0\t0\tinit\tDetach running\tStarted\tRunning\n0\t1\texits\t3\tDone\tExited 3\n0\t2\tkill\t-\tDone\tExited 3\n",
+        "`try_wait` reports no status while the probe runs",
+        "0\t0\tinit\tUnowned running\tStarted\tRunning\n0\t1\ttryWait\t-\tStatus 0\tRunning\n",
     ),
     (
         "the probe exits with the code its gate carries",
-        "0\t0\tinit\tDetach running\tStarted\tRunning\n0\t1\texits\t3\tDone\tExited 77\n",
+        "0\t0\tinit\tUnowned running\tStarted\tRunning\n0\t1\texits\t3\tDone\tExited 77\n",
     ),
     (
         "a second suspension raises the suspend count to two",
-        "0\t0\tinit\tDetach suspended\tStarted\tPaused 1\n0\t1\tsuspendAgain\t-\tDone\tPaused 1\n",
+        "0\t0\tinit\tUnowned suspended\tStarted\tPaused 1\n0\t1\tsuspendAgain\t-\tDone\tPaused 1\n",
     ),
     (
-        "dropping a detached child leaves its process running",
-        "0\t0\tinit\tDetach running\tStarted\tRunning\n0\t1\tdropChild\t-\tDone\tKilled\n",
+        "dropping a child that owns no tree leaves its process running",
+        "0\t0\tinit\tUnowned running\tStarted\tRunning\n0\t1\tdropChild\t-\tDone\tKilled\n",
     ),
 ];
 

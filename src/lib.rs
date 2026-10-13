@@ -13,6 +13,8 @@ mod command;
 #[cfg(any(windows, test, kani))]
 mod domain;
 #[cfg(windows)]
+mod error;
+#[cfg(windows)]
 #[cfg(test)]
 mod failure_tests;
 #[cfg(windows)]
@@ -34,12 +36,16 @@ pub use crate::child::{Child, ChildStderr, ChildStdin, ChildStdout, SuspendedChi
 #[cfg(windows)]
 pub use crate::command::Command;
 #[cfg(windows)]
-pub use crate::handles::{AsPseudoConsole, Job, ParentProcess, Stdio};
-#[cfg(any(windows, test, kani))]
-pub use crate::mitigation::{
-    BlockNonCetBinaries, CetShadowStacks, ControlFlowGuard, DynamicCode, FontDisable,
-    LoaderIntegrity, Mitigation, MitigationPolicy, ModuleTampering, RelocateImages, SignedBinaries,
-    UserCetContextIpValidation,
+pub use crate::error::{
+    CleanupError, InputField, Operation, Phase, Result, SpawnError, ValidationError, WindowsError,
 };
 #[cfg(windows)]
-pub use crate::options::{CreationFlags, DropPolicy, SpawnOptions};
+pub use crate::handles::{AsPseudoConsole, BorrowedPseudoConsole, Job, ParentProcess, Stdio};
+#[cfg(any(windows, test, kani))]
+pub use crate::mitigation::{
+    AtlThunkEmulation, BlockNonCetBinaries, CetShadowStacks, ControlFlowGuard, Dep, DynamicCode,
+    LoaderIntegrity, Mitigation, MitigationPolicy, ModuleTampering, NonSystemFonts, RelocateImages,
+    Sehop, SignedBinaries, UserCetContextIpValidation,
+};
+#[cfg(windows)]
+pub use crate::options::{ConsoleMode, PriorityClass, SpawnOptions};

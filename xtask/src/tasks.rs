@@ -81,6 +81,8 @@ impl From<String> for TaskError {
 
 const PACKAGE_NAME: &str = "windows-spawn";
 const PUBLIC_API_TOOLCHAIN: &str = "nightly-2026-07-02";
+/// The target whose API the snapshot records, named so that every host renders the same snapshot.
+const PUBLIC_API_TARGET: &str = "x86_64-pc-windows-msvc";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PackageInfo {
@@ -297,7 +299,14 @@ fn coverage(root: &Path) -> Result<()> {
 
 fn public_api(root: &Path, update: bool) -> Result<()> {
     let mut command = cargo_with_toolchain(root, PUBLIC_API_TOOLCHAIN);
-    command.args(["public-api", "--package", PACKAGE_NAME, "--simplified"]);
+    command.args([
+        "public-api",
+        "--package",
+        PACKAGE_NAME,
+        "--simplified",
+        "--target",
+        PUBLIC_API_TARGET,
+    ]);
     let actual = capture(&mut command)?;
     let snapshot = root.join("public-api/windows-spawn.txt");
     if update {
@@ -804,15 +813,16 @@ fn append_github_output(path: &Path, key: &str, value: &str) -> Result<()> {
 /// Lints are capped to warnings: the instrumented tree trips `unused_qualifications`, and lints are not behavior.
 #[cfg(windows)]
 fn run_mutation(root: &Path, forwarded: &[String]) -> Result<i32> {
-    use windows_spawn::{Command as SpawnCommand, DropPolicy, SpawnOptions};
+    use windows_spawn::Command as SpawnCommand;
 
-    let mut command = SpawnCommand::new("rust-mutants");
-    command
+    let status = SpawnCommand::new("rust-mutants")
         .args(["run", "--locked"])
         .args(forwarded)
         .env("RUSTFLAGS", "--cap-lints=warn")
-        .current_dir(root);
-    let status = command.status_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
+        .current_dir(root)
+        .own_process_tree()
+        .status()
+        .map_err(io::Error::from)?;
     Ok(status.code().unwrap_or(1))
 }
 

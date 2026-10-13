@@ -2,14 +2,15 @@
 
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::windows::io::AsHandle;
+use std::os::windows::io::{AsHandle, OwnedHandle};
 
+use crate::error::{Phase, Result, SpawnError};
 use crate::sys::fault::{self, Call};
 use crate::sys::test_support::{
     current_process, isolated, process_handle_count, ProcessExitGuard, TestConsole,
 };
 use crate::{
-    Command, DropPolicy, Job, Mitigation, MitigationPolicy, ParentProcess, SpawnOptions, Stdio,
+    Command, ConsoleMode, Job, Mitigation, MitigationPolicy, ParentProcess, SpawnOptions, Stdio,
     SuspendedChild,
 };
 
@@ -21,7 +22,7 @@ const JOB_EXIT_CODE: u32 = 7;
 enum Operation {
     SpawnAndWait,
     SpawnSuspendedAndResume,
-    OutputWithKillTree,
+    OutputOfOwnedTree,
     Status,
     PipeThroughChild,
     KillRunningChild,
@@ -31,12 +32,14 @@ enum Operation {
     RenderCommandLine,
     TryWaitExitedChild,
     SpawnOnPseudoConsole,
+    KillOwnedTree,
+    WaitTree,
 }
 
-const OPERATIONS: [Operation; 12] = [
+const OPERATIONS: [Operation; 14] = [
     Operation::SpawnAndWait,
     Operation::SpawnSuspendedAndResume,
-    Operation::OutputWithKillTree,
+    Operation::OutputOfOwnedTree,
     Operation::Status,
     Operation::PipeThroughChild,
     Operation::KillRunningChild,
@@ -46,7 +49,39 @@ const OPERATIONS: [Operation; 12] = [
     Operation::RenderCommandLine,
     Operation::TryWaitExitedChild,
     Operation::SpawnOnPseudoConsole,
+    Operation::KillOwnedTree,
+    Operation::WaitTree,
 ];
+
+/// Types the outcome of a pipe read or write, as the crate types its own calls.
+fn pipe<T>(operation: crate::Operation, outcome: io::Result<T>) -> Result<T> {
+    outcome.map_err(|error| SpawnError::windows(Phase::Runtime, operation, error))
+}
+
+/// A private duplicate, typed as the crate types its own duplicates.
+fn duplicate(handle: &impl AsHandle) -> Result<OwnedHandle> {
+    crate::sys::duplicate_local(handle.as_handle(), false).map_err(|error| {
+        SpawnError::windows(
+            Phase::Preparation,
+            crate::Operation::DuplicateLocalHandle,
+            error,
+        )
+    })
+}
+
+/// Returns true if `error` holds the injected failure, as the failure itself or as one that a release met.
+fn injected(error: &SpawnError) -> bool {
+    match error {
+        SpawnError::Windows(error) => fault::is_injected(error.io_error()),
+        SpawnError::Cleanup(cleanup) => {
+            cleanup.primary().is_some_and(injected)
+                || cleanup
+                    .failures()
+                    .any(|release| fault::is_injected(release.io_error()))
+        }
+        SpawnError::Validation(_) => false,
+    }
+}
 
 /// Capabilities the operations borrow, created before any call is recorded.
 struct Fixture {
@@ -79,7 +114,7 @@ impl Fixture {
     }
 
     /// A command that exits 0 whatever follows it and touches every configurable input.
-    fn rich_command(&self) -> io::Result<Command> {
+    fn rich_command(&self) -> Result<Command> {
         let mut command = Command::new("cmd.exe");
         command
             .args(["/D", "/C", "rem"])
@@ -93,11 +128,11 @@ impl Fixture {
         Ok(command)
     }
 
-    fn run(&self, operation: Operation) -> io::Result<()> {
+    fn run(&self, operation: Operation) -> Result<()> {
         match operation {
             Operation::SpawnAndWait => self.spawn_and_wait(),
             Operation::SpawnSuspendedAndResume => self.spawn_suspended_and_resume(),
-            Operation::OutputWithKillTree => Self::output_with_kill_tree(),
+            Operation::OutputOfOwnedTree => Self::output_of_owned_tree(),
             Operation::Status => Self::status(),
             Operation::PipeThroughChild => Self::pipe_through_child(),
             Operation::KillRunningChild => Self::kill_running_child(),
@@ -107,38 +142,41 @@ impl Fixture {
             Operation::RenderCommandLine => Self::render_command_line(),
             Operation::TryWaitExitedChild => Self::try_wait_exited_child(),
             Operation::SpawnOnPseudoConsole => self.spawn_on_pseudoconsole(),
+            Operation::KillOwnedTree => Self::kill_owned_tree(),
+            Operation::WaitTree => Self::wait_tree(),
         }
     }
 
-    fn spawn_and_wait(&self) -> io::Result<()> {
-        let mitigation = MitigationPolicy::new().disable_extension_points(Mitigation::AlwaysOn);
+    fn spawn_and_wait(&self) -> Result<()> {
+        let mut command = self.rich_command()?;
+        command
+            .mitigation(MitigationPolicy::new().disable_extension_points(Mitigation::AlwaysOn))
+            .own_process_tree();
         let options = SpawnOptions::new()
             .job(&self.job)
-            .parent_process(&self.parent)
-            .mitigation(mitigation)
-            .drop_policy(DropPolicy::KillTree);
-        let mut child = self.rich_command()?.spawn_with(options)?;
+            .parent_process(&self.parent);
+        let mut child = command.spawn_with(options)?;
         child.wait()?;
         child.try_wait()?;
         Ok(())
     }
 
-    fn spawn_suspended_and_resume(&self) -> io::Result<()> {
-        let mitigation = MitigationPolicy::new().disable_extension_points(Mitigation::AlwaysOn);
-        let options = SpawnOptions::new().job(&self.job).mitigation(mitigation);
-        let suspended = self.rich_command()?.spawn_suspended_with(options)?;
+    fn spawn_suspended_and_resume(&self) -> Result<()> {
+        let mut command = self.rich_command()?;
+        command.mitigation(MitigationPolicy::new().disable_extension_points(Mitigation::AlwaysOn));
+        let suspended = command.spawn_suspended_with(SpawnOptions::new().job(&self.job))?;
         suspended.resume()?.wait()?;
         Ok(())
     }
 
-    fn output_with_kill_tree() -> io::Result<()> {
+    fn output_of_owned_tree() -> Result<()> {
         let mut command = Command::new("cmd.exe");
-        command.args(["/D", "/C", "echo out"]);
-        command.output_with(SpawnOptions::new().drop_policy(DropPolicy::KillTree))?;
+        command.args(["/D", "/C", "echo out"]).own_process_tree();
+        command.output()?;
         Ok(())
     }
 
-    fn status() -> io::Result<()> {
+    fn status() -> Result<()> {
         let mut command = Command::new("cmd.exe");
         command.args(["/D", "/C", "exit /b 0"]);
         command.status()?;
@@ -146,7 +184,7 @@ impl Fixture {
     }
 
     /// Writes and reads once each, so the call sequence does not depend on how the pipe splits output.
-    fn pipe_through_child() -> io::Result<()> {
+    fn pipe_through_child() -> Result<()> {
         let mut command = Command::new("cmd.exe");
         command
             .args(["/D", "/C", "more"])
@@ -160,12 +198,12 @@ impl Fixture {
         let mut output = [0_u8; 1];
         let read = child.stdout.take().expect("piped stdout").read(&mut output);
         child.wait()?;
-        written?;
-        read?;
+        pipe(crate::Operation::WritePipe, written)?;
+        pipe(crate::Operation::ReadPipe, read)?;
         Ok(())
     }
 
-    fn kill_running_child() -> io::Result<()> {
+    fn kill_running_child() -> Result<()> {
         let mut child = gated_command().spawn()?;
         let running = child.try_wait();
         let killed = child.kill();
@@ -174,10 +212,10 @@ impl Fixture {
         killed
     }
 
-    fn job_assign_and_terminate() -> io::Result<()> {
+    fn job_assign_and_terminate() -> Result<()> {
         let job = Job::create()?;
         job.set_kill_on_close(true)?;
-        let adopted = Job::from_handle(crate::sys::duplicate_local(job.as_handle(), false)?)?;
+        let adopted = Job::from_handle(duplicate(&job)?)?;
         let duplicate = adopted.duplicate()?;
         let mut child = gated_command().spawn()?;
         let terminated = duplicate
@@ -190,13 +228,13 @@ impl Fixture {
         terminated
     }
 
-    fn open_parent_process(&self) -> io::Result<()> {
+    fn open_parent_process(&self) -> Result<()> {
         ParentProcess::open(std::process::id())?;
-        ParentProcess::from_handle(crate::sys::duplicate_local(self.host.as_handle(), false)?)?;
+        ParentProcess::from_handle(duplicate(&self.host)?)?;
         Ok(())
     }
 
-    fn configure_handle_inputs(&self) -> io::Result<()> {
+    fn configure_handle_inputs(&self) -> Result<()> {
         let mut command = Command::new("cmd.exe");
         command
             .arg_handle(&self.nul)?
@@ -205,7 +243,7 @@ impl Fixture {
         Ok(())
     }
 
-    fn try_wait_exited_child() -> io::Result<()> {
+    fn try_wait_exited_child() -> Result<()> {
         let mut command = Command::new("cmd.exe");
         command
             .args(["/D", "/C", "exit /b 0"])
@@ -219,16 +257,16 @@ impl Fixture {
     }
 
     /// Reuses one pseudoconsole: closing one per run can block on some Windows Server 2022 builds and hold handles.
-    fn spawn_on_pseudoconsole(&self) -> io::Result<()> {
+    fn spawn_on_pseudoconsole(&self) -> Result<()> {
         let mut command = Command::new("cmd.exe");
         command.args(["/D", "/C", "exit /b 0"]);
         command
-            .spawn_with(SpawnOptions::new().pseudoconsole(&self.console))?
+            .spawn_with(SpawnOptions::new().pseudo_console(&self.console))?
             .wait()?;
         Ok(())
     }
 
-    fn render_command_line() -> io::Result<()> {
+    fn render_command_line() -> Result<()> {
         let mut on_path = Command::new("cmd.exe");
         on_path
             .arg("two words")
@@ -237,6 +275,24 @@ impl Fixture {
         let mut in_windows_directory = Command::new("explorer");
         in_windows_directory.env_clear();
         in_windows_directory.to_command_line()?;
+        Ok(())
+    }
+
+    /// Kills a child that owns its tree, which terminates the private Job.
+    fn kill_owned_tree() -> Result<()> {
+        let mut child = gated_command().own_process_tree().spawn()?;
+        let killed = child.kill();
+        child.wait()?;
+        killed
+    }
+
+    /// Waits for an owned tree whose only process still runs when the wait lists the tree.
+    ///
+    /// The child has no console, so no console host joins the tree and the call sequence is fixed.
+    fn wait_tree() -> Result<()> {
+        let mut command = gated_command();
+        command.console(ConsoleMode::NoConsole).own_process_tree();
+        command.spawn()?.wait_tree()?;
         Ok(())
     }
 
@@ -255,7 +311,7 @@ impl Fixture {
                 self.run(operation)
             };
             match result {
-                Err(error) if fault::is_injected(&error) => {}
+                Err(error) if injected(&error) => {}
                 Err(error) => panic!(
                     "{operation:?}: failing call {index} ({call:?}) returned another error: {error}"
                 ),
@@ -287,6 +343,7 @@ fn every_win32_failure_propagates_as_the_same_error() -> io::Result<()> {
     for call in [
         Call::DuplicateLocal,
         Call::DuplicateRemote,
+        Call::ReclaimRemote,
         Call::StandardHandle,
         Call::NullHandle,
         Call::CreatePipe,
@@ -297,6 +354,8 @@ fn every_win32_failure_propagates_as_the_same_error() -> io::Result<()> {
         Call::SetJob,
         Call::AssignJob,
         Call::TerminateJob,
+        Call::ListJob,
+        Call::OpenJobProcess,
         Call::AttributeList,
         Call::AllocateAttributes,
         Call::UpdateAttribute,
