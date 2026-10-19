@@ -60,7 +60,9 @@ cargo +nightly fuzz run command-line -- -max_total_time=600 -max_len=16384
 cargo +nightly fuzz run environment-block -- -max_total_time=600 -max_len=16384
 ```
 
-`WINDOWS_SPAWN_RANDOM_SCALE` multiplies the number of random command lines and environments, which the nightly workflow raises to ten times.
+`WINDOWS_SPAWN_RANDOM_SCALE` multiplies the number of random command lines and environments for a local investigation.
+Hosted checks keep bounded native stress tests, careful, `Application Verifier`, proof layers, and the ordinary platform tests.
+See [targeted assurance campaigns](docs/adr/targeted-assurance-campaigns.md) for the hosted verification policy.
 
 ## Expectations
 
