@@ -6,7 +6,6 @@ path = [
   ".cargo/**",
   ".gitattributes",
   ".gitignore",
-  ".pr-workflow/contexts.json",
   "_typos.toml",
   ".rust-mutants.toml",
   "Cargo.toml",
