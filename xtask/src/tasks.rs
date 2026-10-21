@@ -80,7 +80,7 @@ impl From<String> for TaskError {
 }
 
 const PACKAGE_NAME: &str = "windows-spawn";
-const PUBLIC_API_TOOLCHAIN: &str = "nightly-2026-07-02";
+const PUBLIC_API_TOOLCHAIN: &str = include_str!("../../public-api/rust-toolchain");
 /// The target whose API the snapshot records, named so that every host renders the same snapshot.
 const PUBLIC_API_TARGET: &str = "x86_64-pc-windows-msvc";
 
@@ -174,6 +174,9 @@ fn run_simple(root: &Path, task: SimpleTask) -> Result<()> {
                 "--test-threads=1",
             ]);
             run(&mut targets)?;
+            if !cfg!(windows) {
+                return Ok(());
+            }
             let mut doctests = cargo(root);
             with_vectors(&mut doctests).args(["test", "--workspace", "--doc", "--locked"]);
             run(&mut doctests)
@@ -298,7 +301,7 @@ fn coverage(root: &Path) -> Result<()> {
 }
 
 fn public_api(root: &Path, update: bool) -> Result<()> {
-    let mut command = cargo_with_toolchain(root, PUBLIC_API_TOOLCHAIN);
+    let mut command = cargo_with_toolchain(root, PUBLIC_API_TOOLCHAIN.trim());
     command.args([
         "public-api",
         "--package",

@@ -77,3 +77,7 @@ See [targeted assurance campaigns](docs/adr/targeted-assurance-campaigns.md) for
 
 Required checks and review threads must be resolved before merge.
 Pull requests are squash-merged into `main`.
+
+## Check selection
+
+See [CI selection](docs/ci.md) for the always-running gate, affected native and proof contracts, and local setup.

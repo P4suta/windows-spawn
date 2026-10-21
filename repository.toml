@@ -1,0 +1,22 @@
+name = "windows-spawn"
+summary = "Windows process creation with explicit handle ownership, Jobs, and pseudoconsoles"
+install = "cargo add windows-spawn"
+usage_language = "rust"
+usage = '''
+use windows_spawn::Command;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new("cmd.exe")
+        .args(["/D", "/C", "echo hello"])
+        .output()?;
+    assert!(output.status.success());
+    Ok(())
+}
+'''
+documentation_index = true
+copyright = "2026 Yasunobu Sakashita"
+license = "MIT OR Apache-2.0"
+
+[[consent]]
+contributor = "Yasunobu"
+evidence = "https://github.com/P4suta/windows-spawn/commit/970c539adbdcdc5a04d5260c1ebdf341b8c43af3"
