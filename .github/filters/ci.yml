@@ -1,0 +1,62 @@
+native:
+  - 'src/**'
+  - 'tests/**'
+  - 'examples/**'
+  - 'Cargo.{toml,lock}'
+  - '.cargo/**'
+  - 'mise.{toml,lock}'
+  - 'xtask/Cargo.toml'
+  - 'xtask/src/{main,cli,tasks}.rs'
+  - 'proofs/{lean/vectors,quint/traces,prolog/vectors}/**'
+memory:
+  - 'src/{sys,handles,resource,transaction,child,command,plan,options,mitigation,failure_tests}.rs'
+  - 'tests/**'
+  - 'xtask/src/verifier.rs'
+  - 'Cargo.{toml,lock}'
+api:
+  - 'src/**'
+  - 'Cargo.{toml,lock}'
+  - 'public-api/**'
+  - 'xtask/src/tasks.rs'
+  - 'mise.{toml,lock}'
+package:
+  - 'src/**'
+  - 'tests/**'
+  - 'examples/**'
+  - 'docs/**'
+  - 'Cargo.{toml,lock}'
+  - 'README.md'
+  - 'CHANGELOG.md'
+  - 'REUSE.toml'
+  - 'LICENSE*'
+  - 'xtask/src/tasks.rs'
+kani:
+  - 'src/domain/**'
+  - 'src/mitigation.rs'
+  - 'Cargo.toml'
+  - 'xtask/src/proofs/{kani,tools,mod}.rs'
+lean:
+  - 'src/domain/command_line_rules.rs'
+  - 'proofs/lean/**'
+  - 'xtask/src/proofs/{lean,tools,mod}.rs'
+verus:
+  - 'src/domain/command_line_rules.rs'
+  - 'proofs/{verus,lean}/**'
+  - 'xtask/src/proofs/{verus,tools,mod}.rs'
+tla:
+  - 'src/{child,transaction}.rs'
+  - 'proofs/tla/**'
+  - 'xtask/src/proofs/{tla,tools,mod}.rs'
+quint:
+  - 'src/{child,transaction,command}.rs'
+  - 'tests/lifecycle/**'
+  - 'proofs/quint/**'
+  - 'xtask/src/proofs/{quint,tools,mod}.rs'
+alloy:
+  - 'src/{handles,resource,transaction}.rs'
+  - 'proofs/alloy/**'
+  - 'xtask/src/proofs/{alloy,tools,mod}.rs'
+prolog:
+  - 'src/{sys,command}.rs'
+  - 'proofs/prolog/**'
+  - 'xtask/src/proofs/{prolog,tools,mod}.rs'

@@ -1,11 +1,19 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>P4suta/renovate-config"],
   "packageRules": [
     {
-      "description": "A numeric Rust toolchain is the MSRV, which follows rust-version in Cargo.toml and moves only with an ADR (ADR 0018).",
+      "description": "Rust 1.84 is the workspace MSRV and moves only with an ADR (ADR 0018).",
       "matchDepNames": ["rust"],
-      "matchCurrentValue": "/^\\d+\\.\\d+(\\.\\d+)?$/",
+      "matchFileNames": [".github/workflows/ci.yml"],
+      "matchCurrentValue": "/^1\\.84(?:\\.\\d+)?$/",
       "enabled": false
+    },
+    {
+      "description": "sha2 0.11 requires Rust 1.85, above the workspace MSRV.",
+      "matchManagers": ["cargo"],
+      "matchDepNames": ["sha2"],
+      "allowedVersions": "<0.11"
     }
   ]
 }
