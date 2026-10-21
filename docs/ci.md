@@ -3,6 +3,7 @@
 `CI` runs on pull requests and merge groups.
 One Ubuntu 24.04 job always runs formatting, Clippy, repository laws, unit and integration tests available on Linux, the empty non-Windows API check, dependency policy, REUSE, typos, and actionlint.
 `mise.toml` pins its tools.
+The pinned mise action verifies each platform's binary with the release's signed checksums.
 Windows-only doctests run with the native Windows tests; Linux still executes all supported unit and integration targets.
 
 [The path filters](../.github/filters/ci.yml) select additional contracts.

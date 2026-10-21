@@ -49,7 +49,6 @@ jobs:
       - uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde
         with:
           version: v2026.10.13
-          sha256: 94c45523c7b6760b7da704f16051171ca32e8447a849a02266a439a4455e9a12
           cache: true
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
       - run: mise x -- just fmt
@@ -152,7 +151,6 @@ jobs:
       - uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde
         with:
           version: v2026.10.13
-          sha256: 94c45523c7b6760b7da704f16051171ca32e8447a849a02266a439a4455e9a12
           install_args: rust just
           cache: true
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
@@ -229,7 +227,6 @@ jobs:
       - uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde
         with:
           version: v2026.10.13
-          sha256: 94c45523c7b6760b7da704f16051171ca32e8447a849a02266a439a4455e9a12
           install_args: rust python uv
           cache: true
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
