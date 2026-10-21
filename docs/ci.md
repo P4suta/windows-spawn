@@ -9,7 +9,7 @@ Windows-only doctests run with the native Windows tests; Linux still executes al
 
 | Contract | Selected verification |
 | --- | --- |
-| Native source, tests, build inputs, or replay vectors | Windows x64 tests on Rust 1.84.1 and 1.99.1, i686 ConPTY regression, native ARM64 tests |
+| Native source, tests, build inputs, or replay vectors | Windows Clippy, x64 tests on Rust 1.84.1 and 1.99.1, i686 ConPTY regression, native ARM64 tests |
 | Native ownership or memory boundary | Windows Application Verifier, including its misuse controls |
 | Library API or snapshot toolchain | Windows public API snapshot |
 | Package contents, documentation, or packaging command | Windows documentation, doctests, and package contents and build check |

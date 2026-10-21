@@ -1,4 +1,5 @@
 native:
+  - '.github/workflows/ci.yml'
   - 'src/**'
   - 'tests/**'
   - 'examples/**'
@@ -14,12 +15,15 @@ memory:
   - 'xtask/src/verifier.rs'
   - 'Cargo.{toml,lock}'
 api:
+  - '.github/workflows/ci.yml'
   - 'src/**'
   - 'Cargo.{toml,lock}'
   - 'public-api/**'
   - 'xtask/src/tasks.rs'
   - 'mise.{toml,lock}'
 package:
+  - '.github/workflows/ci.yml'
+  - 'mise.{toml,lock}'
   - 'src/**'
   - 'tests/**'
   - 'examples/**'

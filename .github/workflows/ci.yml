@@ -79,9 +79,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f  # v1
         with:
           toolchain: ${{ matrix.rust }}
+          components: ${{ matrix.rust != '1.84.1' && 'clippy' || '' }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: ${{ matrix.rust }}
+      - name: Lint the native Windows implementation
+        if: matrix.rust != '1.84.1'
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo xtask test
 
   i686-smoke:

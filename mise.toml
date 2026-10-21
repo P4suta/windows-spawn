@@ -1,6 +1,6 @@
 [tools]
 rust = { version = "1.99.1", components = "rustfmt,clippy" }
-just = "1.57.0"
+just = "1.59.0"
 actionlint = "1.7.12"
 typos = "1.51.1"
 cargo-deny = "0.19.4"
