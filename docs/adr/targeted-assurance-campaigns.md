@@ -5,6 +5,8 @@ status: accepted
 
 # Targeted assurance campaigns
 
+The ordinary hosted check selection and aggregation in this decision are partly superseded by [select checks by changed contract](select-checks-by-changed-contract.md).
+
 ## Context
 
 The crate's unsafe Win32 boundary compiles on Windows.

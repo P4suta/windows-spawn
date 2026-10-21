@@ -3,10 +3,10 @@ pub mod windows_spawn
 pub windows_spawn::AtlThunkEmulation::Defer = 0
 pub windows_spawn::AtlThunkEmulation::Enable = 1
 impl core::clone::Clone for windows_spawn::AtlThunkEmulation
-pub fn windows_spawn::AtlThunkEmulation::clone(&self) -> windows_spawn::AtlThunkEmulation
+pub fn windows_spawn::AtlThunkEmulation::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::AtlThunkEmulation
 impl core::cmp::PartialEq for windows_spawn::AtlThunkEmulation
-pub fn windows_spawn::AtlThunkEmulation::eq(&self, &windows_spawn::AtlThunkEmulation) -> bool
+pub fn windows_spawn::AtlThunkEmulation::eq(&self, &Self) -> bool
 impl core::default::Default for windows_spawn::AtlThunkEmulation
 pub fn windows_spawn::AtlThunkEmulation::default() -> Self
 impl core::fmt::Debug for windows_spawn::AtlThunkEmulation
@@ -28,10 +28,10 @@ pub windows_spawn::BlockNonCetBinaries::AlwaysOn = 1
 pub windows_spawn::BlockNonCetBinaries::Defer = 0
 pub windows_spawn::BlockNonCetBinaries::NonEhContinuation = 3
 impl core::clone::Clone for windows_spawn::BlockNonCetBinaries
-pub fn windows_spawn::BlockNonCetBinaries::clone(&self) -> windows_spawn::BlockNonCetBinaries
+pub fn windows_spawn::BlockNonCetBinaries::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::BlockNonCetBinaries
 impl core::cmp::PartialEq for windows_spawn::BlockNonCetBinaries
-pub fn windows_spawn::BlockNonCetBinaries::eq(&self, &windows_spawn::BlockNonCetBinaries) -> bool
+pub fn windows_spawn::BlockNonCetBinaries::eq(&self, &Self) -> bool
 impl core::default::Default for windows_spawn::BlockNonCetBinaries
 pub fn windows_spawn::BlockNonCetBinaries::default() -> Self
 impl core::fmt::Debug for windows_spawn::BlockNonCetBinaries
@@ -53,10 +53,10 @@ pub windows_spawn::CetShadowStacks::AlwaysOn = 1
 pub windows_spawn::CetShadowStacks::Defer = 0
 pub windows_spawn::CetShadowStacks::Strict = 3
 impl core::clone::Clone for windows_spawn::CetShadowStacks
-pub fn windows_spawn::CetShadowStacks::clone(&self) -> windows_spawn::CetShadowStacks
+pub fn windows_spawn::CetShadowStacks::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::CetShadowStacks
 impl core::cmp::PartialEq for windows_spawn::CetShadowStacks
-pub fn windows_spawn::CetShadowStacks::eq(&self, &windows_spawn::CetShadowStacks) -> bool
+pub fn windows_spawn::CetShadowStacks::eq(&self, &Self) -> bool
 impl core::default::Default for windows_spawn::CetShadowStacks
 pub fn windows_spawn::CetShadowStacks::default() -> Self
 impl core::fmt::Debug for windows_spawn::CetShadowStacks
@@ -78,10 +78,10 @@ pub windows_spawn::ConsoleMode::NewConsole = 16
 pub windows_spawn::ConsoleMode::NoConsole = 8
 pub windows_spawn::ConsoleMode::NoWindow = 134217728
 impl core::clone::Clone for windows_spawn::ConsoleMode
-pub fn windows_spawn::ConsoleMode::clone(&self) -> windows_spawn::ConsoleMode
+pub fn windows_spawn::ConsoleMode::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::ConsoleMode
 impl core::cmp::PartialEq for windows_spawn::ConsoleMode
-pub fn windows_spawn::ConsoleMode::eq(&self, &windows_spawn::ConsoleMode) -> bool
+pub fn windows_spawn::ConsoleMode::eq(&self, &Self) -> bool
 impl core::default::Default for windows_spawn::ConsoleMode
 pub fn windows_spawn::ConsoleMode::default() -> Self
 impl core::fmt::Debug for windows_spawn::ConsoleMode
@@ -103,10 +103,10 @@ pub windows_spawn::ControlFlowGuard::AlwaysOn = 1
 pub windows_spawn::ControlFlowGuard::Defer = 0
 pub windows_spawn::ControlFlowGuard::ExportSuppression = 3
 impl core::clone::Clone for windows_spawn::ControlFlowGuard
-pub fn windows_spawn::ControlFlowGuard::clone(&self) -> windows_spawn::ControlFlowGuard
+pub fn windows_spawn::ControlFlowGuard::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::ControlFlowGuard
 impl core::cmp::PartialEq for windows_spawn::ControlFlowGuard
-pub fn windows_spawn::ControlFlowGuard::eq(&self, &windows_spawn::ControlFlowGuard) -> bool
+pub fn windows_spawn::ControlFlowGuard::eq(&self, &Self) -> bool
 impl core::default::Default for windows_spawn::ControlFlowGuard
 pub fn windows_spawn::ControlFlowGuard::default() -> Self
 impl core::fmt::Debug for windows_spawn::ControlFlowGuard
@@ -126,10 +126,10 @@ impl core::panic::unwind_safe::UnwindSafe for windows_spawn::ControlFlowGuard
 pub windows_spawn::Dep::Defer = 0
 pub windows_spawn::Dep::Enable = 1
 impl core::clone::Clone for windows_spawn::Dep
-pub fn windows_spawn::Dep::clone(&self) -> windows_spawn::Dep
+pub fn windows_spawn::Dep::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::Dep
 impl core::cmp::PartialEq for windows_spawn::Dep
-pub fn windows_spawn::Dep::eq(&self, &windows_spawn::Dep) -> bool
+pub fn windows_spawn::Dep::eq(&self, &Self) -> bool
 impl core::default::Default for windows_spawn::Dep
 pub fn windows_spawn::Dep::default() -> Self
 impl core::fmt::Debug for windows_spawn::Dep
@@ -151,10 +151,10 @@ pub windows_spawn::DynamicCode::Defer = 0
 pub windows_spawn::DynamicCode::Prohibit = 1
 pub windows_spawn::DynamicCode::ProhibitWithOptOut = 3
 impl core::clone::Clone for windows_spawn::DynamicCode
-pub fn windows_spawn::DynamicCode::clone(&self) -> windows_spawn::DynamicCode
+pub fn windows_spawn::DynamicCode::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::DynamicCode
 impl core::cmp::PartialEq for windows_spawn::DynamicCode
-pub fn windows_spawn::DynamicCode::eq(&self, &windows_spawn::DynamicCode) -> bool
+pub fn windows_spawn::DynamicCode::eq(&self, &Self) -> bool
 impl core::default::Default for windows_spawn::DynamicCode
 pub fn windows_spawn::DynamicCode::default() -> Self
 impl core::fmt::Debug for windows_spawn::DynamicCode
@@ -177,10 +177,10 @@ pub windows_spawn::InputField::EnvironmentName
 pub windows_spawn::InputField::EnvironmentValue
 pub windows_spawn::InputField::Program
 impl core::clone::Clone for windows_spawn::InputField
-pub fn windows_spawn::InputField::clone(&self) -> windows_spawn::InputField
+pub fn windows_spawn::InputField::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::InputField
 impl core::cmp::PartialEq for windows_spawn::InputField
-pub fn windows_spawn::InputField::eq(&self, &windows_spawn::InputField) -> bool
+pub fn windows_spawn::InputField::eq(&self, &Self) -> bool
 impl core::fmt::Debug for windows_spawn::InputField
 pub fn windows_spawn::InputField::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for windows_spawn::InputField
@@ -202,10 +202,10 @@ pub windows_spawn::LoaderIntegrity::AlwaysOn = 1
 pub windows_spawn::LoaderIntegrity::Audit = 3
 pub windows_spawn::LoaderIntegrity::Defer = 0
 impl core::clone::Clone for windows_spawn::LoaderIntegrity
-pub fn windows_spawn::LoaderIntegrity::clone(&self) -> windows_spawn::LoaderIntegrity
+pub fn windows_spawn::LoaderIntegrity::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::LoaderIntegrity
 impl core::cmp::PartialEq for windows_spawn::LoaderIntegrity
-pub fn windows_spawn::LoaderIntegrity::eq(&self, &windows_spawn::LoaderIntegrity) -> bool
+pub fn windows_spawn::LoaderIntegrity::eq(&self, &Self) -> bool
 impl core::default::Default for windows_spawn::LoaderIntegrity
 pub fn windows_spawn::LoaderIntegrity::default() -> Self
 impl core::fmt::Debug for windows_spawn::LoaderIntegrity
@@ -226,10 +226,10 @@ pub windows_spawn::Mitigation::AlwaysOff = 2
 pub windows_spawn::Mitigation::AlwaysOn = 1
 pub windows_spawn::Mitigation::Defer = 0
 impl core::clone::Clone for windows_spawn::Mitigation
-pub fn windows_spawn::Mitigation::clone(&self) -> windows_spawn::Mitigation
+pub fn windows_spawn::Mitigation::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::Mitigation
 impl core::cmp::PartialEq for windows_spawn::Mitigation
-pub fn windows_spawn::Mitigation::eq(&self, &windows_spawn::Mitigation) -> bool
+pub fn windows_spawn::Mitigation::eq(&self, &Self) -> bool
 impl core::default::Default for windows_spawn::Mitigation
 pub fn windows_spawn::Mitigation::default() -> Self
 impl core::fmt::Debug for windows_spawn::Mitigation
@@ -251,10 +251,10 @@ pub windows_spawn::ModuleTampering::AlwaysOn = 1
 pub windows_spawn::ModuleTampering::Defer = 0
 pub windows_spawn::ModuleTampering::NoInherit = 3
 impl core::clone::Clone for windows_spawn::ModuleTampering
-pub fn windows_spawn::ModuleTampering::clone(&self) -> windows_spawn::ModuleTampering
+pub fn windows_spawn::ModuleTampering::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::ModuleTampering
 impl core::cmp::PartialEq for windows_spawn::ModuleTampering
-pub fn windows_spawn::ModuleTampering::eq(&self, &windows_spawn::ModuleTampering) -> bool
+pub fn windows_spawn::ModuleTampering::eq(&self, &Self) -> bool
 impl core::default::Default for windows_spawn::ModuleTampering
 pub fn windows_spawn::ModuleTampering::default() -> Self
 impl core::fmt::Debug for windows_spawn::ModuleTampering
@@ -276,10 +276,10 @@ pub windows_spawn::NonSystemFonts::Audit = 3
 pub windows_spawn::NonSystemFonts::Block = 1
 pub windows_spawn::NonSystemFonts::Defer = 0
 impl core::clone::Clone for windows_spawn::NonSystemFonts
-pub fn windows_spawn::NonSystemFonts::clone(&self) -> windows_spawn::NonSystemFonts
+pub fn windows_spawn::NonSystemFonts::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::NonSystemFonts
 impl core::cmp::PartialEq for windows_spawn::NonSystemFonts
-pub fn windows_spawn::NonSystemFonts::eq(&self, &windows_spawn::NonSystemFonts) -> bool
+pub fn windows_spawn::NonSystemFonts::eq(&self, &Self) -> bool
 impl core::default::Default for windows_spawn::NonSystemFonts
 pub fn windows_spawn::NonSystemFonts::default() -> Self
 impl core::fmt::Debug for windows_spawn::NonSystemFonts
@@ -320,10 +320,10 @@ pub windows_spawn::Operation::TerminateProcess
 pub windows_spawn::Operation::WaitProcess
 pub windows_spawn::Operation::WritePipe
 impl core::clone::Clone for windows_spawn::Operation
-pub fn windows_spawn::Operation::clone(&self) -> windows_spawn::Operation
+pub fn windows_spawn::Operation::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::Operation
 impl core::cmp::PartialEq for windows_spawn::Operation
-pub fn windows_spawn::Operation::eq(&self, &windows_spawn::Operation) -> bool
+pub fn windows_spawn::Operation::eq(&self, &Self) -> bool
 impl core::fmt::Debug for windows_spawn::Operation
 pub fn windows_spawn::Operation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for windows_spawn::Operation
@@ -346,10 +346,10 @@ pub windows_spawn::Phase::Reclamation
 pub windows_spawn::Phase::Resume
 pub windows_spawn::Phase::Runtime
 impl core::clone::Clone for windows_spawn::Phase
-pub fn windows_spawn::Phase::clone(&self) -> windows_spawn::Phase
+pub fn windows_spawn::Phase::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::Phase
 impl core::cmp::PartialEq for windows_spawn::Phase
-pub fn windows_spawn::Phase::eq(&self, &windows_spawn::Phase) -> bool
+pub fn windows_spawn::Phase::eq(&self, &Self) -> bool
 impl core::fmt::Debug for windows_spawn::Phase
 pub fn windows_spawn::Phase::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for windows_spawn::Phase
@@ -373,10 +373,10 @@ pub windows_spawn::PriorityClass::Idle = 64
 pub windows_spawn::PriorityClass::Normal = 32
 pub windows_spawn::PriorityClass::Realtime = 256
 impl core::clone::Clone for windows_spawn::PriorityClass
-pub fn windows_spawn::PriorityClass::clone(&self) -> windows_spawn::PriorityClass
+pub fn windows_spawn::PriorityClass::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::PriorityClass
 impl core::cmp::PartialEq for windows_spawn::PriorityClass
-pub fn windows_spawn::PriorityClass::eq(&self, &windows_spawn::PriorityClass) -> bool
+pub fn windows_spawn::PriorityClass::eq(&self, &Self) -> bool
 impl core::fmt::Debug for windows_spawn::PriorityClass
 pub fn windows_spawn::PriorityClass::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::hash::Hash for windows_spawn::PriorityClass
@@ -396,10 +396,10 @@ pub windows_spawn::RelocateImages::AlwaysOn = 1
 pub windows_spawn::RelocateImages::Defer = 0
 pub windows_spawn::RelocateImages::RequireRelocations = 3
 impl core::clone::Clone for windows_spawn::RelocateImages
-pub fn windows_spawn::RelocateImages::clone(&self) -> windows_spawn::RelocateImages
+pub fn windows_spawn::RelocateImages::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::RelocateImages
 impl core::cmp::PartialEq for windows_spawn::RelocateImages
-pub fn windows_spawn::RelocateImages::eq(&self, &windows_spawn::RelocateImages) -> bool
+pub fn windows_spawn::RelocateImages::eq(&self, &Self) -> bool
 impl core::default::Default for windows_spawn::RelocateImages
 pub fn windows_spawn::RelocateImages::default() -> Self
 impl core::fmt::Debug for windows_spawn::RelocateImages
@@ -419,10 +419,10 @@ impl core::panic::unwind_safe::UnwindSafe for windows_spawn::RelocateImages
 pub windows_spawn::Sehop::Defer = 0
 pub windows_spawn::Sehop::Enable = 1
 impl core::clone::Clone for windows_spawn::Sehop
-pub fn windows_spawn::Sehop::clone(&self) -> windows_spawn::Sehop
+pub fn windows_spawn::Sehop::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::Sehop
 impl core::cmp::PartialEq for windows_spawn::Sehop
-pub fn windows_spawn::Sehop::eq(&self, &windows_spawn::Sehop) -> bool
+pub fn windows_spawn::Sehop::eq(&self, &Self) -> bool
 impl core::default::Default for windows_spawn::Sehop
 pub fn windows_spawn::Sehop::default() -> Self
 impl core::fmt::Debug for windows_spawn::Sehop
@@ -444,10 +444,10 @@ pub windows_spawn::SignedBinaries::Defer = 0
 pub windows_spawn::SignedBinaries::MicrosoftAndStore = 3
 pub windows_spawn::SignedBinaries::MicrosoftOnly = 1
 impl core::clone::Clone for windows_spawn::SignedBinaries
-pub fn windows_spawn::SignedBinaries::clone(&self) -> windows_spawn::SignedBinaries
+pub fn windows_spawn::SignedBinaries::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::SignedBinaries
 impl core::cmp::PartialEq for windows_spawn::SignedBinaries
-pub fn windows_spawn::SignedBinaries::eq(&self, &windows_spawn::SignedBinaries) -> bool
+pub fn windows_spawn::SignedBinaries::eq(&self, &Self) -> bool
 impl core::default::Default for windows_spawn::SignedBinaries
 pub fn windows_spawn::SignedBinaries::default() -> Self
 impl core::fmt::Debug for windows_spawn::SignedBinaries
@@ -492,10 +492,10 @@ pub windows_spawn::UserCetContextIpValidation::AlwaysOn = 1
 pub windows_spawn::UserCetContextIpValidation::Defer = 0
 pub windows_spawn::UserCetContextIpValidation::Relaxed = 3
 impl core::clone::Clone for windows_spawn::UserCetContextIpValidation
-pub fn windows_spawn::UserCetContextIpValidation::clone(&self) -> windows_spawn::UserCetContextIpValidation
+pub fn windows_spawn::UserCetContextIpValidation::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::UserCetContextIpValidation
 impl core::cmp::PartialEq for windows_spawn::UserCetContextIpValidation
-pub fn windows_spawn::UserCetContextIpValidation::eq(&self, &windows_spawn::UserCetContextIpValidation) -> bool
+pub fn windows_spawn::UserCetContextIpValidation::eq(&self, &Self) -> bool
 impl core::default::Default for windows_spawn::UserCetContextIpValidation
 pub fn windows_spawn::UserCetContextIpValidation::default() -> Self
 impl core::fmt::Debug for windows_spawn::UserCetContextIpValidation
@@ -528,10 +528,10 @@ pub windows_spawn::ValidationError::PseudoConsoleWithOutputCapture
 pub windows_spawn::ValidationError::PseudoConsoleWithStdio
 pub windows_spawn::ValidationError::QuotedProgram
 impl core::clone::Clone for windows_spawn::ValidationError
-pub fn windows_spawn::ValidationError::clone(&self) -> windows_spawn::ValidationError
+pub fn windows_spawn::ValidationError::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::ValidationError
 impl core::cmp::PartialEq for windows_spawn::ValidationError
-pub fn windows_spawn::ValidationError::eq(&self, &windows_spawn::ValidationError) -> bool
+pub fn windows_spawn::ValidationError::eq(&self, &Self) -> bool
 impl core::convert::From<windows_spawn::ValidationError> for windows_spawn::SpawnError
 pub fn windows_spawn::SpawnError::from(windows_spawn::ValidationError) -> Self
 impl core::error::Error for windows_spawn::ValidationError
@@ -560,10 +560,10 @@ pub fn windows_spawn::BorrowedPseudoConsole<'_>::as_pseudo_console(&self) -> win
 impl<'a, T: windows_spawn::AsPseudoConsole + ?core::marker::Sized> core::convert::From<&'a T> for windows_spawn::BorrowedPseudoConsole<'a>
 pub fn windows_spawn::BorrowedPseudoConsole<'a>::from(&'a T) -> Self
 impl<'a> core::clone::Clone for windows_spawn::BorrowedPseudoConsole<'a>
-pub fn windows_spawn::BorrowedPseudoConsole<'a>::clone(&self) -> windows_spawn::BorrowedPseudoConsole<'a>
+pub fn windows_spawn::BorrowedPseudoConsole<'a>::clone(&self) -> Self
 impl<'a> core::cmp::Eq for windows_spawn::BorrowedPseudoConsole<'a>
 impl<'a> core::cmp::PartialEq for windows_spawn::BorrowedPseudoConsole<'a>
-pub fn windows_spawn::BorrowedPseudoConsole<'a>::eq(&self, &windows_spawn::BorrowedPseudoConsole<'a>) -> bool
+pub fn windows_spawn::BorrowedPseudoConsole<'a>::eq(&self, &Self) -> bool
 impl<'a> core::fmt::Debug for windows_spawn::BorrowedPseudoConsole<'a>
 pub fn windows_spawn::BorrowedPseudoConsole<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a> core::hash::Hash for windows_spawn::BorrowedPseudoConsole<'a>
@@ -602,14 +602,14 @@ impl core::marker::UnsafeUnpin for windows_spawn::Child
 impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::Child
 impl core::panic::unwind_safe::UnwindSafe for windows_spawn::Child
 pub struct windows_spawn::ChildStderr
+impl alloc::io::read::Read for windows_spawn::ChildStderr
+pub fn windows_spawn::ChildStderr::read(&mut self, &mut [u8]) -> core::io::error::Result<usize>
 impl core::convert::From<windows_spawn::ChildStderr> for std::os::windows::io::handle::OwnedHandle
 pub fn std::os::windows::io::handle::OwnedHandle::from(windows_spawn::ChildStderr) -> Self
 impl core::convert::From<windows_spawn::ChildStderr> for windows_spawn::Stdio
 pub fn windows_spawn::Stdio::from(windows_spawn::ChildStderr) -> Self
 impl core::fmt::Debug for windows_spawn::ChildStderr
 pub fn windows_spawn::ChildStderr::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl std::io::Read for windows_spawn::ChildStderr
-pub fn windows_spawn::ChildStderr::read(&mut self, &mut [u8]) -> core::io::error::Result<usize>
 impl std::os::windows::io::handle::AsHandle for windows_spawn::ChildStderr
 pub fn windows_spawn::ChildStderr::as_handle(&self) -> std::os::windows::io::handle::BorrowedHandle<'_>
 impl std::os::windows::io::raw::AsRawHandle for windows_spawn::ChildStderr
@@ -628,10 +628,10 @@ impl core::convert::From<windows_spawn::ChildStdin> for windows_spawn::Stdio
 pub fn windows_spawn::Stdio::from(windows_spawn::ChildStdin) -> Self
 impl core::fmt::Debug for windows_spawn::ChildStdin
 pub fn windows_spawn::ChildStdin::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl std::io::Write for &windows_spawn::ChildStdin
+impl core::io::write::Write for &windows_spawn::ChildStdin
 pub fn &windows_spawn::ChildStdin::flush(&mut self) -> core::io::error::Result<()>
 pub fn &windows_spawn::ChildStdin::write(&mut self, &[u8]) -> core::io::error::Result<usize>
-impl std::io::Write for windows_spawn::ChildStdin
+impl core::io::write::Write for windows_spawn::ChildStdin
 pub fn windows_spawn::ChildStdin::flush(&mut self) -> core::io::error::Result<()>
 pub fn windows_spawn::ChildStdin::write(&mut self, &[u8]) -> core::io::error::Result<usize>
 impl std::os::windows::io::handle::AsHandle for windows_spawn::ChildStdin
@@ -646,14 +646,14 @@ impl core::marker::UnsafeUnpin for windows_spawn::ChildStdin
 impl core::panic::unwind_safe::RefUnwindSafe for windows_spawn::ChildStdin
 impl core::panic::unwind_safe::UnwindSafe for windows_spawn::ChildStdin
 pub struct windows_spawn::ChildStdout
+impl alloc::io::read::Read for windows_spawn::ChildStdout
+pub fn windows_spawn::ChildStdout::read(&mut self, &mut [u8]) -> core::io::error::Result<usize>
 impl core::convert::From<windows_spawn::ChildStdout> for std::os::windows::io::handle::OwnedHandle
 pub fn std::os::windows::io::handle::OwnedHandle::from(windows_spawn::ChildStdout) -> Self
 impl core::convert::From<windows_spawn::ChildStdout> for windows_spawn::Stdio
 pub fn windows_spawn::Stdio::from(windows_spawn::ChildStdout) -> Self
 impl core::fmt::Debug for windows_spawn::ChildStdout
 pub fn windows_spawn::ChildStdout::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl std::io::Read for windows_spawn::ChildStdout
-pub fn windows_spawn::ChildStdout::read(&mut self, &mut [u8]) -> core::io::error::Result<usize>
 impl std::os::windows::io::handle::AsHandle for windows_spawn::ChildStdout
 pub fn windows_spawn::ChildStdout::as_handle(&self) -> std::os::windows::io::handle::BorrowedHandle<'_>
 impl std::os::windows::io::raw::AsRawHandle for windows_spawn::ChildStdout
@@ -785,12 +785,12 @@ pub const fn windows_spawn::MitigationPolicy::strict_handle_checks(self, windows
 pub const fn windows_spawn::MitigationPolicy::user_cet_context_ip_validation(self, windows_spawn::UserCetContextIpValidation) -> Self
 pub const fn windows_spawn::MitigationPolicy::words(self) -> [u64; 2]
 impl core::clone::Clone for windows_spawn::MitigationPolicy
-pub fn windows_spawn::MitigationPolicy::clone(&self) -> windows_spawn::MitigationPolicy
+pub fn windows_spawn::MitigationPolicy::clone(&self) -> Self
 impl core::cmp::Eq for windows_spawn::MitigationPolicy
 impl core::cmp::PartialEq for windows_spawn::MitigationPolicy
-pub fn windows_spawn::MitigationPolicy::eq(&self, &windows_spawn::MitigationPolicy) -> bool
+pub fn windows_spawn::MitigationPolicy::eq(&self, &Self) -> bool
 impl core::default::Default for windows_spawn::MitigationPolicy
-pub fn windows_spawn::MitigationPolicy::default() -> windows_spawn::MitigationPolicy
+pub fn windows_spawn::MitigationPolicy::default() -> Self
 impl core::fmt::Debug for windows_spawn::MitigationPolicy
 pub fn windows_spawn::MitigationPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::hash::Hash for windows_spawn::MitigationPolicy
@@ -832,7 +832,7 @@ pub fn windows_spawn::SpawnOptions<'a>::pseudo_console(self, impl core::convert:
 impl core::default::Default for windows_spawn::SpawnOptions<'_>
 pub fn windows_spawn::SpawnOptions<'_>::default() -> Self
 impl<'a> core::clone::Clone for windows_spawn::SpawnOptions<'a>
-pub fn windows_spawn::SpawnOptions<'a>::clone(&self) -> windows_spawn::SpawnOptions<'a>
+pub fn windows_spawn::SpawnOptions<'a>::clone(&self) -> Self
 impl<'a> core::fmt::Debug for windows_spawn::SpawnOptions<'a>
 pub fn windows_spawn::SpawnOptions<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a> core::marker::Freeze for windows_spawn::SpawnOptions<'a>
