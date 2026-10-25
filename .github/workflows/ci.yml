@@ -69,7 +69,7 @@ jobs:
       fail-fast: false
       matrix:
         rust: ["1.99.1", "1.84.1"]
-    runs-on: windows-2022
+    runs-on: windows-2025
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -91,7 +91,7 @@ jobs:
     name: Windows i686 execution smoke
     needs: [quality]
     if: needs.quality.outputs.native == 'true'
-    runs-on: windows-2022
+    runs-on: windows-2025
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -142,7 +142,7 @@ jobs:
     name: Windows public API
     needs: [quality]
     if: needs.quality.outputs.api == 'true'
-    runs-on: windows-2022
+    runs-on: windows-2025
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -218,7 +218,7 @@ jobs:
     name: Package contents and build
     needs: [quality]
     if: needs.quality.outputs.package == 'true'
-    runs-on: windows-2022
+    runs-on: windows-2025
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
