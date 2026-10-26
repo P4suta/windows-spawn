@@ -5,7 +5,7 @@
 
 # Publishes the version a maintainer's signed `vX.Y.Z` tag names.
 #
-#   * The tag rulesets let only the maintainer create a `v*` tag, and `candidate` refuses one that is not annotated and verified as signed.
+#   * The tag rulesets let only the maintainer create a `v*` tag, and `resolve` refuses one that is not annotated and verified as signed.
 #     This file runs as the tagged commit has it, so those checks are defence in depth; the creation rule and the approval are the gates.
 #   * `publish` deploys to the `crates-io` environment, which waits for the maintainer's approval.
 #     crates.io's trusted publisher admits only that environment of this workflow, so nothing else can mint a publish token.
@@ -18,33 +18,34 @@ name: Release
 
 permissions: {}
 
+env:
+  RUSTUP_TOOLCHAIN: stable
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  candidate:
-    name: Verify the tag and attest the release candidate
+  resolve:
+    name: Validate the tag and resolve the release revision
     if: github.repository == 'P4suta/windows-spawn'
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     permissions:
-      artifact-metadata: write
-      attestations: write
       contents: read
-      id-token: write
+    outputs:
+      revision: ${{ steps.resolve.outputs.revision }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
+      - run: rustup toolchain install stable --profile minimal
+      - uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde
         with:
-          toolchain: stable
-      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177  # v2.87.30
-        with:
-          tool: cargo-cyclonedx@0.5.9
-      - run: python -m pip install "reuse[charset-normalizer]==6.2.0"
+          version: v2026.10.17
+          install_args: jq
+          cache: false
       - name: Require an annotated tag whose signature GitHub verified
         shell: bash
         env:
@@ -64,6 +65,359 @@ jobs:
           fi
       - name: Verify the tag, its commit on main, and the Cargo version
         run: cargo xtask verify-release-tag "$env:GITHUB_REF_NAME"
+      - name: Export the verified revision
+        id: resolve
+        shell: pwsh
+        run: |
+          $revision = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $revision -cnotmatch '\A[0-9a-f]{40}\z') {
+            throw 'release revision must be a complete commit ID'
+          }
+          "revision=$revision" >> $env:GITHUB_OUTPUT
+
+  qualify:
+    name: Qualify the release revision
+    if: always()
+    needs: [quality, test, i686-smoke, arm64, verifier, api, proofs]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.quality.outputs.revision }}
+          persist-credentials: false
+      - name: Require the release revision
+        env:
+          EXPECTED_REVISION: ${{ needs.quality.outputs.revision }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+      - uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde
+        with:
+          version: v2026.10.17
+          install_args: jq
+          cache: false
+      - name: Require complete release qualification
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          RELEASE_REVISION: ${{ needs.quality.outputs.revision }}
+          CONTRACT: |
+            type == "object" and
+            ($revision | test("\\A[0-9a-f]{40}\\z")) and
+            (keys | sort) == (["quality", "test", "i686-smoke", "arm64", "verifier", "api", "proofs"] | sort) and
+            .quality.outputs.revision == $revision and
+            (.quality.outputs.proofs | fromjson) == ["kani", "lean", "verus", "tla", "quint", "alloy", "prolog"] and
+            all(.[]; type == "object" and .result == "success")
+        run: jq -e --arg revision "$RELEASE_REVISION" "$CONTRACT" <<< "$RESULTS"
+
+  quality:
+    name: Release repository checks
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+      MISE_AUTO_INSTALL: "false"
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    outputs:
+      revision: ${{ steps.selection.outputs.revision }}
+      proofs: ${{ steps.selection.outputs.proofs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.revision }}
+          persist-credentials: false
+      - name: Require the release revision
+        env:
+          EXPECTED_REVISION: ${{ needs.resolve.outputs.revision }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+      - uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde
+        with:
+          version: v2026.10.17
+          cache: false
+      - name: Select release qualification
+        id: selection
+        env:
+          RELEASE_REVISION: ${{ needs.resolve.outputs.revision }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          CONTRACT: |
+            if ($revision | test("\\A[0-9a-f]{40}\\z")) and $event == "push" and ($ref | test("\\Arefs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+\\z")) then
+              {proofs: ["kani", "lean", "verus", "tla", "quint", "alloy", "prolog"], revision: $revision}
+            else
+              error("invalid release revision or event")
+            end
+        run: |
+          set -euo pipefail
+          selected=$(jq -n -c -e --arg revision "$RELEASE_REVISION" --arg event "$EVENT_NAME" --arg ref "$EVENT_REF" "$CONTRACT")
+          jq -r '"proofs=\(.proofs | tojson)\nrevision=\(.revision)"' <<< "$selected" >> "$GITHUB_OUTPUT"
+      - run: mise x -- uv run --no-project --with 'reuse[charset-normalizer]==6.2.0' just check
+
+  test:
+    name: Release Windows / Rust ${{ matrix.rust }}
+    needs: [resolve, quality]
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ["1.99.1", "1.84.1"]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.revision }}
+          persist-credentials: false
+      - name: Require the release revision
+        shell: bash
+        env:
+          EXPECTED_REVISION: ${{ needs.resolve.outputs.revision }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+      - run: rustup toolchain install "$env:RUSTUP_TOOLCHAIN" --profile minimal
+      - if: matrix.rust != '1.84.1'
+        run: rustup component add clippy --toolchain "$env:RUSTUP_TOOLCHAIN"
+      - uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde
+        with:
+          version: v2026.10.17
+          install_args: jq
+          cache: false
+      - uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde
+        if: matrix.rust != '1.84.1'
+        with:
+          version: v2026.10.17
+          install_args: python uv
+          cache: false
+      - name: Lint the native Windows implementation
+        if: matrix.rust != '1.84.1'
+        run: cargo "+$env:RUSTUP_TOOLCHAIN" clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo "+$env:RUSTUP_TOOLCHAIN" xtask test
+      - name: Check documentation and package contents
+        if: matrix.rust != '1.84.1'
+        run: |
+          mise x -- cargo xtask doc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          mise x -- uv run --no-project --with 'reuse[charset-normalizer]==6.2.0' cargo xtask package-check
+
+  i686-smoke:
+    name: Release Windows i686 execution smoke
+    needs: [resolve, quality]
+    runs-on: windows-2025
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.revision }}
+          persist-credentials: false
+      - name: Require the release revision
+        shell: bash
+        env:
+          EXPECTED_REVISION: ${{ needs.resolve.outputs.revision }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+      - run: rustup toolchain install 1.99.1 --profile minimal --target i686-pc-windows-msvc
+      - run: >-
+          cargo +1.99.1 test --locked --target i686-pc-windows-msvc --test windows_spawn
+          pseudoconsole_regular_stdio_stays_off_parent_pipes -- --exact
+
+  arm64:
+    name: Release Windows 11 ARM64
+    needs: [resolve, quality]
+    runs-on: windows-11-arm
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.revision }}
+          persist-credentials: false
+      - name: Require the release revision
+        shell: bash
+        env:
+          EXPECTED_REVISION: ${{ needs.resolve.outputs.revision }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+      - run: rustup toolchain install 1.99.1 --profile minimal
+      - uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde
+        with:
+          version: v2026.10.17
+          install_args: jq
+          cache: false
+      - run: cargo +1.99.1 xtask test
+
+  verifier:
+    name: Release Application Verifier
+    needs: [resolve, quality]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.revision }}
+          persist-credentials: false
+      - name: Require the release revision
+        shell: bash
+        env:
+          EXPECTED_REVISION: ${{ needs.resolve.outputs.revision }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+      - run: rustup toolchain install 1.99.1 --profile minimal
+      - run: cargo +1.99.1 xtask verifier
+
+  api:
+    name: Release Windows public API
+    needs: [resolve, quality]
+    runs-on: windows-2025
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.revision }}
+          persist-credentials: false
+      - name: Require the release revision
+        shell: bash
+        env:
+          EXPECTED_REVISION: ${{ needs.resolve.outputs.revision }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+      - uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde
+        with:
+          version: v2026.10.17
+          install_args: rust just
+          cache: false
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177  # v2.87.30
+        with:
+          tool: cargo-public-api@0.52.0
+      - run: rustup toolchain install (Get-Content public-api/rust-toolchain -Raw).Trim() --profile minimal
+      - run: mise x -- just public-api
+
+  proofs:
+    name: Release proofs / ${{ matrix.layer }}
+    needs: [resolve, quality]
+    strategy:
+      fail-fast: false
+      matrix:
+        layer: ${{ fromJSON(needs.quality.outputs.proofs) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.revision }}
+          persist-credentials: false
+      - name: Require the release revision
+        env:
+          EXPECTED_REVISION: ${{ needs.resolve.outputs.revision }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+      - run: rustup toolchain install 1.99.1 --profile minimal
+      - name: Install Kani 0.68.0
+        if: matrix.layer == 'kani'
+        run: |
+          curl --fail --location --silent --show-error --output kani.tar.gz \
+            https://github.com/model-checking/kani/releases/download/kani-0.68.0/kani-0.68.0-x86_64-unknown-linux-gnu.tar.gz
+          echo "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3  kani.tar.gz" | sha256sum --check
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup --use-local-bundle kani.tar.gz
+      - name: Install elan 4.2.4
+        if: matrix.layer == 'lean'
+        run: |
+          curl --fail --location --silent --show-error --output elan.tar.gz \
+            https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz
+          echo "42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63  elan.tar.gz" | sha256sum --check
+          tar -xzf elan.tar.gz
+          ./elan-init -y --no-modify-path --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        if: matrix.layer == 'tla' || matrix.layer == 'quint' || matrix.layer == 'alloy'
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        if: matrix.layer == 'quint'
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Install SWI-Prolog
+        if: matrix.layer == 'prolog'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends swi-prolog-nox
+      - env:
+          LAYER: ${{ matrix.layer }}
+        run: cargo +1.99.1 xtask proofs "$LAYER"
+
+  candidate:
+    name: Attest the qualified release candidate
+    needs: [resolve, qualify]
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      artifact-metadata: write  # Store the candidate's attestation metadata.
+      attestations: write  # Attach provenance and SBOM attestations to the candidate.
+      contents: read
+      id-token: write  # Identify the workflow to the attestation service.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the qualified revision
+        shell: bash
+        env:
+          EXPECTED_REVISION: ${{ needs.resolve.outputs.revision }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+      - run: rustup toolchain install stable --profile minimal
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177  # v2.87.30
+        with:
+          tool: cargo-cyclonedx@0.5.9
+      - run: python -m pip install "reuse[charset-normalizer]==6.2.0"
       - name: Build and verify the release candidate
         id: candidate
         run: cargo xtask release-candidate --github-output
@@ -96,14 +450,12 @@ jobs:
       url: https://crates.io/crates/windows-spawn
     permissions:
       contents: read
-      id-token: write
+      id-token: write  # Authenticate this environment through crates.io trusted publishing.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
-        with:
-          toolchain: stable
+      - run: rustup toolchain install stable --profile minimal
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: release-candidate
@@ -152,14 +504,12 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
-      contents: write
+      contents: write  # Create the draft release and publish its complete asset set.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
-        with:
-          toolchain: stable
+      - run: rustup toolchain install stable --profile minimal
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: release-candidate

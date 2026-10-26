@@ -5,7 +5,7 @@
     {
       "description": "Rust 1.84 is the workspace MSRV and moves only with an ADR (ADR 0018).",
       "matchDepNames": ["rust"],
-      "matchFileNames": [".github/workflows/ci.yml"],
+      "matchFileNames": [".github/workflows/ci.yml", ".github/workflows/release.yml"],
       "matchCurrentValue": "/^1\\.84(?:\\.\\d+)?$/",
       "enabled": false
     },
@@ -14,6 +14,12 @@
       "matchManagers": ["cargo"],
       "matchDepNames": ["sha2"],
       "allowedVersions": "<0.11"
+    },
+    {
+      "description": "yaml-rust2 0.12 requires Rust 1.85, above the workspace MSRV.",
+      "matchManagers": ["cargo"],
+      "matchDepNames": ["yaml-rust2"],
+      "allowedVersions": "<0.12"
     }
   ]
 }

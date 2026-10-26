@@ -12,16 +12,19 @@ A change to ownership, handle inheritance, Job lifetime, ConPTY, mitigation, quo
 
 ## Development
 
-Tests require Windows 10 version 1809 or later.
+Native tests require Windows 10 version 1809 or later.
 The crate supports Rust 1.84 and later.
-With the tool versions CI uses installed, run:
+With the pinned tools installed, run the ordinary host checks:
 
 ```powershell
-just ci
-just coverage
+mise x -- uv run --no-project --with 'reuse[charset-normalizer]==6.2.0' just check
 ```
 
-Also run:
+The command includes strict library Clippy and the native smoke test on Windows.
+`just windows-smoke` exposes those Windows checks for a focused investigation.
+`just ci` remains a broader local suite for deliberate verification.
+Coverage supports a specific investigation rather than every change.
+Also check the diff and secrets:
 
 ```powershell
 actionlint
@@ -61,23 +64,29 @@ cargo +nightly fuzz run environment-block -- -max_total_time=600 -max_len=16384
 ```
 
 `WINDOWS_SPAWN_RANDOM_SCALE` multiplies the number of random command lines and environments for a local investigation.
-Hosted checks keep bounded native stress tests, careful, `Application Verifier`, proof layers, and the ordinary platform tests.
-See [targeted assurance campaigns](docs/adr/targeted-assurance-campaigns.md) for the hosted verification policy.
+Ordinary hosted checks run the Linux repository gate and Windows x64 smoke check on every pull request and merge group.
+The signed-tag release workflow qualifies the exact commit with the full native, MSRV, architecture, API, package, and proof gates before building its candidate.
+See [release-only heavy checks](docs/adr/release-only-heavy-checks.md) for the cadence and [CI selection](docs/ci.md) for commands and evidence boundaries.
 
 ## Expectations
 
-- Keep the documented ownership and cleanup behavior, including on errors.
-- Give every `unsafe` block a specific safety justification.
-- Write only doc comments and `// SAFETY:` comments; the reason for a change goes in its commit message (ADR 0013).
-- Write a lint exception as `#[expect(lint, reason = "…")]` on the one item it concerns; `just gates` refuses every `allow` and checks the other repository laws (ADR 0018).
-- Add deterministic tests for behavior changes; tests wait for events, never for time (ADR 0010).
-- Change the public API snapshot only with an API change, and state its compatibility impact.
-- Update the crate docs, ADRs, or security boundary when a contract changes.
-- Keep dependencies few and within the MSRV.
+Keep the documented ownership and cleanup behavior, including on errors.
+Give every `unsafe` block a specific safety justification.
+Write only doc comments and `// SAFETY:` comments.
+The reason for a change goes in its commit message, as [ADR 0013](docs/adr/0013-repository-laws-are-enforced-mechanically.md) requires.
 
-Required checks and review threads must be resolved before merge.
+Write a lint exception as `#[expect(lint, reason = "…")]` on the one item it concerns.
+`just gates` refuses every `allow` and checks the other repository laws in [ADR 0018](docs/adr/0018-lint-exceptions-expire-and-the-msrv-is-rust-1-84.md).
+Add deterministic tests for behavior changes.
+Tests wait for events, never for time, as [ADR 0010](docs/adr/0010-time-decides-nothing.md) requires.
+
+Change the public API snapshot only with an API change, and state its compatibility impact.
+Update the crate docs, ADRs, or security boundary when a contract changes.
+Keep dependencies few and within the MSRV.
+
+Pass required checks and resolve review threads before merge.
 Pull requests are squash-merged into `main`.
 
 ## Check selection
 
-See [CI selection](docs/ci.md) for the always-running gate, affected native and proof contracts, and local setup.
+See [CI selection](docs/ci.md) for the ordinary gate, release qualification, and local setup.

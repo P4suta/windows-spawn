@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SimpleTask {
+    Check,
+    WindowsSmoke,
     Fmt,
     Clippy,
     Gates,
@@ -84,6 +86,8 @@ pub(crate) fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Task,
     let rest: Vec<String> = arguments.collect();
 
     match command.as_str() {
+        "check" => no_arguments(&rest, Task::Simple(SimpleTask::Check)),
+        "windows-smoke" => no_arguments(&rest, Task::Simple(SimpleTask::WindowsSmoke)),
         "fmt" => no_arguments(&rest, Task::Simple(SimpleTask::Fmt)),
         "clippy" => no_arguments(&rest, Task::Simple(SimpleTask::Clippy)),
         "gates" => no_arguments(&rest, Task::Simple(SimpleTask::Gates)),
@@ -237,6 +241,22 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn local_fast_commands_accept_only_their_exact_entrypoints() {
+        for (command, expected) in [
+            ("check", SimpleTask::Check),
+            ("windows-smoke", SimpleTask::WindowsSmoke),
+        ] {
+            assert_eq!(parse(strings(&[command])).unwrap(), Task::Simple(expected));
+            for argument in ["extra", "--allow-dirty", "--", "--skip-tests"] {
+                assert!(
+                    parse(strings(&[command, argument])).is_err(),
+                    "{command} {argument}"
+                );
+            }
+        }
     }
 
     #[test]

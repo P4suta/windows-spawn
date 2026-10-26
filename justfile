@@ -3,6 +3,12 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPoli
 default:
     @just --list
 
+check:
+    cargo xtask check
+
+windows-smoke:
+    cargo xtask windows-smoke
+
 fmt:
     cargo xtask fmt
 
@@ -52,7 +58,7 @@ mutation:
     cargo xtask mutation
 
 proofs *layers:
-    cargo xtask proofs {{layers}}
+    cargo xtask proofs {{ layers }}
 
 proof-traces:
     cargo xtask proof-traces

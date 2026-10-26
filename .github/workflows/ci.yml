@@ -8,11 +8,11 @@ permissions:
   contents: read
 
 env:
-  MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  MISE_GITHUB_TOKEN: ${{ github.token }}
   MISE_AUTO_INSTALL: "false"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -20,128 +20,20 @@ jobs:
     name: Fast repository checks
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      native: ${{ steps.changes.outputs.native }}
-      memory: ${{ steps.changes.outputs.memory }}
-      api: ${{ steps.changes.outputs.api }}
-      package: ${{ steps.changes.outputs.package }}
-      proofs: ${{ steps.layers.outputs.proofs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d  # v4.0.3
-        id: changes
-        with:
-          base: ${{ github.event.merge_group.base_sha || github.event.repository.default_branch }}
-          filters: .github/filters/ci.yml
-      - name: Select proof layers
-        id: layers
-        env:
-          CHANGES: ${{ steps.changes.outputs.changes }}
-        run: |
-          proofs=$(jq -ce '[.[] | select(IN("kani", "lean", "verus", "tla", "quint", "alloy", "prolog"))]' <<< "$CHANGES")
-          echo "proofs=$proofs" >> "$GITHUB_OUTPUT"
       - uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde
         with:
           version: v2026.10.17
           cache: true
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
-      - run: mise x -- just fmt
-      - run: mise x -- just clippy
-      - run: mise x -- just gates
-      - run: mise x -- just test
-      - run: mise x -- just linux-empty
-      - run: mise x -- just supply-chain
-      - run: mise x -- uv run --no-project --with 'reuse[charset-normalizer]==6.2.0' cargo xtask reuse
-      - run: mise x -- just typos
-      - run: mise x -- actionlint
+      - run: mise x -- uv run --no-project --with 'reuse[charset-normalizer]==6.2.0' just check
 
-  test:
-    name: Windows / Rust ${{ matrix.rust }}
-    needs: [quality]
-    if: needs.quality.outputs.native == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        rust: ["1.99.1", "1.84.1"]
-    runs-on: windows-2025
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
-        with:
-          toolchain: ${{ matrix.rust }}
-          components: ${{ matrix.rust != '1.84.1' && 'clippy' || '' }}
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
-        with:
-          key: ${{ matrix.rust }}
-      - name: Lint the native Windows implementation
-        if: matrix.rust != '1.84.1'
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo xtask test
-
-  i686-smoke:
-    name: Windows i686 execution smoke
-    needs: [quality]
-    if: needs.quality.outputs.native == 'true'
-    runs-on: windows-2025
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
-        with:
-          toolchain: "1.99.1"
-          targets: i686-pc-windows-msvc
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
-      - run: >-
-          cargo test --locked --target i686-pc-windows-msvc --test windows_spawn
-          pseudoconsole_regular_stdio_stays_off_parent_pipes -- --exact
-
-  arm64:
-    name: Windows 11 ARM64
-    needs: [quality]
-    if: needs.quality.outputs.native == 'true'
-    runs-on: windows-11-arm
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
-        with:
-          toolchain: "1.99.1"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
-      - run: cargo xtask test
-
-  verifier:
-    name: Application Verifier
-    needs: [quality]
-    if: needs.quality.outputs.memory == 'true'
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
-        with:
-          toolchain: "1.99.1"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
-      - run: cargo xtask verifier
-
-  api:
-    name: Windows public API
-    needs: [quality]
-    if: needs.quality.outputs.api == 'true'
+  windows-fast:
+    name: Windows x64 compile and spawn smoke
+    needs: quality
     runs-on: windows-2025
     timeout-minutes: 15
     steps:
@@ -153,73 +45,15 @@ jobs:
           version: v2026.10.17
           install_args: rust just
           cache: true
-      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177  # v2.87.30
-        with:
-          tool: cargo-public-api@0.52.0
-      - run: rustup toolchain install (Get-Content public-api/rust-toolchain -Raw).Trim() --profile minimal
-      - run: mise x -- just public-api
-
-  proofs:
-    name: Proofs / ${{ matrix.layer }}
-    needs: [quality]
-    if: needs.quality.outputs.proofs != '[]'
-    strategy:
-      fail-fast: false
-      matrix:
-        layer: ${{ fromJSON(needs.quality.outputs.proofs) }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
-        with:
-          toolchain: "1.99.1"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
-        with:
-          key: ${{ matrix.layer }}
-      - name: Install Kani 0.68.0
-        if: matrix.layer == 'kani'
-        run: |
-          curl --fail --location --silent --show-error --output kani.tar.gz \
-            https://github.com/model-checking/kani/releases/download/kani-0.68.0/kani-0.68.0-x86_64-unknown-linux-gnu.tar.gz
-          echo "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3  kani.tar.gz" | sha256sum --check
-          cargo install --locked kani-verifier --version 0.68.0
-          cargo kani setup --use-local-bundle kani.tar.gz
-      - name: Install elan 4.2.4
-        if: matrix.layer == 'lean'
-        run: |
-          curl --fail --location --silent --show-error --output elan.tar.gz \
-            https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz
-          echo "42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63  elan.tar.gz" | sha256sum --check
-          tar -xzf elan.tar.gz
-          ./elan-init -y --no-modify-path --default-toolchain none
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
-        if: matrix.layer == 'tla' || matrix.layer == 'quint' || matrix.layer == 'alloy'
-        with:
-          distribution: temurin
-          java-version: "21"
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
-        if: matrix.layer == 'quint'
-        with:
-          node-version: "24"
-      - name: Install SWI-Prolog
-        if: matrix.layer == 'prolog'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends swi-prolog-nox
-      - env:
-          LAYER: ${{ matrix.layer }}
-        run: cargo xtask proofs "$LAYER"
+      - run: mise x -- just windows-smoke
 
-  package:
-    name: Package contents and build
-    needs: [quality]
-    if: needs.quality.outputs.package == 'true'
-    runs-on: windows-2025
-    timeout-minutes: 15
+  required:
+    name: required
+    if: always()
+    needs: [quality, windows-fast]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -227,40 +61,13 @@ jobs:
       - uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde
         with:
           version: v2026.10.17
-          install_args: rust python uv
+          install_args: jq
           cache: true
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
-      - run: mise x -- cargo xtask doc
-      - run: mise x -- cargo test --doc --locked
-      - run: mise x -- uv run --no-project --with 'reuse[charset-normalizer]==6.2.0' cargo xtask package-check
-
-  required:
-    name: required
-    if: always()
-    needs: [quality, test, i686-smoke, arm64, verifier, api, proofs, package]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions: {}
-    steps:
-      - name: Require every selected check to succeed
+      - name: Require the ordinary checks to succeed
         env:
           RESULTS: ${{ toJSON(needs) }}
-        run: |
-          jq -e '
-            def expected($selected): if $selected then "success" else "skipped" end;
-            .quality.outputs as $s |
-            ($s.proofs | fromjson) as $layers |
-            (keys | sort) == (["quality", "test", "i686-smoke", "arm64", "verifier", "api", "proofs", "package"] | sort) and
-            ([$s.native, $s.memory, $s.api, $s.package] | all(. == "true" or . == "false")) and
-            ($layers | type == "array") and
-            ($layers | all(IN("kani", "lean", "verus", "tla", "quint", "alloy", "prolog"))) and
-            (($layers | length) == ($layers | unique | length)) and
-            .quality.result == "success" and
-            (.test.result == expected($s.native == "true")) and
-            (."i686-smoke".result == expected($s.native == "true")) and
-            (.arm64.result == expected($s.native == "true")) and
-            (.verifier.result == expected($s.memory == "true")) and
-            (.api.result == expected($s.api == "true")) and
-            (.proofs.result == expected(($layers | length) > 0)) and
-            (.package.result == expected($s.package == "true"))
-            ' <<< "$RESULTS"
+          CONTRACT: |
+            type == "object" and
+            (keys | sort) == ["quality", "windows-fast"] and
+            all(.[]; type == "object" and .result == "success")
+        run: jq -e "$CONTRACT" <<< "$RESULTS"

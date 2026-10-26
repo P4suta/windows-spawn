@@ -80,6 +80,33 @@ impl From<String> for TaskError {
 }
 
 const PACKAGE_NAME: &str = "windows-spawn";
+const WINDOWS_SMOKE_TEST: &str = "args_environment_cwd_and_wait_cache_work";
+const CLIPPY_ARGUMENTS: &[&str] = &[
+    "clippy",
+    "--workspace",
+    "--all-targets",
+    "--locked",
+    "--",
+    "-D",
+    "warnings",
+];
+const WORKSPACE_TEST_ARGUMENTS: &[&str] = &[
+    "test",
+    "--workspace",
+    "--all-targets",
+    "--locked",
+    "--",
+    "--test-threads=1",
+];
+const LINUX_EMPTY_ARGUMENTS: &[&str] = &[
+    "check",
+    "--package",
+    PACKAGE_NAME,
+    "--all-targets",
+    "--locked",
+    "--target",
+    "x86_64-unknown-linux-gnu",
+];
 const PUBLIC_API_TOOLCHAIN: &str = include_str!("../../public-api/rust-toolchain");
 /// The target whose API the snapshot records, named so that every host renders the same snapshot.
 const PUBLIC_API_TARGET: &str = "x86_64-pc-windows-msvc";
@@ -133,6 +160,7 @@ fn print_help() {
     println!(
         "\
 Repository tasks:
+  cargo xtask check|windows-smoke
   cargo xtask fmt|clippy|gates|test|doc|msrv|cross-targets|linux-empty
   cargo xtask supply-chain|reuse|typos|coverage|ci
   cargo xtask public-api [--update]
@@ -150,29 +178,13 @@ Repository tasks:
 
 fn run_simple(root: &Path, task: SimpleTask) -> Result<()> {
     match task {
+        SimpleTask::Check => run_check(root),
+        SimpleTask::WindowsSmoke => run_windows_smoke(root),
         SimpleTask::Fmt => run_cargo(root, &["fmt", "--all", "--", "--check"]),
-        SimpleTask::Clippy => run_cargo(
-            root,
-            &[
-                "clippy",
-                "--workspace",
-                "--all-targets",
-                "--locked",
-                "--",
-                "-D",
-                "warnings",
-            ],
-        ),
+        SimpleTask::Clippy => run_cargo(root, CLIPPY_ARGUMENTS),
         SimpleTask::Test => {
             let mut targets = cargo(root);
-            with_vectors(&mut targets).args([
-                "test",
-                "--workspace",
-                "--all-targets",
-                "--locked",
-                "--",
-                "--test-threads=1",
-            ]);
+            with_vectors(&mut targets).args(WORKSPACE_TEST_ARGUMENTS);
             run(&mut targets)?;
             if !cfg!(windows) {
                 return Ok(());
@@ -213,27 +225,104 @@ fn run_simple(root: &Path, task: SimpleTask) -> Result<()> {
             }
             Ok(())
         }
-        SimpleTask::LinuxEmpty => run_cargo(
+        SimpleTask::LinuxEmpty => run_cargo(root, LINUX_EMPTY_ARGUMENTS),
+        SimpleTask::SupplyChain => run_cargo(
             root,
-            &[
-                "check",
-                "--package",
-                PACKAGE_NAME,
-                "--all-targets",
-                "--locked",
-                "--target",
-                "x86_64-unknown-linux-gnu",
-            ],
+            &["deny", "--workspace", "--all-features", "--locked", "check"],
         ),
-        SimpleTask::SupplyChain => {
-            run_cargo(root, &["deny", "--all-features", "--locked", "check"])
-        }
         SimpleTask::Reuse => run_program(root, "python", &["-m", "reuse", "lint"]),
         SimpleTask::Typos => run_program(root, "typos", &[]),
         SimpleTask::Coverage => coverage(root),
         SimpleTask::Gates => run_gates(root),
         SimpleTask::Ci => run_ci(root),
     }
+}
+
+fn run_check(root: &Path) -> Result<()> {
+    if !cfg!(any(windows, target_os = "linux")) {
+        return fail("check requires a native Windows or Linux host");
+    }
+    let target = ordinary_target(root);
+    run_simple(root, SimpleTask::Fmt)?;
+    run(ordinary_cargo(root, &target).args(CLIPPY_ARGUMENTS))?;
+    run_simple(root, SimpleTask::Gates)?;
+    if cfg!(windows) {
+        run(ordinary_cargo(root, &target).args(["test", "--package", "xtask", "--locked"]))?;
+        run_windows_smoke_test(root, &target)?;
+    } else {
+        let mut tests = ordinary_cargo(root, &target);
+        with_vectors(&mut tests).args(WORKSPACE_TEST_ARGUMENTS);
+        run(&mut tests)?;
+        run(ordinary_cargo(root, &target).args(LINUX_EMPTY_ARGUMENTS))?;
+    }
+    for check in [
+        SimpleTask::SupplyChain,
+        SimpleTask::Reuse,
+        SimpleTask::Typos,
+    ] {
+        run_simple(root, check)?;
+    }
+    run_program(root, "actionlint", &[])
+}
+
+fn run_windows_smoke(root: &Path) -> Result<()> {
+    if !cfg!(windows) {
+        return fail("windows-smoke requires a native Windows host");
+    }
+    let target = ordinary_target(root);
+    run(ordinary_cargo(root, &target).args([
+        "clippy",
+        "--package",
+        PACKAGE_NAME,
+        "--lib",
+        "--locked",
+        "--",
+        "-D",
+        "warnings",
+    ]))?;
+    run_windows_smoke_test(root, &target)
+}
+
+fn run_windows_smoke_test(root: &Path, target: &Path) -> Result<()> {
+    let mut listing = windows_smoke_command(root, target);
+    listing.args(["--list", "--format", "terse"]);
+    require_windows_smoke_selection(&capture(&mut listing)?)?;
+    run(&mut windows_smoke_command(root, target))
+}
+
+fn require_windows_smoke_selection(listing: &str) -> Result<()> {
+    if listing.trim() == format!("{WINDOWS_SMOKE_TEST}: test") {
+        Ok(())
+    } else {
+        fail("expected exactly one Windows smoke test in the terse test inventory")
+    }
+}
+
+fn windows_smoke_command(root: &Path, target: &Path) -> Command {
+    let mut command = ordinary_cargo(root, target);
+    command.args([
+        "test",
+        "--locked",
+        "--test",
+        "windows_spawn",
+        WINDOWS_SMOKE_TEST,
+        "--",
+        "--exact",
+        "--test-threads=1",
+    ]);
+    command
+}
+
+fn ordinary_target(root: &Path) -> PathBuf {
+    let selected =
+        env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from);
+    root.join(selected).join("ordinary-checks")
+}
+
+fn ordinary_cargo(root: &Path, target: &Path) -> Command {
+    let mut command = cargo(root);
+    command.env("CARGO_TARGET_DIR", target);
+    command
 }
 
 fn run_gates(root: &Path) -> Result<()> {
@@ -1004,6 +1093,58 @@ pub(crate) fn fail<T>(message: impl Into<String>) -> Result<T> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn windows_smoke_selection_requires_the_single_exact_test() {
+        let expected = format!("{WINDOWS_SMOKE_TEST}: test");
+        assert!(require_windows_smoke_selection(&expected).is_ok());
+        assert!(require_windows_smoke_selection(&format!("{expected}\r\n")).is_ok());
+        for listing in [
+            String::new(),
+            "0 tests, 0 benchmarks".to_owned(),
+            "different_test: test".to_owned(),
+            format!("{WINDOWS_SMOKE_TEST}: benchmark"),
+            format!("{expected}\n{expected}"),
+            format!("{expected}\nanother_test: test"),
+        ] {
+            let error = require_windows_smoke_selection(&listing).unwrap_err();
+            assert!(error.to_string().contains("exactly one Windows smoke test"));
+        }
+    }
+
+    #[test]
+    fn windows_smoke_command_keeps_its_exact_test_and_child_target() {
+        let root = repository_root().unwrap();
+        let target = root.join("target/ordinary-checks");
+        let command = windows_smoke_command(&root, &target);
+        let arguments: Vec<_> = command.get_args().collect();
+        assert_eq!(
+            arguments,
+            [
+                "test",
+                "--locked",
+                "--test",
+                "windows_spawn",
+                WINDOWS_SMOKE_TEST,
+                "--",
+                "--exact",
+                "--test-threads=1",
+            ]
+            .map(OsStr::new)
+        );
+        assert_eq!(command.get_current_dir(), Some(root.as_path()));
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "CARGO_TARGET_DIR" && value == Some(target.as_os_str())
+        }));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn windows_smoke_rejects_non_windows_before_starting_cargo() {
+        let missing = env::temp_dir().join("windows-spawn-missing-smoke-root");
+        let error = run_windows_smoke(&missing).unwrap_err();
+        assert!(error.to_string().contains("native Windows host"));
+    }
 
     #[test]
     fn selects_only_the_root_manifest_package() {
