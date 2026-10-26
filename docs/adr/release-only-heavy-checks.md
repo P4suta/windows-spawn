@@ -45,6 +45,8 @@ Its summary requires successful results from exactly the two verification jobs.
 Move the heavy job definitions into the release workflow without duplicating them or adding a reusable or manual campaign entry point.
 
 The workflow tests parse the production YAML and execute its jq contracts.
+Keep `yaml-rust2` at 0.11.1 because versions 0.12 and 0.13 require Rust 1.85 while the workspace supports Rust 1.84.
+The dependency update rule excludes those incompatible versions and protects the release workflow's MSRV declaration.
 The parser's transitive `foldhash` 0.2.0 dependency uses the Zlib license.
 Accept that exact dependency in `deny.toml` while keeping the general `Apache-2.0` and `MIT` policy and checking development dependencies.
 
