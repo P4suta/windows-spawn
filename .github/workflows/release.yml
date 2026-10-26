@@ -79,7 +79,7 @@ jobs:
     name: Qualify the release revision
     if: always()
     needs: [quality, test, i686-smoke, arm64, verifier, api, proofs]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -116,7 +116,7 @@ jobs:
   quality:
     name: Release repository checks
     needs: resolve
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -334,7 +334,7 @@ jobs:
       fail-fast: false
       matrix:
         layer: ${{ fromJSON(needs.quality.outputs.proofs) }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     permissions:
       contents: read
