@@ -18,7 +18,7 @@ yanked = "deny"
 version = 2
 allow = ["Apache-2.0", "MIT"]
 confidence-threshold = 1.0
-exceptions = []
+exceptions = [{ name = "foldhash", version = "=0.2.0", allow = ["Zlib"] }]
 include-build = true
 include-dev = true
 unused-allowed-license = "deny"

@@ -11,8 +11,11 @@ semver = "1.0.28"
 serde_json = "1.0.151"
 sha2 = "0.10.9"
 
+[dev-dependencies]
+yaml-rust2 = { version = "=0.11.1", default-features = false }
+
 [target.'cfg(windows)'.dependencies]
-windows-spawn = { path = ".." }
+windows-spawn = { path = "..", version = "0.1.0" }
 
 [lints]
 workspace = true
