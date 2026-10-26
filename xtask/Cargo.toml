@@ -15,7 +15,7 @@ sha2 = "0.10.9"
 yaml-rust2 = { version = "=0.11.1", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
-windows-spawn = { path = "..", version = "0.1.0" }
+windows-spawn = { path = "..", version = "0.2.0" }
 
 [lints]
 workspace = true
