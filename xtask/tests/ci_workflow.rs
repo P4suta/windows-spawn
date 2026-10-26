@@ -4,9 +4,9 @@
 //! Evaluates the actual workflow contracts and their release-source bindings.
 
 use std::fmt;
-use std::io::Write as _;
+use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{json, Value};
@@ -209,18 +209,108 @@ fn summary(needs: &Value, release: bool) -> Result<Output> {
 fn summary_revision(needs: &Value, release: bool, revision: &str) -> Result<Output> {
     let workflow = yaml(if release { RELEASE } else { CI })?;
     let required = job(&workflow, if release { "qualify" } else { "required" })?;
+    let input = serde_json::to_vec(needs)?;
     let mut child = Command::new("jq")
         .args(["-e", "--arg", "revision", revision, contract(required)?])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    child
-        .stdin
-        .take()
-        .ok_or("missing jq stdin")?
-        .write_all(&serde_json::to_vec(needs)?)?;
+    write_summary_input(&mut child, &input)?;
     Ok(child.wait_with_output()?)
+}
+
+fn write_summary_input(child: &mut Child, input: &[u8]) -> Result {
+    with_summary_input(child, |child| {
+        child
+            .stdin
+            .take()
+            .ok_or("missing jq stdin")?
+            .write_all(input)?;
+        Ok(())
+    })
+}
+
+fn with_summary_input(child: &mut Child, write: impl FnOnce(&mut Child) -> Result) -> Result {
+    match write(child) {
+        Ok(()) => Ok(()),
+        Err(primary) => {
+            cleanup_summary_child(child, &primary);
+            Err(primary)
+        }
+    }
+}
+
+fn cleanup_summary_child(child: &mut Child, primary: &CheckError) {
+    if let Err(error) = child.kill() {
+        eprintln!("could not terminate jq after summary input error ({primary}): {error}");
+    }
+    if let Err(error) = child.wait() {
+        eprintln!("could not reap jq after summary input error ({primary}): {error}");
+    }
+}
+
+fn waiting_summary_child() -> Result<Child> {
+    let mut child = Command::new("jq")
+        .args(["-n", "--unbuffered", "\"ready\", input"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let ready = (|| -> Result {
+        let stdout = child.stdout.take().ok_or("missing fixture stdout")?;
+        let mut line = String::new();
+        BufReader::new(stdout).read_line(&mut line)?;
+        require(line.trim() == "\"ready\"", "jq fixture must become ready")
+    })();
+    if let Err(primary) = ready {
+        cleanup_summary_child(&mut child, &primary);
+        return Err(primary);
+    }
+    Ok(child)
+}
+
+#[test]
+fn summary_input_write_failure_reaps_live_child() -> Result {
+    let mut child = waiting_summary_child()?;
+    let result = with_summary_input(&mut child, |_child| {
+        Err(CheckError::Io(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "injected summary write failure",
+        )))
+    });
+    let status = child.try_wait();
+    if !matches!(status, Ok(Some(_))) {
+        cleanup_summary_child(&mut child, &CheckError::from("fixture cleanup"));
+    }
+    assert!(matches!(result, Err(CheckError::Io(ref error))
+        if error.kind() == std::io::ErrorKind::BrokenPipe
+            && error.to_string() == "injected summary write failure"));
+    assert!(
+        status?.is_some(),
+        "the failed summary write must terminate and reap its live child"
+    );
+    Ok(())
+}
+
+#[test]
+fn summary_input_missing_stdin_reaps_live_child() -> Result {
+    let mut child = waiting_summary_child()?;
+    let held_input = child.stdin.take();
+    let result = write_summary_input(&mut child, b"{}");
+    let status = child.try_wait();
+    if !matches!(status, Ok(Some(_))) {
+        cleanup_summary_child(&mut child, &CheckError::from("fixture cleanup"));
+    }
+    drop(held_input);
+    assert!(
+        matches!(result, Err(CheckError::Contract(ref message)) if message == "missing jq stdin")
+    );
+    assert!(
+        status?.is_some(),
+        "missing summary stdin must terminate and reap its live child"
+    );
+    Ok(())
 }
 
 #[test]
