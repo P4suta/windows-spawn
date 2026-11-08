@@ -3,11 +3,8 @@
 #
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-# Proposes the next release as a draft pull request, and never publishes; release.yml does, from a signed tag.
-#
-#   * A GitHub App token, because a pull request opened with GITHUB_TOKEN starts no CI.
-#   * `environment: release` holds the App's credentials, and deploys from main only.
-#   * A Windows runner, because `semver_check` builds the crate, and its `cfg(windows)` dependencies do not build on Linux.
+# Release-plz proposes a draft pull request; a signed tag starts publication.
+# Windows is required because semver checking builds the native crate.
 name: Release PR
 
 "on":
@@ -24,53 +21,50 @@ concurrency:
 jobs:
   release-pr:
     name: Release-plz PR
-    if: github.repository == 'P4suta/windows-spawn'
+    if: >-
+      github.repository_id == '1320016549' &&
+      github.ref == 'refs/heads/main'
     runs-on: windows-2025
     timeout-minutes: 30
     environment:
       name: release
     permissions:
-      id-token: write
+      contents: read # Read source under docs/adr/sync-release-app-credentials-to-the-protected-environment.md.
+    env:
+      APP_INPUTS_VALID: >-
+        ${{ secrets.RELEASE_APP_CLIENT_ID != '' &&
+        !startsWith(secrets.RELEASE_APP_CLIENT_ID, '${') &&
+        secrets.RELEASE_APP_PRIVATE_KEY != '' &&
+        !startsWith(secrets.RELEASE_APP_PRIVATE_KEY, '${') }}
     steps:
-      - name: Fetch automation credentials
-        id: doppler_automation_0
-        uses: dopplerhq/secrets-fetch-action@451892f16195f9ac360e1a5bcbf0b5fd0e957534
-        with:
-          auth-method: oidc
-          doppler-identity-id: ${{ vars.DOPPLER_AUTOMATION_IDENTITY_ID }}
-          doppler-project: windows-spawn
-          doppler-config: automation
-          inject-env-vars: false
       - name: Reject missing or unresolved automation credentials
-        if: >-
-          ${{ steps.doppler_automation_0.outcome == 'success' && (
-          steps.doppler_automation_0.outputs.GITHUB_APP_CLIENT_ID == '' ||
-          startsWith(steps.doppler_automation_0.outputs.GITHUB_APP_CLIENT_ID, '${') ||
-          steps.doppler_automation_0.outputs.GITHUB_APP_PRIVATE_KEY == '' ||
-          startsWith(steps.doppler_automation_0.outputs.GITHUB_APP_PRIVATE_KEY, '${')
-          ) }}
+        if: env.APP_INPUTS_VALID != 'true'
         shell: bash
         run: exit 1
 
-      - name: Mint the release GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
-        with:
-          client-id: ${{ steps.doppler_automation_0.outputs.GITHUB_APP_CLIENT_ID }}
-          private-key: ${{ steps.doppler_automation_0.outputs.GITHUB_APP_PRIVATE_KEY }}
-          permission-contents: write
-          permission-pull-requests: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # v1
-        with:
-          toolchain: stable
+      - name: Set up Rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
       # Required by `semver_check = true` in release-plz.toml.
       - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b  # v2.90.1
         with:
           tool: cargo-semver-checks@0.45.0
+      - name: Mint the release GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        with:
+          client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: windows-spawn
+          permission-contents: write
+          permission-pull-requests: write
       - name: Run release-plz
         uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b  # v0.5.148
         with:
