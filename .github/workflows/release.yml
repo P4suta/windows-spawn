@@ -378,7 +378,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         if: matrix.layer == 'quint'
         with:
-          node-version: "24"
+          node-version: "26"
           package-manager-cache: false
       - name: Install SWI-Prolog
         if: matrix.layer == 'prolog'
