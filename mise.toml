@@ -1,9 +1,9 @@
 [tools]
-rust = { version = "1.99.1", components = "rustfmt,clippy" }
+rust = { version = "1.100.0", components = "rustfmt,clippy" }
 just = "1.59.0"
 actionlint = "1.7.12"
-typos = "1.52.0"
-cargo-deny = "0.20.2"
+typos = "1.52.2"
+cargo-deny = "0.21.0"
 python = "3.15.2"
-uv = "0.13.7"
+uv = "0.13.9"
 jq = "1.8.2"
