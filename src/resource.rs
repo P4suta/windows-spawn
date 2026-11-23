@@ -8,17 +8,17 @@ use std::marker::PhantomData;
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle, RawHandle};
 
 /// A process.
-pub(crate) enum Process {}
+pub(crate) struct Process(std::convert::Infallible);
 /// A thread.
-pub(crate) enum Thread {}
+pub(crate) struct Thread(std::convert::Infallible);
 /// A Job object.
-pub(crate) enum JobObject {}
+pub(crate) struct JobObject(std::convert::Infallible);
 /// One end of an anonymous pipe.
-pub(crate) enum Pipe {}
+pub(crate) struct Pipe(std::convert::Infallible);
 /// A file, device, pipe, or console handle that a child receives as a standard stream.
-pub(crate) enum Stream {}
+pub(crate) struct Stream(std::convert::Infallible);
 /// A handle the caller supplied, whose kind the crate doesn't know.
-pub(crate) enum Foreign {}
+pub(crate) struct Foreign(std::convert::Infallible);
 
 /// An owned handle, in the current process's table, to an object of kind `K`.
 pub(crate) struct Owned<K> {
@@ -106,9 +106,9 @@ impl<K> Clone for Borrowed<'_, K> {
 impl<K> Copy for Borrowed<'_, K> {}
 
 /// The table of the process that creates the child.
-pub(crate) enum Creator {}
+pub(crate) struct Creator(std::convert::Infallible);
 /// The table of the process the child inherits from: the creator, or the alternate parent.
-pub(crate) enum Inheritor {}
+pub(crate) struct Inheritor(std::convert::Infallible);
 
 /// A handle value valid in the handle table `T`.
 ///
