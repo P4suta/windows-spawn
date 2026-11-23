@@ -433,7 +433,7 @@ fn summaries_reject_missing_unknown_unfinished_and_malformed_results() -> Result
                 );
             }
         }
-        let mut unknown = healthy.clone();
+        let mut unknown = healthy;
         let _previous = unknown
             .as_object_mut()
             .ok_or("needs must be an object")?
